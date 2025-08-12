@@ -1,0 +1,65 @@
+{
+  "name": "mcp-client-gen",
+  "version": "0.0.3",
+  "description": "Interactive CLI tool that generates type-safe TypeScript clients from MCP servers",
+  "module": "dist/index.js",
+  "type": "module",
+  "bin": {
+    "mcp-client-gen": "./dist/index.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "keywords": [
+    "mcp",
+    "mcp-client",
+    "client",
+    "generator",
+    "sdk",
+    "codegen",
+    "anthropic",
+    "cli",
+    "interactive",
+    "typescript",
+    "api-client",
+    "prompts",
+    "schema",
+    "tool",
+    "type-safe",
+    "model-context-protocol",
+    "oauth",
+    "oauth2",
+    "authentication",
+    "pkce",
+    "rfc7591"
+  ],
+  "author": "Konstantin Tarkus <koistya@kriasoft.com>",
+  "license": "MIT",
+  "funding": "https://github.com/sponsors/koistya",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/kriasoft/mcp-client-gen.git"
+  },
+  "homepage": "https://github.com/kriasoft/mcp-client-gen",
+  "bugs": {
+    "url": "https://github.com/kriasoft/mcp-client-gen/issues"
+  },
+  "dependencies": {
+    "@clack/prompts": "^0.11.0",
+    "ts-morph": "^26.0.0"
+  },
+  "peerDependencies": {
+    "@modelcontextprotocol/sdk": "^1.17.2",
+    "typescript": "^5.9.2"
+  },
+  "devDependencies": {
+    "@modelcontextprotocol/sdk": "^1.17.2",
+    "@types/bun": "latest",
+    "prettier": "^3.6.2",
+    "typescript": "^5.9.2"
+  },
+  "scripts": {
+    "build": "bun build index.ts --outdir dist --target node",
+    "prepublishOnly": "bun run build"
+  }
+}
