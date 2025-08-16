@@ -1,0 +1,24 @@
+{
+  "mcpServers": {
+    "notion": {
+      "type": "http",
+      "url": "https://mcp.notion.com/mcp",
+      "auth": {
+        "type": "oauth",
+        "scopes": ["read:page:metadata", "write:page:content"]
+      }
+    },
+    "github": {
+      "type": "http",
+      "url": "https://api.githubcopilot.com/mcp/",
+      "auth": {
+        "type": "oauth",
+        "clientId": "test-github-client"
+      }
+    },
+    "local-server": {
+      "type": "http",
+      "url": "http://localhost:8080/mcp"
+    }
+  }
+}

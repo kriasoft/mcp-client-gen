@@ -1,7 +1,19 @@
 /* SPDX-FileCopyrightText: 2025-present Kriasoft */
 /* SPDX-License-Identifier: MIT */
 
-import type { McpToolSchema, McpTool } from "./mcp-client.js";
+interface McpToolSchema {
+  type?: string;
+  properties?: Record<string, any>;
+  required?: string[];
+  additionalProperties?: boolean;
+  [key: string]: any;
+}
+
+interface McpTool {
+  name: string;
+  description?: string;
+  inputSchema: McpToolSchema;
+}
 
 export interface JsonSchemaType {
   type: "string" | "number" | "boolean" | "object" | "array" | "null";
@@ -44,13 +56,17 @@ export interface ValidatedTool {
   inputSchema: McpToolSchema;
 }
 
+/**
+ * JSON Schema to TypeScript type converter.
+ * @pattern Visitor pattern for recursive schema traversal
+ */
 export class SchemaValidator {
   validateJsonSchema(schema: any): JsonSchemaType {
     if (!schema || typeof schema !== "object") {
       throw new Error("Schema must be a valid object");
     }
 
-    // Basic JSON Schema validation
+    // Minimal validation - rely on server-provided schemas
     if (!schema.type) {
       throw new Error("Schema must have a 'type' property");
     }
@@ -87,17 +103,17 @@ export class SchemaValidator {
       throw new Error("Tool name cannot be empty");
     }
 
-    // Validate input schema
+    // Parse and validate tool's parameter schema
     const validatedSchema = this.validateMcpToolSchema(tool.inputSchema);
 
-    // Convert schema to TypeScript parameter types
+    // Transform JSON Schema properties to TS params
     const parameters = this.schemaToTypeScriptParameters(validatedSchema);
 
     return {
       name: tool.name,
       description: tool.description,
       parameters,
-      returnType: "Promise<any>", // MCP tools typically return JSON
+      returnType: "Promise<any>", // Tool results are protocol-defined JSON
       inputSchema: tool.inputSchema,
     };
   }
@@ -170,6 +186,10 @@ export class SchemaValidator {
   }
 }
 
+/**
+ * Generate TypeScript interfaces from MCP schemas.
+ * @output Tree-shakable type definitions
+ */
 export class SchemaTransformer {
   private validator = new SchemaValidator();
 
@@ -182,14 +202,14 @@ export class SchemaTransformer {
     const toolTypes: string[] = [];
 
     for (const tool of tools) {
-      // Generate parameter interface
+      // One interface per tool for type safety
       if (tool.parameters.length > 0) {
         const interfaceName = `${this.capitalize(tool.name)}Parameters`;
         const properties = tool.parameters.map((param) => {
           const optional = param.isOptional ? "?" : "";
           const description = param.description
             ? `\n  /** ${param.description} */`
-            : "";
+            : ""; // JSDoc for IDE hints
           return `${description}\n  ${param.name}${optional}: ${param.type};`;
         });
 

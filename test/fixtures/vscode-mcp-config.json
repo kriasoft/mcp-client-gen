@@ -1,0 +1,21 @@
+{
+  "mcp": {
+    "servers": {
+      "memory": {
+        "type": "stdio",
+        "command": "npx",
+        "args": ["mcp-server-memory"],
+        "settings": {
+          "maxItems": 1000
+        }
+      },
+      "web": {
+        "type": "http",
+        "url": "https://api.web-mcp.com/mcp",
+        "headers": {
+          "X-API-Key": "${env:WEB_API_KEY}"
+        }
+      }
+    }
+  }
+}

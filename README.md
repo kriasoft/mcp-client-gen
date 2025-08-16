@@ -3,7 +3,7 @@
 🚀 Generate type-safe TypeScript clients from any MCP (Model Context Protocol) server.
 
 ```typescript
-import { notion, github, slack } from "./lib/mcp-client";
+import { notion, github, slack } from "./src/mcp-client";
 
 // Type-safe client calls with full IntelliSense
 const page = await notion.createPage({
@@ -72,13 +72,13 @@ npx mcp-client-gen -y # Accept all defaults and proceed
 **Direct Mode:**
 
 ```bash
-npx mcp-client-gen ./lib/mcp-client.ts
+npx mcp-client-gen ./src/mcp-client.ts
 ```
 
 ### 3. Use the Generated Client
 
 ```typescript
-import { notion } from "./lib/mcp-client";
+import { notion } from "./src/mcp-client";
 
 // All methods are fully typed based on the MCP server schema
 const page = await notion.fetchPage("page-id");
@@ -114,7 +114,7 @@ Options:
 Examples:
   npx mcp-client-gen                           # Interactive mode
   npx mcp-client-gen -y                        # Quick generation with defaults
-  npx mcp-client-gen ./lib/mcp.ts              # Direct mode with output file
+  npx mcp-client-gen ./src/mcp-client.ts       # Direct mode with output file
   npx mcp-client-gen --config custom.json ./src/clients.ts
 ```
 

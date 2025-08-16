@@ -1,0 +1,20 @@
+{
+  "claude": {
+    "mcpServers": {
+      "filesystem": {
+        "command": "node",
+        "args": ["/path/to/filesystem-server.js"],
+        "env": {
+          "ALLOWED_PATHS": "/home/user/projects"
+        }
+      },
+      "database": {
+        "command": "python",
+        "args": ["-m", "mcp_server_database"],
+        "env": {
+          "DATABASE_URL": "sqlite:///test.db"
+        }
+      }
+    }
+  }
+}

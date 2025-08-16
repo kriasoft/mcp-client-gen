@@ -5,7 +5,18 @@
     "source.organizeImports": "explicit"
   },
   "editor.defaultFormatter": "esbenp.prettier-vscode",
-  "cSpell.words": ["introspector", "kriasoft", "modelcontextprotocol"],
+  "cSpell.words": [
+    "codegen",
+    "esbenp",
+    "introspector",
+    "konstantin",
+    "kriasoft",
+    "modelcontextprotocol",
+    "pkce",
+    "segoe",
+    "streamable",
+    "tarkus"
+  ],
   "cSpell.ignorePaths": [
     ".git/**",
     "node_modules/**",

@@ -21,6 +21,11 @@ export interface PromptsResult {
   outputFile: string;
 }
 
+/**
+ * Discover and select MCP config files.
+ * @returns Selected absolute paths
+ * @throws If no configs found
+ */
 export async function promptForConfigFiles(
   cwd: string = process.cwd(),
 ): Promise<string[]> {
@@ -51,6 +56,11 @@ export async function promptForConfigFiles(
   return configSelection as string[];
 }
 
+/**
+ * Select servers from parsed configs.
+ * @param configFiles Paths to parse for servers
+ * @returns Deduplicated server list
+ */
 export async function promptForServers(
   configFiles: string[],
 ): Promise<McpServer[]> {
@@ -81,12 +91,16 @@ export async function promptForServers(
   return serverSelection as McpServer[];
 }
 
+/**
+ * Get output path for generated client.
+ * @returns Validated TypeScript file path
+ */
 export async function promptForOutputFile(
   cwd: string = process.cwd(),
 ): Promise<string> {
-  // Determine smart default based on project structure
+  // Smart default: src/ if exists, otherwise root
   const srcExists = existsSync(resolve(cwd, "src"));
-  const defaultPath = srcExists ? "src/lib/mcp-client.ts" : "lib/mcp-client.ts";
+  const defaultPath = srcExists ? "src/mcp-client.ts" : "mcp-client.ts";
 
   const outputPath = await text({
     message: "Enter output file path:",
@@ -111,12 +125,17 @@ export async function promptForOutputFile(
   return outputPath.trim();
 }
 
+/**
+ * Interactive wizard or quick mode with defaults.
+ * @param useDefaults Skip prompts with -y flag
+ * @returns Complete generation config
+ */
 export async function runInteractiveSetup(
   cwd: string = process.cwd(),
   useDefaults: boolean = false,
 ): Promise<PromptsResult> {
   if (useDefaults) {
-    // Use defaults when -y flag is provided
+    // Quick mode: all servers, default output path
     const configFiles = await findMcpConfigFiles(cwd);
     if (configFiles.length === 0) {
       throw new Error(
@@ -131,11 +150,9 @@ export async function runInteractiveSetup(
       );
     }
 
-    // Smart default for output file
+    // Auto-detect src/ directory for better project structure
     const srcExists = existsSync(resolve(cwd, "src"));
-    const outputFile = srcExists
-      ? "src/lib/mcp-client.ts"
-      : "lib/mcp-client.ts";
+    const outputFile = srcExists ? "src/mcp-client.ts" : "mcp-client.ts";
 
     console.log(
       `🚀 Using defaults: ${servers.length} server${servers.length !== 1 ? "s" : ""} → ${outputFile}`,
@@ -150,13 +167,13 @@ export async function runInteractiveSetup(
   intro("🧩 MCP Client Generator");
 
   try {
-    // Step 1: Select configuration files
+    // Step 1: Choose which config files to use
     const configFiles = await promptForConfigFiles(cwd);
 
-    // Step 2: Select servers from the chosen config files
+    // Step 2: Pick servers to generate client for
     const servers = await promptForServers(configFiles);
 
-    // Step 3: Specify output file
+    // Step 3: Destination for generated TypeScript
     const outputFile = await promptForOutputFile(cwd);
 
     outro(
@@ -174,6 +191,10 @@ export async function runInteractiveSetup(
   }
 }
 
+/**
+ * Sequential server introspection with progress.
+ * @returns Mock results (TODO: wire real McpClientManager)
+ */
 export async function introspectServers(servers: McpServer[]) {
   const s = spinner();
   s.start(
@@ -186,16 +207,16 @@ export async function introspectServers(servers: McpServer[]) {
     s.message(
       `[${index + 1}/${servers.length}] Connecting to ${server.url}...`,
     );
-    // TODO: Replace with actual connection logic
+    // TODO: McpClientManager.addServer()
     await new Promise((resolve) => setTimeout(resolve, 800));
 
     s.message(
       `[${index + 1}/${servers.length}] Fetching capabilities from ${server.url}...`,
     );
-    // TODO: Replace with actual introspection logic
+    // TODO: connection.client.listTools/Resources/Prompts()
     await new Promise((resolve) => setTimeout(resolve, 600));
 
-    // Fake result for now
+    // Mock capabilities for development
     results.push({
       server,
       tools: Math.floor(Math.random() * 10) + 5,

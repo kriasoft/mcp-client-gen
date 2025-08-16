@@ -21,7 +21,7 @@ afterAll(() => {
 describe("config", () => {
   describe("findMcpConfigFiles", () => {
     test("finds existing config files in priority order", async () => {
-      // Create test config files
+      // Simulate workspace with multiple config locations
       writeFileSync(resolve(TEST_DIR, ".mcp.json"), "{}");
       writeFileSync(resolve(TEST_DIR, ".mcp.local.json"), "{}");
       writeFileSync(resolve(TEST_DIR, ".cursor/mcp.json"), "{}");
@@ -40,6 +40,7 @@ describe("config", () => {
     });
 
     test("respects priority order from MCP_CONFIG_PATHS", () => {
+      // .local variants should override non-local
       expect(MCP_CONFIG_PATHS[0]).toBe(".mcp.local.json");
       expect(MCP_CONFIG_PATHS[1]).toBe(".mcp.json");
     });
@@ -76,6 +77,7 @@ describe("config", () => {
     });
 
     test("skips invalid server configurations", () => {
+      // Only http/sse with URLs are valid
       const configPath = resolve(TEST_DIR, "invalid-servers.json");
       const config = {
         mcpServers: {

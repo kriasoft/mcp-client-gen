@@ -1,11 +1,12 @@
 #!/usr/bin/env node
+/* SPDX-FileCopyrightText: 2025-present Kriasoft */
+/* SPDX-License-Identifier: MIT */
 
-import { parseArgs } from "node:util";
-import { readFileSync, existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { runInteractiveSetup, introspectServers } from "./lib/prompts.js";
-import { getMcpServers, findMcpConfigFiles } from "./lib/config.js";
-import type { McpServer } from "./lib/types.js";
+import { parseArgs } from "node:util";
+import { introspectServers, runInteractiveSetup } from "./prompts.js";
+import type { McpServer } from "./types.js";
 
 interface MCPServerConfig {
   type: string;
@@ -44,11 +45,16 @@ Options:
 Examples:
   npx mcp-client-gen                        # Interactive mode with prompts
   npx mcp-client-gen -y                     # Quick generation with defaults
-  npx mcp-client-gen ./lib/mcp-client.ts    # Specify output file
-  npx mcp-client-gen --config custom.mcp.json ./lib/mcp.ts
+  npx mcp-client-gen ./src/mcp-client.ts    # Specify output file
+  npx mcp-client-gen --config custom.mcp.json ./src/mcp.ts
 `);
 }
 
+/**
+ * Parse CLI arguments to determine execution mode.
+ * @returns Args object for processing, null if help was shown
+ * @throws Process exits with code 1 on invalid arguments
+ */
 function parseArguments(): Args | null {
   try {
     const { values, positionals } = parseArgs({
@@ -65,7 +71,7 @@ function parseArguments(): Args | null {
       return null;
     }
 
-    // If no positional arguments, use interactive mode or yes mode
+    // Empty positionals trigger interactive mode (prompts) or quick mode (-y)
     if (positionals.length === 0) {
       return {
         output: "", // Will be determined later
@@ -86,6 +92,11 @@ function parseArguments(): Args | null {
   }
 }
 
+/**
+ * Load MCP configuration from JSON file.
+ * @param configPath Optional path, defaults to .mcp.json in cwd
+ * @throws Process exits with code 1 if file missing or invalid JSON
+ */
 function loadMCPConfig(configPath?: string): MCPConfig {
   const defaultConfigPath = resolve(process.cwd(), ".mcp.json");
   const actualConfigPath = configPath
@@ -120,12 +131,12 @@ async function generateMCPClientFromConfig(args: Args) {
   );
   console.log(`Servers: ${serverNames.join(", ")}`);
 
-  // TODO: Implement actual MCP server introspection
+  // TODO: Replace with real introspection via mcp-client.ts
   console.log("⏳ Connecting to MCP servers...");
   console.log("⏳ Fetching server capabilities...");
   console.log("⏳ Generating TypeScript client...");
 
-  // Generate client code for all servers
+  // Generate tree-shakable exports - one instance per server
   const clientExports = serverNames
     .map((name) => {
       const server = config.mcpServers[name];
@@ -140,7 +151,7 @@ async function generateMCPClientFromConfig(args: Args) {
 export class ${capitalize(name)}Client {
   constructor(private serverUrl: string) {}
   
-  // TODO: Generated methods based on server capabilities
+  // Methods will be generated from introspected schemas
   async fetchPage(id: string) {
     // Implementation will be generated based on MCP server schema
     throw new Error("Not implemented yet");
@@ -159,7 +170,7 @@ ${clientClasses}
 ${clientExports}
 `;
 
-  // TODO: Write to actual file
+  // TODO: Write via fs.writeFileSync with prettier formatting
   console.log(`✅ Generated client saved to ${args.output}`);
   console.log("\nUsage:");
   console.log(
@@ -172,10 +183,10 @@ async function generateMCPClientFromServers(
   servers: McpServer[],
   outputFile: string,
 ) {
-  // Introspect servers with progress indicator
+  // Connect and fetch capabilities with visual progress
   const introspectionResults = await introspectServers(servers);
 
-  // Generate client names from URLs for now
+  // TODO: Extract meaningful names from server metadata
   const serverNames = servers.map((_, index) => `server${index + 1}`);
 
   const clientExports = servers
@@ -191,7 +202,7 @@ async function generateMCPClientFromServers(
 export class Server${index + 1}Client {
   constructor(private serverUrl: string) {}
   
-  // TODO: Generated methods based on server capabilities
+  // Methods will be generated from introspected schemas
   async fetchPage(id: string) {
     // Implementation will be generated based on MCP server schema
     throw new Error("Not implemented yet");
@@ -208,7 +219,7 @@ ${clientClasses}
 ${clientExports}
 `;
 
-  // TODO: Write to actual file with real introspection data
+  // TODO: Use codegen.ts to build proper TypeScript AST
   console.log(`\n✅ Generated client saved to ${outputFile}`);
   console.log("\nUsage:");
   console.log(
@@ -221,17 +232,21 @@ function capitalize(str: string): string {
   return str.charAt(0).toUpperCase() + str.slice(1);
 }
 
+/**
+ * CLI entry point - determines mode and delegates to appropriate handler.
+ * Modes: interactive (no args), quick (-y), direct (output path given)
+ */
 async function main() {
   const args = parseArguments();
 
-  // If args is null and help wasn't shown, use interactive mode
+  // parseArguments returns null only when --help was shown
   if (!args) {
     console.error("Error: No arguments provided and help not requested");
     showHelp();
     process.exit(1);
   }
 
-  // Handle interactive mode (no output file specified)
+  // Interactive/quick mode: prompts for server selection and output path
   if (!args.output) {
     try {
       const result = await runInteractiveSetup(process.cwd(), args.yes);
@@ -243,7 +258,7 @@ async function main() {
     return;
   }
 
-  // Use traditional CLI mode
+  // Direct mode: output path provided, use .mcp.json config
   try {
     await generateMCPClientFromConfig(args);
   } catch (error) {

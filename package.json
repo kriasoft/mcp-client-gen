@@ -1,11 +1,11 @@
 {
   "name": "mcp-client-gen",
-  "version": "0.0.3",
+  "version": "0.0.4",
   "description": "Interactive CLI tool that generates type-safe TypeScript clients from MCP servers",
   "module": "dist/index.js",
   "type": "module",
   "bin": {
-    "mcp-client-gen": "./dist/index.js"
+    "mcp-client-gen": "./dist/cli.js"
   },
   "files": [
     "dist"
@@ -46,6 +46,7 @@
   },
   "dependencies": {
     "@clack/prompts": "^0.11.0",
+    "oauth-callback": "^1.2.0",
     "ts-morph": "^26.0.0"
   },
   "peerDependencies": {
@@ -53,13 +54,28 @@
     "typescript": "^5.9.2"
   },
   "devDependencies": {
-    "@modelcontextprotocol/sdk": "^1.17.2",
+    "@modelcontextprotocol/sdk": "^1.17.3",
     "@types/bun": "latest",
     "prettier": "^3.6.2",
     "typescript": "^5.9.2"
   },
+  "prettier": {
+    "trailingComma": "all",
+    "tabWidth": 2,
+    "semi": true,
+    "singleQuote": false,
+    "endOfLine": "lf"
+  },
   "scripts": {
-    "build": "bun build index.ts --outdir dist --target node",
+    "build": "bun build src/cli.ts --outdir dist --target node --sourcemap",
+    "clean": "rm -rf dist",
+    "test": "bun test src",
+    "test:e2e": "bun test test/e2e",
+    "test:all": "bun test",
+    "typecheck": "bun tsc -p tsconfig.json --noEmit",
+    "format": "bun prettier --write .",
+    "format:check": "bun prettier --check .",
+    "validate": "bun run format:check && bun run typecheck && bun run test:all",
     "prepublishOnly": "bun run build"
   }
 }
