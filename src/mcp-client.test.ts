@@ -2,19 +2,17 @@
 /* SPDX-License-Identifier: MIT */
 
 import { describe, expect, test, beforeEach, afterEach } from "bun:test";
-import { McpOAuthProvider, InMemoryOAuthStorage } from "./oauth-provider";
-import { MockOAuthServer } from "./test-utils/mock-oauth-server";
-import { createMcpConnection, McpClientManager } from "./mcp-client";
+import { browserAuth, inMemoryStore } from "oauth-callback/mcp";
+import { MockOAuthServer } from "../test/utils/mock-oauth-server";
 import type {
   OAuthClientInformationFull,
   OAuthTokens,
-} from "@modelcontextprotocol/sdk/dist/esm/shared/auth.js";
-import type { McpServer } from "./types";
+} from "@modelcontextprotocol/sdk/shared/auth.js";
 
 describe("OAuth Authentication", () => {
   let mockServer: MockOAuthServer;
-  let storage: InMemoryOAuthStorage;
-  let provider: McpOAuthProvider;
+  let store: any;
+  let provider: any;
   const mockServerUrl = "http://localhost:8080";
 
   beforeEach(() => {
@@ -22,15 +20,11 @@ describe("OAuth Authentication", () => {
       baseUrl: mockServerUrl,
       requireClientAuth: false,
     });
-    storage = new InMemoryOAuthStorage();
-    provider = new McpOAuthProvider({
-      redirectUrl: "http://localhost:3000/callback",
-      clientMetadata: {
-        client_name: "test-client",
-        redirect_uris: ["http://localhost:3000/callback"],
-        scope: "read write",
-      },
-      storage,
+    store = inMemoryStore();
+    provider = browserAuth({
+      port: 3000,
+      store,
+      scope: "read write",
     });
   });
 
@@ -38,7 +32,7 @@ describe("OAuth Authentication", () => {
     mockServer.reset();
   });
 
-  describe("McpOAuthProvider", () => {
+  describe("browserAuth provider", () => {
     test("performs dynamic client registration", async () => {
       // Initially no client info
       const initialInfo = await provider.clientInformation();
@@ -111,6 +105,7 @@ describe("OAuth Authentication", () => {
         client_secret: "secret-456",
         client_name: "test",
         client_id_issued_at: Date.now() / 1000,
+        redirect_uris: ["http://localhost:3000/callback"],
       };
       const tokens: OAuthTokens = {
         access_token: "access-123",
@@ -125,41 +120,18 @@ describe("OAuth Authentication", () => {
       // Test invalidating tokens only
       await provider.invalidateCredentials("tokens");
       const tokensAfter = await provider.tokens();
-      expect(tokensAfter?.access_token).toBe("");
+      expect(tokensAfter).toBeUndefined();
 
       const clientAfter = await provider.clientInformation();
       expect(clientAfter?.client_id).toBe("client-123");
 
       // Test invalidating all
       await provider.invalidateCredentials("all");
-      const allAfter = await storage.getClientInfo();
-      const allTokens = await storage.getTokens();
-      const allVerifier = await storage.getCodeVerifier();
+      const allAfter = await provider.clientInformation();
+      const allTokens = await provider.tokens();
 
       expect(allAfter).toBeUndefined();
       expect(allTokens).toBeUndefined();
-      expect(allVerifier).toBeUndefined();
-    });
-
-    test("handles redirect to authorization", async () => {
-      let capturedUrl: URL | undefined;
-
-      const customProvider = new McpOAuthProvider({
-        redirectUrl: "http://localhost:3000/callback",
-        clientMetadata: {
-          client_name: "test-client",
-          redirect_uris: ["http://localhost:3000/callback"],
-        },
-        onRedirect: async (url) => {
-          capturedUrl = url;
-        },
-      });
-
-      const authUrl = new URL("https://example.com/authorize?client_id=123");
-      await customProvider.redirectToAuthorization(authUrl);
-
-      expect(capturedUrl).toBeDefined();
-      expect(capturedUrl?.href).toBe(authUrl.href);
     });
   });
 
@@ -173,8 +145,10 @@ describe("OAuth Authentication", () => {
 
       expect(resourceRes.status).toBe(200);
       const resourceData = await resourceRes.json();
-      expect(resourceData.resource).toBe(mockServerUrl);
-      expect(resourceData.authorization_servers).toContain(mockServerUrl);
+      expect((resourceData as any).resource).toBe(mockServerUrl);
+      expect((resourceData as any).authorization_servers).toContain(
+        mockServerUrl,
+      );
 
       // Test Authorization Server Metadata
       const authReq = new Request(
@@ -184,12 +158,14 @@ describe("OAuth Authentication", () => {
 
       expect(authRes.status).toBe(200);
       const authData = await authRes.json();
-      expect(authData.issuer).toBe(mockServerUrl);
-      expect(authData.authorization_endpoint).toBe(
+      expect((authData as any).issuer).toBe(mockServerUrl);
+      expect((authData as any).authorization_endpoint).toBe(
         `${mockServerUrl}/authorize`,
       );
-      expect(authData.token_endpoint).toBe(`${mockServerUrl}/token`);
-      expect(authData.code_challenge_methods_supported).toContain("S256");
+      expect((authData as any).token_endpoint).toBe(`${mockServerUrl}/token`);
+      expect((authData as any).code_challenge_methods_supported).toContain(
+        "S256",
+      );
     });
 
     test("handles dynamic client registration", async () => {
@@ -209,9 +185,9 @@ describe("OAuth Authentication", () => {
 
       expect(res.status).toBe(201);
       const clientInfo = await res.json();
-      expect(clientInfo.client_id).toBeTruthy();
-      expect(clientInfo.client_name).toBe("Test App");
-      expect(clientInfo.client_id_issued_at).toBeTruthy();
+      expect((clientInfo as any).client_id).toBeTruthy();
+      expect((clientInfo as any).client_name).toBe("Test App");
+      expect((clientInfo as any).client_id_issued_at).toBeTruthy();
     });
 
     test("handles authorization code exchange", async () => {
@@ -233,7 +209,7 @@ describe("OAuth Authentication", () => {
       const codeChallenge = Buffer.from(codeVerifier).toString("base64url");
 
       const authCode = mockServer.simulateAuthorization({
-        clientId: clientInfo.client_id,
+        clientId: (clientInfo as any).client_id,
         redirectUri: "http://localhost:3000/callback",
         codeChallenge,
         codeChallengeMethod: "S256",
@@ -249,7 +225,7 @@ describe("OAuth Authentication", () => {
           code: authCode,
           code_verifier: codeVerifier,
           redirect_uri: "http://localhost:3000/callback",
-          client_id: clientInfo.client_id,
+          client_id: (clientInfo as any).client_id,
         }).toString(),
       });
 
@@ -257,9 +233,9 @@ describe("OAuth Authentication", () => {
 
       expect(tokenRes.status).toBe(200);
       const tokens = await tokenRes.json();
-      expect(tokens.access_token).toBeTruthy();
-      expect(tokens.token_type).toBe("Bearer");
-      expect(tokens.refresh_token).toBeTruthy();
+      expect((tokens as any).access_token).toBeTruthy();
+      expect((tokens as any).token_type).toBe("Bearer");
+      expect((tokens as any).refresh_token).toBeTruthy();
     });
 
     test("handles refresh token grant", async () => {
@@ -278,7 +254,7 @@ describe("OAuth Authentication", () => {
 
       const codeVerifier = "test-verifier";
       const authCode = mockServer.simulateAuthorization({
-        clientId: clientInfo.client_id,
+        clientId: (clientInfo as any).client_id,
         redirectUri: "http://localhost:3000/callback",
         codeChallenge: Buffer.from(codeVerifier).toString("base64url"),
         codeChallengeMethod: "S256",
@@ -292,7 +268,7 @@ describe("OAuth Authentication", () => {
           code: authCode,
           code_verifier: codeVerifier,
           redirect_uri: "http://localhost:3000/callback",
-          client_id: clientInfo.client_id,
+          client_id: (clientInfo as any).client_id,
         }).toString(),
       });
 
@@ -305,8 +281,8 @@ describe("OAuth Authentication", () => {
         headers: { "Content-Type": "application/x-www-form-urlencoded" },
         body: new URLSearchParams({
           grant_type: "refresh_token",
-          refresh_token: initialTokens.refresh_token,
-          client_id: clientInfo.client_id,
+          refresh_token: (initialTokens as any).refresh_token,
+          client_id: (clientInfo as any).client_id,
         }).toString(),
       });
 
@@ -314,9 +290,13 @@ describe("OAuth Authentication", () => {
 
       expect(refreshRes.status).toBe(200);
       const newTokens = await refreshRes.json();
-      expect(newTokens.access_token).toBeTruthy();
-      expect(newTokens.access_token).not.toBe(initialTokens.access_token);
-      expect(newTokens.refresh_token).toBe(initialTokens.refresh_token); // Same refresh token
+      expect((newTokens as any).access_token).toBeTruthy();
+      expect((newTokens as any).access_token).not.toBe(
+        (initialTokens as any).access_token,
+      );
+      expect((newTokens as any).refresh_token).toBe(
+        (initialTokens as any).refresh_token,
+      ); // Same refresh token
     });
 
     test("rejects invalid authorization code", async () => {
@@ -336,50 +316,7 @@ describe("OAuth Authentication", () => {
 
       expect(tokenRes.status).toBe(401);
       const error = await tokenRes.json();
-      expect(error.error).toBe("invalid_client");
-    });
-  });
-
-  describe("McpClientManager", () => {
-    test("manages multiple server connections", async () => {
-      const manager = new McpClientManager({
-        name: "test-manager",
-        version: "1.0.0",
-      });
-
-      // Mock servers
-      const servers: McpServer[] = [
-        { type: "http", url: "http://server1.example.com" },
-        { type: "http", url: "http://server2.example.com" },
-      ];
-
-      // Note: In a real test, we'd need to mock the actual connection
-      // For now, just test the manager's interface
-      expect(manager.getAllConnections()).toHaveLength(0);
-
-      // Test getting non-existent connection
-      const connection = manager.getConnection("http://server1.example.com");
-      expect(connection).toBeUndefined();
-    });
-
-    test("provides tool discovery across connections", () => {
-      const manager = new McpClientManager();
-      const allTools = manager.getAllTools();
-
-      expect(Array.isArray(allTools)).toBe(true);
-      expect(allTools).toHaveLength(0);
-    });
-
-    test("handles disconnection gracefully", async () => {
-      const manager = new McpClientManager();
-
-      // Disconnect from non-existent server should not throw
-      await expect(
-        manager.disconnect("http://nonexistent.com"),
-      ).resolves.toBeUndefined();
-
-      // Disconnect all with no connections should not throw
-      await expect(manager.disconnectAll()).resolves.toBeUndefined();
+      expect((error as any).error).toBe("invalid_client");
     });
   });
 });

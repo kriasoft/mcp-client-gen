@@ -6,18 +6,18 @@ import type {
   AuthorizationServerMetadata,
   OAuthClientInformationFull,
   OAuthTokens,
-} from "@modelcontextprotocol/sdk/dist/esm/shared/auth.js";
+} from "@modelcontextprotocol/sdk/shared/auth.js";
 
 export interface MockOAuthServerConfig {
-  /** Base URL for the mock server */
+  /** Mock server endpoint base */
   baseUrl: string;
-  /** Whether to require client authentication */
+  /** Enforce client_secret in token requests */
   requireClientAuth?: boolean;
-  /** Custom metadata overrides */
+  /** Override default AS metadata */
   metadata?: Partial<AuthorizationServerMetadata>;
-  /** Custom resource metadata */
+  /** Override resource server metadata */
   resourceMetadata?: Partial<OAuthProtectedResourceMetadata>;
-  /** Mock access token lifetime in seconds */
+  /** Token expiry in seconds (default: 3600) */
   tokenLifetime?: number;
 }
 
@@ -40,14 +40,10 @@ interface AuthorizationCodeData {
 }
 
 /**
- * Mock OAuth server for testing
- *
- * This mock server simulates OAuth 2.0 endpoints for testing purposes:
- * - Protected Resource Metadata discovery
- * - Authorization Server Metadata discovery
- * - Dynamic client registration
- * - Authorization endpoint
- * - Token endpoint
+ * In-memory OAuth 2.1 server for tests.
+ * @endpoints .well-known/*, /register, /token
+ * @features RFC 7591 registration, PKCE validation
+ * @invariant Stateful - tracks clients/tokens/codes
  */
 export class MockOAuthServer {
   private config: MockOAuthServerConfig;
@@ -92,7 +88,8 @@ export class MockOAuthServer {
   }
 
   /**
-   * Handle incoming request based on URL
+   * Route request to appropriate handler.
+   * @returns Mock response or 404
    */
   async handleRequest(req: Request): Promise<Response> {
     const url = new URL(req.url);
@@ -156,7 +153,7 @@ export class MockOAuthServer {
       const clientInfo: OAuthClientInformationFull = {
         client_id: clientId,
         client_id_issued_at: Math.floor(Date.now() / 1000),
-        ...clientMetadata,
+        ...(clientMetadata as any),
       };
 
       // Add client_secret if not a public client
@@ -384,7 +381,7 @@ export class MockOAuthServer {
     if (authHeader?.startsWith("Basic ")) {
       const credentials = atob(authHeader.substring(6));
       const [clientId, clientSecret] = credentials.split(":");
-      const client = this.state.registeredClients.get(clientId);
+      const client = this.state.registeredClients.get(clientId || "");
 
       if (!client) {
         return { valid: false, error: "Unknown client" };

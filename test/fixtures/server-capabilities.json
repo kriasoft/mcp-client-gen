@@ -1,0 +1,84 @@
+{
+  "tools": [
+    {
+      "name": "createPage",
+      "description": "Create a new page in Notion",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "title": {
+            "type": "string",
+            "description": "Page title"
+          },
+          "content": {
+            "type": "string",
+            "description": "Page content in markdown"
+          },
+          "parentId": {
+            "type": "string",
+            "description": "Parent page or database ID"
+          }
+        },
+        "required": ["title"]
+      }
+    },
+    {
+      "name": "fetchPage",
+      "description": "Fetch a page by ID",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "pageId": {
+            "type": "string",
+            "description": "The ID of the page to fetch"
+          }
+        },
+        "required": ["pageId"]
+      }
+    },
+    {
+      "name": "searchPages",
+      "description": "Search for pages",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string",
+            "description": "Search query"
+          },
+          "limit": {
+            "type": "number",
+            "description": "Maximum number of results",
+            "default": 10
+          }
+        },
+        "required": ["query"]
+      }
+    }
+  ],
+  "resources": [
+    {
+      "uri": "notion://pages",
+      "name": "Pages",
+      "description": "List of all pages"
+    },
+    {
+      "uri": "notion://databases",
+      "name": "Databases",
+      "description": "List of all databases"
+    }
+  ],
+  "prompts": [
+    {
+      "name": "summarize",
+      "description": "Summarize a page",
+      "arguments": [
+        {
+          "name": "pageId",
+          "description": "ID of the page to summarize",
+          "required": true
+        }
+      ]
+    }
+  ]
+}

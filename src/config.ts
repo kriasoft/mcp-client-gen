@@ -5,9 +5,11 @@ import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import type { McpServer } from "./types.js";
 
-// Priority-ordered paths for MCP configuration discovery
-// .local files override non-local variants
-// https://code.visualstudio.com/docs/copilot/chat/mcp-servers
+/**
+ * Priority-ordered paths for MCP configuration discovery.
+ * .local files override non-local variants for local overrides.
+ * @see https://code.visualstudio.com/docs/copilot/chat/mcp-servers
+ */
 export const MCP_CONFIG_PATHS = [
   ".mcp.local.json",
   ".mcp.json",
@@ -17,6 +19,11 @@ export const MCP_CONFIG_PATHS = [
   ".vscode/mcp.json",
 ];
 
+/**
+ * Scan filesystem for MCP config files in priority order.
+ * @param cwd Working directory to search from
+ * @returns Absolute paths of existing config files
+ */
 export async function findMcpConfigFiles(
   cwd: string = process.cwd(),
 ): Promise<string[]> {
@@ -33,12 +40,11 @@ export async function findMcpConfigFiles(
 }
 
 /**
- * Parses MCP configuration files and extracts server definitions.
- *
- * Requirements:
- * - Deduplicate by URL: the first occurrence wins; later duplicates are ignored (by URL).
- * - Returns servers compatible with @modelcontextprotocol/sdk transports ("http" | "sse").
- * - Support Claude, Cursor, and VSCode formats; see @docs/mcp-config-formats.md.
+ * Parse MCP configs and extract unique server definitions.
+ * @param paths Config file paths to parse (in priority order)
+ * @returns Deduplicated servers (first URL occurrence wins)
+ * @invariant Only returns http/sse servers, skips stdio/command servers
+ * @supports Claude (.mcp.json), Cursor (.cursor/), VSCode (.vscode/) formats
  */
 export function getMcpServers(paths: string[]): McpServer[] {
   const servers: McpServer[] = [];
@@ -49,7 +55,7 @@ export function getMcpServers(paths: string[]): McpServer[] {
       const content = readFileSync(path, "utf8");
       const config = JSON.parse(content);
 
-      // Support both Claude/Cursor format (mcpServers) and VSCode format (servers)
+      // Claude/Cursor: mcpServers, VSCode: servers
       const isVSCodeFormat = !!config.servers;
       const serverConfigs = config.mcpServers || config.servers;
 
@@ -61,16 +67,16 @@ export function getMcpServers(paths: string[]): McpServer[] {
               typeof server.url === "string" ? server.url.trim() : "";
 
             if (trimmedUrl && !seenUrls.has(trimmedUrl)) {
-              // Determine server type: explicit type, or default based on format
+              // Infer type: explicit > format default (http)
               let serverType: "http" | "sse" | null = null;
 
               if (server.type === "http" || server.type === "sse") {
                 serverType = server.type;
               } else if (server.type === "stdio" || server.command) {
-                // Skip stdio servers
+                // stdio requires process spawning, not supported
                 continue;
               } else if (!server.type) {
-                // Default to HTTP for both VSCode and Cursor formats when no type is specified
+                // Missing type defaults to http for URL-based servers
                 if (isVSCodeFormat || config.mcpServers) {
                   serverType = "http";
                 }
@@ -88,7 +94,7 @@ export function getMcpServers(paths: string[]): McpServer[] {
         }
       }
     } catch (error) {
-      // Skip invalid JSON files silently
+      // Invalid JSON ignored - user may have WIP configs
       continue;
     }
   }
