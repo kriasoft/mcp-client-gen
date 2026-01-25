@@ -1,0 +1,184 @@
+/* SPDX-FileCopyrightText: 2025-present Kriasoft */
+/* SPDX-License-Identifier: MIT */
+
+/**
+ * Pipeline coordinator - orchestrates introspection → codegen → formatting.
+ *
+ * Contract: generateClient(servers, options?) → GenerationResult
+ * Invariant: Throws if all servers fail; generateClient() is pure (no file I/O).
+ */
+
+import { mkdir, writeFile } from "node:fs/promises";
+import { dirname } from "node:path";
+import { format as prettierFormat, resolveConfig } from "prettier";
+import { generateClientFile, type CodegenOptions } from "./codegen/index.js";
+import {
+  introspectServers,
+  type IntrospectionFailure,
+  type IntrospectionSuccess,
+} from "./introspection.js";
+import type { McpClientConfig } from "./mcp-client.js";
+import type { McpServerConfig } from "./types.js";
+
+export interface GenerationOptions extends CodegenOptions {
+  /** MCP client config for connections */
+  clientConfig?: McpClientConfig;
+  /** Format with Prettier (default: true) */
+  format?: boolean;
+  /** Output file path for Prettier config resolution */
+  outputPath?: string;
+}
+
+export interface GenerationResult {
+  code: string;
+  /** Exported factory function names (for CLI usage instructions) */
+  exports: string[];
+  servers: Map<string, IntrospectionSuccess>;
+  failures: Map<string, IntrospectionFailure>;
+}
+
+/**
+ * Extract a meaningful name from server config or URL.
+ * Priority: explicit name > URL hostname > fallback index
+ */
+export function extractServerName(
+  server: McpServerConfig,
+  index: number,
+): string {
+  if (server.name) return server.name;
+
+  try {
+    const url = new URL(server.url);
+    // Extract subdomain or first path segment as name
+    const hostname = url.hostname;
+    const parts = hostname.split(".");
+
+    // Handle subdomains like "api.notion.com" -> "notion"
+    if (parts.length >= 2) {
+      const name = parts.length > 2 ? parts[parts.length - 2] : parts[0];
+      if (name && name !== "www" && name !== "api") {
+        return name;
+      }
+    }
+
+    // Try first path segment
+    const pathSegment = url.pathname.split("/").filter(Boolean)[0];
+    if (pathSegment && pathSegment !== "mcp" && pathSegment !== "v1") {
+      return pathSegment;
+    }
+
+    return `server${index + 1}`;
+  } catch {
+    return `server${index + 1}`;
+  }
+}
+
+/**
+ * Format TypeScript code with Prettier.
+ * @param code Source code to format
+ * @param filePath File path for Prettier config resolution (searches up from this path)
+ * @returns Formatted code, or original if formatting fails
+ */
+export async function formatTypeScript(
+  code: string,
+  filePath?: string,
+): Promise<string> {
+  try {
+    const prettierConfig = (await resolveConfig(filePath ?? ".")) ?? {};
+    return await prettierFormat(code, {
+      ...prettierConfig,
+      parser: "typescript",
+    });
+  } catch {
+    return code;
+  }
+}
+
+/**
+ * Generate TypeScript client from MCP servers.
+ * Pipeline: introspect → aggregate → generate → format
+ *
+ * Note: This function does not write files. Use writeGeneratedClient() for that.
+ */
+export async function generateClient(
+  servers: McpServerConfig[],
+  options: GenerationOptions = {},
+): Promise<GenerationResult> {
+  if (servers.length === 0) {
+    throw new Error("No servers provided");
+  }
+
+  // Introspect all servers in parallel
+  const results = await introspectServers(servers, options.clientConfig);
+
+  // First pass: derive names and detect collisions
+  const names = results.map((result, i) => extractServerName(result.server, i));
+  const seen = new Map<string, number[]>();
+  for (let i = 0; i < names.length; i++) {
+    const name = names[i]!;
+    const indices = seen.get(name) ?? [];
+    indices.push(i);
+    seen.set(name, indices);
+  }
+
+  // Check for collisions and fail with actionable message
+  const collisions = [...seen.entries()].filter(
+    ([, indices]) => indices.length > 1,
+  );
+  if (collisions.length > 0) {
+    const details = collisions
+      .map(([name, indices]) => {
+        const urls = indices.map((i) => `  - ${servers[i]!.url}`).join("\n");
+        return `Name "${name}" from:\n${urls}`;
+      })
+      .join("\n\n");
+    throw new Error(
+      `Server name collision detected. Add explicit "name" property to distinguish:\n\n${details}`,
+    );
+  }
+
+  // Aggregate successes and failures by derived server name
+  const successes = new Map<string, IntrospectionSuccess>();
+  const failures = new Map<string, IntrospectionFailure>();
+
+  for (let i = 0; i < results.length; i++) {
+    const result = results[i]!;
+    const name = names[i]!;
+    if (!result.ok) {
+      failures.set(name, result);
+    } else {
+      successes.set(name, result);
+    }
+  }
+
+  // Require at least one successful server
+  if (successes.size === 0) {
+    const errorDetails = Array.from(failures.values())
+      .map((f) => `  - ${f.server.url}: ${f.error}`)
+      .join("\n");
+    throw new Error(`All servers failed to introspect:\n${errorDetails}`);
+  }
+
+  // Generate TypeScript code
+  const result = generateClientFile(successes, options);
+
+  // Format with Prettier
+  let code = result.code;
+  if (options.format !== false) {
+    code = await formatTypeScript(code, options.outputPath);
+  }
+
+  return { code, exports: result.exports, servers: successes, failures };
+}
+
+/**
+ * Write generated client code to a file.
+ * Creates parent directories if needed.
+ */
+export async function writeGeneratedClient(
+  outputPath: string,
+  code: string,
+): Promise<void> {
+  await mkdir(dirname(outputPath), { recursive: true });
+  await writeFile(outputPath, code, "utf-8");
+}

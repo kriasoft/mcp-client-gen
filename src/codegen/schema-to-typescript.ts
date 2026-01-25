@@ -13,7 +13,7 @@
  * Convert JSON Schema to TypeScript type string
  */
 export function jsonSchemaToTypeScript(schema: any): string {
-  if (!schema) return "any";
+  if (!schema) return "unknown";
 
   switch (schema.type) {
     case "string":
@@ -37,7 +37,7 @@ export function jsonSchemaToTypeScript(schema: any): string {
       return `${itemType}[]`;
 
     case "object":
-      if (!schema.properties) return "Record<string, any>";
+      if (!schema.properties) return "Record<string, unknown>";
 
       const props: string[] = [];
       const required = new Set(schema.required || []);
@@ -80,6 +80,6 @@ export function jsonSchemaToTypeScript(schema: any): string {
         return schema.allOf.map(jsonSchemaToTypeScript).join(" & ");
       }
 
-      return "any";
+      return "unknown";
   }
 }

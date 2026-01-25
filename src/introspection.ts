@@ -1,27 +1,53 @@
 /* SPDX-FileCopyrightText: 2025-present Kriasoft */
 /* SPDX-License-Identifier: MIT */
 
+/**
+ * Capability discovery - fetches tools/resources/prompts from MCP servers.
+ *
+ * Contract: introspectServer(server) → IntrospectionResult
+ * Invariant: Never throws for per-server failures; returns discriminated union.
+ */
+
 import type {
-  Tool,
-  Resource,
   Prompt,
+  Resource,
   ServerCapabilities,
+  Tool,
 } from "@modelcontextprotocol/sdk/types.js";
 import {
   createMcpConnection,
   type McpClientConfig,
   type McpConnection,
 } from "./mcp-client.js";
-import type { McpServer } from "./types.js";
+import type { McpServerConfig } from "./types.js";
 
-export interface IntrospectionResult {
-  server: McpServer;
-  capabilities?: ServerCapabilities;
+/**
+ * Successful introspection result with discovered capabilities.
+ */
+export interface IntrospectionSuccess {
+  ok: true;
+  server: McpServerConfig;
+  /** Server-advertised capabilities (empty object if none advertised) */
+  capabilities: ServerCapabilities;
   tools: Tool[];
   resources: Resource[];
   prompts: Prompt[];
-  error?: string;
 }
+
+/**
+ * Failed introspection result with error message.
+ */
+export interface IntrospectionFailure {
+  ok: false;
+  server: McpServerConfig;
+  error: string;
+}
+
+/**
+ * Result of introspecting an MCP server.
+ * Discriminated union: check `ok` to narrow the type.
+ */
+export type IntrospectionResult = IntrospectionSuccess | IntrospectionFailure;
 
 /**
  * Introspect a single MCP server to discover its capabilities.
@@ -30,7 +56,7 @@ export interface IntrospectionResult {
  * @returns Server capabilities or error
  */
 export async function introspectServer(
-  server: McpServer,
+  server: McpServerConfig,
   config?: McpClientConfig,
 ): Promise<IntrospectionResult> {
   let connection: McpConnection | undefined;
@@ -39,18 +65,17 @@ export async function introspectServer(
     connection = await createMcpConnection(server, config);
 
     return {
+      ok: true,
       server,
       capabilities: connection.capabilities,
-      tools: connection.tools || [],
-      resources: connection.resources || [],
-      prompts: connection.prompts || [],
+      tools: connection.tools,
+      resources: connection.resources,
+      prompts: connection.prompts,
     };
   } catch (error) {
     return {
+      ok: false,
       server,
-      tools: [],
-      resources: [],
-      prompts: [],
       error: error instanceof Error ? error.message : String(error),
     };
   } finally {
@@ -70,52 +95,10 @@ export async function introspectServer(
  * @param config Optional client configuration
  * @returns Array of introspection results (preserves input order)
  */
-export async function introspectServersParallel(
-  servers: McpServer[],
+export async function introspectServers(
+  servers: McpServerConfig[],
   config?: McpClientConfig,
 ): Promise<IntrospectionResult[]> {
   const promises = servers.map((server) => introspectServer(server, config));
   return Promise.all(promises);
-}
-
-/**
- * Cache for server capabilities to avoid repeated introspection.
- * Key format: `${server.type}:${server.url}`
- */
-const capabilityCache = new Map<string, IntrospectionResult>();
-
-/**
- * Get cached server capabilities or introspect if not cached.
- * @param server MCP server configuration
- * @param config Optional client configuration
- * @param forceRefresh Skip cache and force fresh introspection
- * @returns Server capabilities
- */
-export async function getCachedCapabilities(
-  server: McpServer,
-  config?: McpClientConfig,
-  forceRefresh = false,
-): Promise<IntrospectionResult> {
-  const cacheKey = `${server.type}:${server.url}`;
-
-  if (!forceRefresh) {
-    const cached = capabilityCache.get(cacheKey);
-    if (cached) {
-      return cached;
-    }
-  }
-
-  const result = await introspectServer(server, config);
-  if (!result.error) {
-    capabilityCache.set(cacheKey, result);
-  }
-
-  return result;
-}
-
-/**
- * Clear the capability cache.
- */
-export function clearCapabilityCache(): void {
-  capabilityCache.clear();
 }

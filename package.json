@@ -1,37 +1,34 @@
 {
   "name": "mcp-client-gen",
-  "version": "0.0.4",
-  "description": "Interactive CLI tool that generates type-safe TypeScript clients from MCP servers",
-  "module": "dist/index.js",
+  "version": "0.0.5",
+  "description": "Generate type-safe TypeScript clients from MCP (Model Context Protocol) servers",
   "type": "module",
+  "exports": {
+    ".": "./dist/index.js",
+    "./internal": "./dist/internal.js"
+  },
   "bin": {
     "mcp-client-gen": "./dist/cli.js"
   },
   "files": [
-    "dist"
+    "dist",
+    "src"
   ],
   "keywords": [
     "mcp",
-    "mcp-client",
-    "client",
-    "generator",
-    "sdk",
-    "codegen",
-    "anthropic",
-    "cli",
-    "interactive",
-    "typescript",
-    "api-client",
-    "prompts",
-    "schema",
-    "tool",
-    "type-safe",
     "model-context-protocol",
-    "oauth",
-    "oauth2",
-    "authentication",
-    "pkce",
-    "rfc7591"
+    "typescript",
+    "codegen",
+    "generator",
+    "client",
+    "sdk",
+    "cli",
+    "type-safe",
+    "api-client",
+    "ai",
+    "llm",
+    "claude",
+    "cursor"
   ],
   "author": "Konstantin Tarkus <koistya@kriasoft.com>",
   "license": "MIT",
@@ -40,24 +37,31 @@
     "type": "git",
     "url": "https://github.com/kriasoft/mcp-client-gen.git"
   },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
   "homepage": "https://github.com/kriasoft/mcp-client-gen",
   "bugs": {
     "url": "https://github.com/kriasoft/mcp-client-gen/issues"
   },
   "dependencies": {
     "@clack/prompts": "^0.11.0",
-    "oauth-callback": "^1.2.0",
-    "ts-morph": "^26.0.0"
+    "oauth-callback": "^2.2.0",
+    "open": "^11.0.0",
+    "ts-morph": "^27.0.2"
   },
   "peerDependencies": {
-    "@modelcontextprotocol/sdk": "^1.17.2",
-    "typescript": "^5.9.2"
+    "@modelcontextprotocol/sdk": "^1.25.3",
+    "typescript": "^5.9.3"
   },
   "devDependencies": {
-    "@modelcontextprotocol/sdk": "^1.17.3",
-    "@types/bun": "latest",
-    "prettier": "^3.6.2",
-    "typescript": "^5.9.2"
+    "@modelcontextprotocol/sdk": "^1.25.3",
+    "@types/bun": "1.3.6",
+    "dotenv": "^17.2.3",
+    "prettier": "^3.8.1",
+    "srcpack": "^0.1.14",
+    "typescript": "^5.9.3"
   },
   "prettier": {
     "trailingComma": "all",
@@ -76,6 +80,9 @@
     "format": "bun prettier --write .",
     "format:check": "bun prettier --check .",
     "validate": "bun run format:check && bun run typecheck && bun run test:all",
+    "capture:notion": "bun run test/manual/capture-notion.ts",
+    "smoke:notion": "bun run test/manual/smoke-notion.ts",
+    "e2e:notion": "bun run test/manual/e2e-notion.ts",
     "prepublishOnly": "bun run build"
   }
 }

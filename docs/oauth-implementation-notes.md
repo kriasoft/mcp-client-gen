@@ -109,22 +109,22 @@ This prevents replay attacks and ensures the protection flag is set at the right
 
 ## Key Files
 
-- `src/oauth-provider.ts` - Main OAuth provider with workarounds
-- `src/oauth-storage.ts` - Storage interface and implementations
-- `test/manual/notion-generate.ts` - Working example with OAuth that generates Notion client
+- `src/mcp-client.ts` - MCP connection with OAuth via oauth-callback package
+- `test/manual/capture-notion.ts` - Capture fixtures and generate example client
+- `test/manual/e2e-notion.ts` - E2E test with real Notion server
 - `test/e2e/notion.spec.ts` - E2E test with OAuth flow
 
 ## Testing OAuth
 
 ```bash
-# Generate Notion client with OAuth (requires browser authorization)
-bun run test/manual/notion-generate.ts
+# Capture fixtures + generate example (requires browser authorization)
+bun capture:notion
 
-# Run E2E tests with OAuth
+# E2E test with real Notion server
+bun e2e:notion
+
+# Run E2E tests
 bun test:e2e
-
-# Test OAuth provider with mock server (no browser needed)
-bun test src/oauth-provider.test.ts
 ```
 
 ## Common Errors and Solutions

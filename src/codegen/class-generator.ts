@@ -19,8 +19,13 @@ import {
   Scope,
   type SourceFile,
 } from "ts-morph";
-import type { IntrospectionResult } from "../introspection.js";
+import type { IntrospectionSuccess } from "../introspection.js";
+import { hasOutputSchema } from "./tool-input-generator.js";
 import { camelCase, pascalCase } from "./utils.js";
+
+// Return type names from MCP SDK (imported by file-builder.ts)
+const RESOURCE_CONTENT_TYPE = "TextResourceContents | BlobResourceContents";
+const PROMPT_MESSAGE_TYPE = "PromptMessage[]";
 
 /**
  * Generate client class for an MCP server
@@ -28,7 +33,7 @@ import { camelCase, pascalCase } from "./utils.js";
 export function generateClientClass(
   sourceFile: SourceFile,
   serverName: string,
-  result: IntrospectionResult,
+  result: IntrospectionSuccess,
 ): ClassDeclaration {
   const className = pascalCase(serverName) + "Client";
 
@@ -40,12 +45,6 @@ export function generateClientClass(
   // Add JSDoc
   classDecl.addJsDoc({
     description: `MCP client for ${serverName} server`,
-    tags: [
-      {
-        tagName: "generated",
-        text: new Date().toISOString(),
-      },
-    ],
   });
 
   // Add private connection property
@@ -65,6 +64,17 @@ export function generateClientClass(
     ],
     statements: ["this.connection = connection;"],
   });
+
+  // Add client getter for advanced operations (streaming, etc.)
+  const clientGetter = classDecl.addGetAccessor({
+    name: "client",
+    returnType: "Client",
+  });
+  clientGetter.addJsDoc({
+    description:
+      "Access underlying MCP client for advanced operations (streaming, raw requests)",
+  });
+  clientGetter.addStatements(["return this.connection.client;"]);
 
   // Generate methods for each tool
   for (const tool of result.tools) {
@@ -93,6 +103,9 @@ function generateToolMethod(
 ): MethodDeclaration {
   const methodName = camelCase(tool.name);
   const inputType = tool.inputSchema ? pascalCase(tool.name) + "Input" : "void";
+  const outputType = hasOutputSchema(tool)
+    ? pascalCase(tool.name) + "Output"
+    : "any";
 
   const method = classDecl.addMethod({
     name: methodName,
@@ -106,7 +119,7 @@ function generateToolMethod(
             },
           ]
         : [],
-    returnType: "Promise<any>", // TODO: Generate output types when available
+    returnType: `Promise<${outputType}>`,
   });
 
   // Add JSDoc
@@ -146,7 +159,7 @@ function generateResourceMethods(
         type: "string",
       },
     ],
-    returnType: "Promise<any>",
+    returnType: `Promise<${RESOURCE_CONTENT_TYPE}>`,
   });
 
   method.addJsDoc({
@@ -170,7 +183,7 @@ function generateResourceMethods(
       const resourceMethod = classDecl.addMethod({
         name: "get" + pascalCase(resource.name),
         isAsync: true,
-        returnType: "Promise<any>",
+        returnType: `Promise<${RESOURCE_CONTENT_TYPE}>`,
       });
 
       if (resource.description) {
@@ -217,7 +230,7 @@ function generatePromptMethods(
               },
             ]
           : [],
-      returnType: "Promise<any>",
+      returnType: `Promise<${PROMPT_MESSAGE_TYPE}>`,
     });
 
     if (prompt.description) {

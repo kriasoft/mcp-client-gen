@@ -1,11 +1,23 @@
 # MCP Client Generator
 
+@AGENTS.local.md
+
+## Documentation
+
+**ADRs** (`docs/adr/NNN-slug.md`): Architectural decisions (reference as ADR-NNN)  
+**SPECs** (`docs/specs/slug.md`): Design specifications (reference as SPEC-slug)
+
 ## Run Commands
 
 ```bash
-npx mcp-client-gen              # Interactive mode with prompts
-npx mcp-client-gen -y           # Quick mode, accept defaults
-npx mcp-client-gen <output>     # Direct mode with output file
+# URL mode (primary)
+npx mcp-client-gen <url>                    # Generate to stdout
+npx mcp-client-gen <url> -o <file>          # Generate to file
+npx mcp-client-gen <url> <file>             # Shorthand
+
+# Config mode (uses .mcp.json, .cursor/, .vscode/)
+npx mcp-client-gen                          # Interactive
+npx mcp-client-gen -y                       # Quick defaults
 ```
 
 ## Test Commands
@@ -23,7 +35,10 @@ bun validate                    # Full validation (format, typecheck, tests)
 ## Manual Test Scripts
 
 ```bash
-bun run test/manual/notion-generate.ts    # Generate Notion MCP client with OAuth
+bun capture:notion                  # Capture fixtures + generate example
+bun capture:notion --fixtures-only  # Capture fixtures only
+bun smoke:notion                    # Smoke test generated client (no server)
+bun e2e:notion                      # E2E test with real Notion server
 ```
 
 ## File Map
@@ -31,57 +46,55 @@ bun run test/manual/notion-generate.ts    # Generate Notion MCP client with OAut
 ```bash
 mcp-client-gen/
 ├── src/
-│   ├── index.ts           # Main library entry point - public API exports
+│   ├── index.ts           # Public API exports
+│   ├── internal.ts        # Internal API exports (mcp-client-gen/internal)
 │   │
 │   # CLI & User Interface
-│   ├── cli.ts             # CLI entry point - argument parsing, execution modes
-│   ├── prompts.ts         # Interactive prompts using @clack/prompts
+│   ├── cli.ts             # CLI entry - argument parsing, execution modes
+│   ├── prompts.ts         # Interactive prompts (@clack/prompts)
 │   │
 │   # Configuration
 │   ├── config.ts          # MCP config loading (.mcp.json, .cursor/, .vscode/)
-│   ├── types.ts           # TypeScript type definitions for all modules
+│   ├── types.ts           # Core type definitions (McpServerConfig)
 │   │
 │   # MCP Protocol
-│   ├── mcp-client.ts      # MCP server communication (HTTP/SSE/stdio)
+│   ├── mcp-client.ts      # MCP connection (HTTP/SSE), OAuth via oauth-callback
 │   ├── introspection.ts   # Server capability discovery and caching
-│   ├── schema.ts          # JSON Schema validation and transformation
-│   │
-│   # Authentication
-│   ├── oauth-provider.ts  # OAuth 2.1 with RFC 7591 dynamic registration
-│   ├── oauth-storage.ts   # Token storage interfaces and implementations
 │   │
 │   # Code Generation
-│   ├── codegen.ts         # TypeScript AST generation using ts-morph
-│   ├── generator.ts       # Pipeline orchestrator - coordinates all steps
+│   ├── codegen/
+│   │   ├── index.ts           # Codegen module exports
+│   │   ├── file-builder.ts    # Assembles complete TypeScript file
+│   │   ├── class-generator.ts # Client class with tool/resource methods
+│   │   ├── tool-input-generator.ts # Tool input interfaces
+│   │   ├── schema-to-typescript.ts # JSON Schema → TypeScript types
+│   │   └── utils.ts           # camelCase, pascalCase helpers
 │   │
-│   └── utils.ts           # Shared utilities (string ops, file ops, etc.)
+│   ├── pipeline.ts        # Pipeline orchestrator - coordinates all steps
+│   └── utils.ts           # Shared utilities
+│
+├── docs/
+│   ├── adr/               # Architecture Decision Records
+│   └── specs/             # Design specifications
 │
 ├── test/
-│   ├── e2e/                     # End-to-end automated tests (.spec.ts)
-│   ├── manual/                  # Manual integration scripts
-│   │   └── notion-generate.ts   # Generate Notion client with OAuth
-│   ├── fixtures/                # Test data and mock responses
-│   └── utils/                   # Test utilities (mock servers, helpers)
+│   ├── e2e/               # End-to-end tests (.spec.ts)
+│   ├── fixtures/          # Test fixtures
+│   │   ├── notion/        # Real Notion server data
+│   │   └── synthetic/     # Minimal/edge-case schemas
+│   └── manual/            # Manual capture scripts
 │
-├── examples/                    # Example generated clients and usage
-│   ├── notion-generated.ts      # Generated Notion client (from manual test)
-│   ├── notion-capabilities.json # Notion server capabilities
-│   └── notion-usage.ts          # Usage examples for Notion client
+├── examples/              # Example generated clients
+│   └── notion-client.ts
 │
-└── package.json                 # Project configuration and dependencies
+└── package.json
 ```
 
-## Processing Pipeline
+## Pipeline
 
-CLI → Config → Connect → Introspect → Generate → Output
+`CLI → Config → Connect → Introspect → Generate → Output`
 
-- `cli.ts` → Parse args, determine mode (interactive/-y/direct)
-- `config.ts` + `prompts.ts` → Find & load MCP configs, select servers
-- `mcp-client.ts` → Establish server connections, handle OAuth auth
-- `introspection.ts` → Fetch tools/resources/prompts schemas
-- `codegen.ts` → Build TypeScript AST with types & client methods
-- `generator.ts` → Coordinate pipeline, format code, handle errors
-- Output → Write formatted TypeScript file with usage instructions
+Keep module DAG clean: lower modules must not import from higher ones.
 
 ## Key Constraints
 
@@ -90,10 +103,67 @@ CLI → Config → Connect → Introspect → Generate → Output
 - Generated Client: Must be tree-shakable for optimal bundle size
 - Design Philosophy: Prioritize ideal design over backward compatibility
 
-## Architecture Patterns
+## Error Handling
 
-- Provider Pattern: OAuth providers (oauth-provider.ts)
-- Factory Pattern: Dynamic client generation (generator.ts)
-- Pipeline Pattern: Sequential processing (generator.ts workflow)
-- Strategy Pattern: Multiple config formats (config.ts)
-- Repository Pattern: OAuth storage interfaces (oauth-storage.ts)
+- **Throw errors** for unrecoverable failures (missing config, all servers failed)
+- **Discriminated unions** for per-item failures (introspection returns `{ ok: true, ... } | { ok: false, error }`)
+- **Console.warn** for non-fatal issues (single capability fetch failure)
+- Error messages: include context ("Tool 'search' error: ..."), never stack traces to users
+
+## Naming Conventions
+
+- Files: `kebab-case.ts`
+- Constants: `SCREAMING_SNAKE_CASE`
+- Private fields: `_underscorePrefix`
+
+## Testing Guidelines
+
+**What to test:**
+
+- Pure functions (schema conversion, name extraction)
+- Error conditions and edge cases
+- Config parsing with various formats
+
+**What to mock:**
+
+- MCP server connections (use fixtures)
+- File system for config discovery
+- OAuth flows (use in-memory store)
+
+**Test file naming:**
+
+- Unit tests: `{module}.test.ts` in same directory
+- E2E tests: `test/e2e/{feature}.spec.ts`
+
+## Public API
+
+```typescript
+import { generateClient, browserAuth } from "mcp-client-gen";
+```
+
+- `generateClient(servers, options?)` — generate TypeScript client
+- `writeGeneratedClient(path, code)` — write generated code to file
+- `createMcpConnection(server, config?)` — establish MCP connection
+- `resolveConfigFiles(options?)` — resolve config paths (explicit or discovery)
+- `getMcpServers(paths)` — parse config files, returns `{ servers, warnings }`
+- `formatConfigWarning(warning)` — format a config warning for display
+- `findMcpConfigFiles(cwd?)` — discover config files
+- `formatTypeScript(code, configPath?)` — format code with Prettier
+- `browserAuth()`, `inMemoryStore()`, `fileStore()` — OAuth helpers
+
+Types: `McpServerConfig`, `ConfigWarning`, `ParseServersResult`, `McpConnection`, `McpClientConfig`, `GenerationOptions`, `GenerationResult`, `IntrospectionResult`, `ResolveConfigOptions`, `Tool`, `Resource`, `Prompt`, `ServerCapabilities`
+
+## Internal API
+
+```typescript
+import {
+  introspectServer,
+  jsonSchemaToTypeScript,
+} from "mcp-client-gen/internal";
+```
+
+Not covered by semver — use for custom pipelines:
+
+- `introspectServer()`, `introspectServers()`
+- `generateClientFile()`, `generateClientClass()`, `generateToolInterface()`, `generateToolOutputInterface()`
+- `jsonSchemaToTypeScript()`, `hasOutputSchema()`, `MCP_CONFIG_PATHS`, `extractServerName()`

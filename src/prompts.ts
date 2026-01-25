@@ -1,6 +1,13 @@
 /* SPDX-FileCopyrightText: 2025-present Kriasoft */
 /* SPDX-License-Identifier: MIT */
 
+/**
+ * Interactive prompts - wizard for config/server selection and output path.
+ *
+ * Contract: runInteractiveSetup(cwd, useDefaults?) → PromptsResult
+ * Owns: User interaction via @clack/prompts. Does not own: validation rules.
+ */
+
 import {
   cancel,
   intro,
@@ -12,12 +19,18 @@ import {
 } from "@clack/prompts";
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
-import { findMcpConfigFiles, getMcpServers } from "./config.js";
-import type { McpServer } from "./types.js";
+import {
+  findMcpConfigFiles,
+  formatConfigWarning,
+  getMcpServers,
+  resolveConfigFiles,
+} from "./config.js";
+import type { GenerationResult } from "./pipeline.js";
+import type { McpServerConfig } from "./types.js";
 
 export interface PromptsResult {
   configFiles: string[];
-  servers: McpServer[];
+  servers: McpServerConfig[];
   outputFile: string;
 }
 
@@ -63,10 +76,19 @@ export async function promptForConfigFiles(
  */
 export async function promptForServers(
   configFiles: string[],
-): Promise<McpServer[]> {
-  const allServers = getMcpServers(configFiles);
+): Promise<McpServerConfig[]> {
+  const { servers, warnings } = getMcpServers(configFiles);
 
-  if (allServers.length === 0) {
+  // Show warnings in interactive mode
+  if (warnings.length > 0) {
+    console.log("\nConfig warnings:");
+    for (const warning of warnings) {
+      console.log(`  - ${formatConfigWarning(warning)}`);
+    }
+    console.log();
+  }
+
+  if (servers.length === 0) {
     throw new Error(
       "No valid MCP servers found in configuration files. Check your .mcp.json configuration.",
     );
@@ -74,12 +96,12 @@ export async function promptForServers(
 
   const serverSelection = await multiselect({
     message: "Select MCP servers to include:",
-    options: allServers.map((server) => ({
+    options: servers.map((server) => ({
       value: server,
       label: `${server.url}`,
       hint: `Type: ${server.type}`,
     })),
-    initialValues: allServers, // Select all by default
+    initialValues: servers, // Select all by default
     required: true,
   });
 
@@ -88,7 +110,7 @@ export async function promptForServers(
     process.exit(0);
   }
 
-  return serverSelection as McpServer[];
+  return serverSelection as McpServerConfig[];
 }
 
 /**
@@ -125,26 +147,38 @@ export async function promptForOutputFile(
   return outputPath.trim();
 }
 
+export interface SetupOptions {
+  /** Skip prompts, use defaults */
+  useDefaults?: boolean;
+  /** Explicit config file path (skips config discovery/selection) */
+  configPath?: string;
+}
+
 /**
  * Interactive wizard or quick mode with defaults.
- * @param useDefaults Skip prompts with -y flag
+ * @param cwd Working directory
+ * @param options Setup options
  * @returns Complete generation config
  */
 export async function runInteractiveSetup(
   cwd: string = process.cwd(),
-  useDefaults: boolean = false,
+  options: SetupOptions = {},
 ): Promise<PromptsResult> {
+  const { useDefaults = false, configPath } = options;
+
   if (useDefaults) {
     // Quick mode: all servers, default output path
-    const configFiles = await findMcpConfigFiles(cwd);
-    if (configFiles.length === 0) {
-      throw new Error(
-        "No MCP configuration files found. Create a .mcp.json file with your MCP server configuration.",
-      );
-    }
+    const configFiles = await resolveConfigFiles({ cwd, configPath });
+    const { servers, warnings } = getMcpServers(configFiles);
 
-    const servers = getMcpServers(configFiles);
     if (servers.length === 0) {
+      // Show warnings when no servers found to help debugging
+      if (warnings.length > 0) {
+        console.log("\nConfig warnings:");
+        for (const warning of warnings) {
+          console.log(`  - ${formatConfigWarning(warning)}`);
+        }
+      }
       throw new Error(
         "No valid MCP servers found in configuration files. Check your .mcp.json configuration.",
       );
@@ -164,11 +198,17 @@ export async function runInteractiveSetup(
       outputFile,
     };
   }
+
   intro("🧩 MCP Client Generator");
 
   try {
-    // Step 1: Choose which config files to use
-    const configFiles = await promptForConfigFiles(cwd);
+    // Step 1: Choose config files (skip prompt if --config provided)
+    let configFiles: string[];
+    if (configPath) {
+      configFiles = await resolveConfigFiles({ cwd, configPath });
+    } else {
+      configFiles = await promptForConfigFiles(cwd);
+    }
 
     // Step 2: Pick servers to generate client for
     const servers = await promptForServers(configFiles);
@@ -192,46 +232,39 @@ export async function runInteractiveSetup(
 }
 
 /**
- * Sequential server introspection with progress.
- * @returns Mock results (TODO: wire real McpClientManager)
+ * Show progress spinner while generating client.
+ * @param servers Servers being processed
+ * @param generateFn The generate function to run
+ * @returns Generation result
  */
-export async function introspectServers(servers: McpServer[]) {
+export async function showGenerationProgress(
+  servers: McpServerConfig[],
+  generateFn: () => Promise<GenerationResult>,
+): Promise<GenerationResult> {
   const s = spinner();
   s.start(
     `Introspecting ${servers.length} MCP server${servers.length !== 1 ? "s" : ""}...`,
   );
 
-  const results = [];
+  try {
+    const result = await generateFn();
 
-  for (const [index, server] of servers.entries()) {
-    s.message(
-      `[${index + 1}/${servers.length}] Connecting to ${server.url}...`,
+    const totalTools = Array.from(result.servers.values()).reduce(
+      (sum, r) => sum + r.tools.length,
+      0,
     );
-    // TODO: McpClientManager.addServer()
-    await new Promise((resolve) => setTimeout(resolve, 800));
-
-    s.message(
-      `[${index + 1}/${servers.length}] Fetching capabilities from ${server.url}...`,
+    const totalResources = Array.from(result.servers.values()).reduce(
+      (sum, r) => sum + r.resources.length,
+      0,
     );
-    // TODO: connection.client.listTools/Resources/Prompts()
-    await new Promise((resolve) => setTimeout(resolve, 600));
 
-    // Mock capabilities for development
-    results.push({
-      server,
-      tools: Math.floor(Math.random() * 10) + 5,
-      resources: Math.floor(Math.random() * 5),
-      prompts: Math.floor(Math.random() * 3),
-    });
+    s.stop(
+      `Introspected ${result.servers.size} server${result.servers.size !== 1 ? "s" : ""}: ${totalTools} tools, ${totalResources} resources`,
+    );
+
+    return result;
+  } catch (error) {
+    s.stop(`Failed to introspect servers`);
+    throw error;
   }
-
-  const totalTools = results.reduce((sum, r) => sum + r.tools, 0);
-  const totalResources = results.reduce((sum, r) => sum + r.resources, 0);
-  const totalPrompts = results.reduce((sum, r) => sum + r.prompts, 0);
-
-  s.stop(
-    `✅ Successfully introspected ${servers.length} server${servers.length !== 1 ? "s" : ""}: ${totalTools} tools, ${totalResources} resources, ${totalPrompts} prompts`,
-  );
-
-  return results;
 }
