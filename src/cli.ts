@@ -11,14 +11,21 @@
 
 import { resolve } from "node:path";
 import { parseArgs } from "node:util";
+import open from "open";
 import {
   formatConfigWarning,
   getMcpServers,
   resolveConfigFiles,
 } from "./config.js";
+import type { McpClientConfig } from "./mcp-client.js";
 import { generateClient, writeGeneratedClient } from "./pipeline.js";
 import { runInteractiveSetup, showGenerationProgress } from "./prompts.js";
 import type { McpServerConfig } from "./types.js";
+
+/** Default client config for CLI - enables browser-based OAuth */
+const CLI_CLIENT_CONFIG: McpClientConfig = {
+  oauth: { launch: open },
+};
 
 /**
  * CLI execution modes - explicitly modeled for clarity and extensibility.
@@ -172,6 +179,7 @@ async function runGeneration(servers: McpServerConfig[], outputFile: string) {
 
   const result = await showGenerationProgress(servers, () =>
     generateClient(servers, {
+      clientConfig: CLI_CLIENT_CONFIG,
       treeShakable: true,
       outputPath: absoluteOutput,
     }),
@@ -213,7 +221,10 @@ async function main() {
           await runGeneration([server], mode.output);
         } else {
           // Stdout: just output the code
-          const result = await generateClient([server], { treeShakable: true });
+          const result = await generateClient([server], {
+            clientConfig: CLI_CLIENT_CONFIG,
+            treeShakable: true,
+          });
           process.stdout.write(result.code);
         }
       } catch (error) {
