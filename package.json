@@ -1,6 +1,6 @@
 {
   "name": "mcp-client-gen",
-  "version": "0.0.9",
+  "version": "0.1.0",
   "description": "Generate type-safe TypeScript clients from MCP (Model Context Protocol) servers",
   "type": "module",
   "main": "./dist/index.js",
