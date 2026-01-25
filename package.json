@@ -1,11 +1,18 @@
 {
   "name": "mcp-client-gen",
-  "version": "0.0.7",
+  "version": "0.0.8",
   "description": "Generate type-safe TypeScript clients from MCP (Model Context Protocol) servers",
   "type": "module",
+  "main": "./dist/index.js",
   "exports": {
-    ".": "./dist/index.js",
-    "./internal": "./dist/internal.js"
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./dist/index.js"
+    },
+    "./internal": {
+      "types": "./src/internal.ts",
+      "default": "./dist/internal.js"
+    }
   },
   "bin": {
     "mcp-client-gen": "./dist/cli.js"
