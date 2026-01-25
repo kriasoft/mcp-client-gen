@@ -1,6 +1,6 @@
 {
   "name": "mcp-client-gen",
-  "version": "0.0.5",
+  "version": "0.0.6",
   "description": "Generate type-safe TypeScript clients from MCP (Model Context Protocol) servers",
   "type": "module",
   "exports": {
@@ -71,7 +71,7 @@
     "endOfLine": "lf"
   },
   "scripts": {
-    "build": "bun build src/cli.ts --outdir dist --target node --sourcemap",
+    "build": "bun build src/cli.ts src/index.ts src/internal.ts --outdir dist --target node --sourcemap",
     "clean": "rm -rf dist",
     "test": "bun test src",
     "test:e2e": "bun test test/e2e",
