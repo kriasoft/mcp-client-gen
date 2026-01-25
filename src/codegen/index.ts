@@ -1,20 +1,24 @@
+/* SPDX-FileCopyrightText: 2025-present Kriasoft */
+/* SPDX-License-Identifier: MIT */
+
 /**
- * Code generation module for MCP client TypeScript files.
+ * Codegen module - transforms introspected data into TypeScript code.
  *
- * Use examples/notion.ts as a template/reference for the generated client structure:
- * - Type-safe interfaces for tool inputs/outputs
- * - Client class with connection management
- * - Error handling with handleToolResult utility
- * - Async connection lifecycle (ensureConnected pattern)
- * - Resource disposal with Symbol.asyncDispose
- *
- * SPDX-FileCopyrightText: 2025-present Kriasoft
- * SPDX-License-Identifier: MIT
+ * Contract: generateClientFile(servers, options?) → CodegenResult { code, exports }
+ * Owns: AST generation, naming rules, export structure. Does not own: MCP protocol.
  */
 
 // Re-export all public APIs
 export { generateClientClass } from "./class-generator.js";
-export { generateClientFile, type CodegenOptions } from "./file-builder.js";
-export { generateToolInterface } from "./interface-generator.js";
-export { jsonSchemaToTypeScript } from "./schema-converter.js";
+export {
+  generateClientFile,
+  type CodegenOptions,
+  type CodegenResult,
+} from "./file-builder.js";
+export { jsonSchemaToTypeScript } from "./schema-to-typescript.js";
+export {
+  generateToolInterface,
+  generateToolOutputInterface,
+  hasOutputSchema,
+} from "./tool-input-generator.js";
 export { camelCase, pascalCase } from "./utils.js";

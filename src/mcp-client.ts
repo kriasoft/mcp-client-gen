@@ -1,24 +1,31 @@
 /* SPDX-FileCopyrightText: 2025-present Kriasoft */
 /* SPDX-License-Identifier: MIT */
 
+/**
+ * Runtime MCP adapter - creates SDK clients, selects transport, wires OAuth.
+ *
+ * Contract: createMcpConnection(server, config?) → McpConnection
+ * Invariant: Throws on connection failure; never exposes SDK internals.
+ */
+
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
 import {
   StreamableHTTPClientTransport,
   type StreamableHTTPClientTransportOptions,
 } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
 import type {
-  Tool,
-  Resource,
   Prompt,
+  Resource,
   ServerCapabilities,
+  Tool,
 } from "@modelcontextprotocol/sdk/types.js";
-import type { McpServer } from "./types.js";
 import {
   browserAuth,
   type BrowserAuthOptions,
   inMemoryStore,
 } from "oauth-callback/mcp";
+import type { McpServerConfig } from "./types.js";
 
 export interface McpClientConfig {
   /** Client identifier sent to servers */
@@ -35,11 +42,27 @@ export interface McpClientConfig {
 
 export interface McpConnection {
   client: Client;
-  server: McpServer;
-  capabilities?: ServerCapabilities;
-  tools?: Tool[];
-  resources?: Resource[];
-  prompts?: Prompt[];
+  server: McpServerConfig;
+  /** Server-advertised capabilities (empty object if none advertised) */
+  capabilities: ServerCapabilities;
+  tools: Tool[];
+  resources: Resource[];
+  prompts: Prompt[];
+}
+
+/**
+ * Wrap fetch to inject headers for every request.
+ */
+function createFetchWithHeaders(
+  baseFetch: typeof fetch | undefined,
+  headers: Record<string, string>,
+): typeof fetch {
+  const originalFetch = baseFetch || globalThis.fetch;
+  return ((url: URL | string, init?: RequestInit) =>
+    originalFetch(url, {
+      ...init,
+      headers: { ...headers, ...init?.headers },
+    })) as typeof fetch;
 }
 
 /**
@@ -50,7 +73,7 @@ export interface McpConnection {
  * @throws On unsupported server type or connection failure
  */
 export async function createMcpConnection(
-  server: McpServer,
+  server: McpServerConfig,
   config: McpClientConfig = {},
 ): Promise<McpConnection> {
   const clientInfo = {
@@ -71,84 +94,89 @@ export async function createMcpConnection(
       scope: config.oauth?.scope,
       clientId: config.oauth?.clientId,
       clientSecret: config.oauth?.clientSecret,
-      openBrowser: config.oauth?.openBrowser ?? true,
+      launch: config.oauth?.launch,
       authTimeout: config.oauth?.authTimeout || 300000,
-      usePKCE: config.oauth?.usePKCE ?? true,
     });
   }
 
-  // Transport factory: http (streaming), sse (event stream)
-  let transport;
-  if (server.type === "http") {
-    const transportOptions: StreamableHTTPClientTransportOptions = {
-      authProvider,
-      fetch: config.fetch,
-    };
-
-    if (config.timeout) {
-      transportOptions.requestInit = {
-        signal: AbortSignal.timeout(config.timeout),
+  // Transport factory - creates fresh transport for OAuth retry
+  const createTransport = () => {
+    if (server.type === "http") {
+      const transportOptions: StreamableHTTPClientTransportOptions = {
+        authProvider,
+        fetch: config.fetch,
       };
+
+      // Apply timeout and/or server headers via requestInit
+      if (config.timeout || server.headers) {
+        transportOptions.requestInit = {
+          ...(config.timeout && {
+            signal: AbortSignal.timeout(config.timeout),
+          }),
+          ...(server.headers && { headers: server.headers }),
+        };
+      }
+
+      return new StreamableHTTPClientTransport(
+        new URL(server.url),
+        transportOptions,
+      );
+    } else if (server.type === "sse") {
+      // SSE transport: wrap fetch to inject headers if needed
+      const baseFetch = config.fetch;
+      const fetchWithHeaders = server.headers
+        ? createFetchWithHeaders(baseFetch, server.headers)
+        : baseFetch;
+
+      return new SSEClientTransport(new URL(server.url), {
+        authProvider,
+        fetch: fetchWithHeaders,
+      });
+    } else {
+      throw new Error(`Unsupported server type: ${server.type}`);
     }
+  };
 
-    transport = new StreamableHTTPClientTransport(
-      new URL(server.url),
-      transportOptions,
-    );
-  } else if (server.type === "sse") {
-    transport = new SSEClientTransport(new URL(server.url), {
-      authProvider,
-      fetch: config.fetch,
-    });
-  } else {
-    throw new Error(`Unsupported server type: ${server.type}`);
+  // Initialize client (server advertises its capabilities during handshake)
+  const client = new Client(clientInfo, { capabilities: {} });
+
+  // Connect with OAuth retry: after browser auth completes, tokens are saved but
+  // SDK throws UnauthorizedError anyway. Retry with fresh transport succeeds.
+  try {
+    await client.connect(createTransport());
+  } catch (error: unknown) {
+    const isUnauthorized =
+      error instanceof Error &&
+      (error.constructor.name === "UnauthorizedError" ||
+        error.message === "Unauthorized");
+
+    if (isUnauthorized) {
+      await client.connect(createTransport());
+    } else {
+      throw error;
+    }
   }
-
-  // Initialize client with empty capabilities (server provides actual)
-  const client = new Client(clientInfo, {
-    capabilities: {
-      tools: {},
-      prompts: {},
-      resources: {},
-    },
-  });
-
-  await client.connect(transport);
 
   // Introspect: fetch tools/resources/prompts if server advertises support
-  const capabilities = client.getServerCapabilities();
+  const capabilities = client.getServerCapabilities() ?? {};
   let tools: Tool[] = [];
   let resources: Resource[] = [];
   let prompts: Prompt[] = [];
 
-  // Tools: callable functions with schemas
+  // Fetch advertised capabilities - if server advertises but listing fails, that's a connection error
   if (capabilities?.tools) {
-    try {
-      const toolsResult = await client.listTools();
-      tools = toolsResult.tools;
-    } catch (error) {
-      console.warn("Failed to list tools:", error);
-    }
+    const result = await client.listTools();
+    tools = result.tools;
   }
 
-  // Resources: readable URIs with metadata
   if (capabilities?.resources) {
-    try {
-      const resourcesResult = await client.listResources();
-      resources = resourcesResult.resources;
-    } catch (error) {
-      console.warn("Failed to list resources:", error);
-    }
+    const result = await client.listResources();
+    resources = result.resources;
   }
 
-  // Prompts: templated interactions
   if (capabilities?.prompts) {
-    try {
-      const promptsResult = await client.listPrompts();
-      prompts = promptsResult.prompts;
-    } catch (error) {
-      console.warn("Failed to list prompts:", error);
-    }
+    const result = await client.listPrompts();
+    prompts = result.prompts;
   }
 
   return {

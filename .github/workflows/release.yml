@@ -1,0 +1,44 @@
+name: Release
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - uses: actions/checkout@v6
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          registry-url: "https://registry.npmjs.org"
+      - run: bun install --frozen-lockfile
+      - run: bun run build
+
+      - name: Verify version match
+        run: |
+          PACKAGE_VERSION="v$(node -p 'require("./package.json").version')"
+          if [ "$PACKAGE_VERSION" != "${{ github.ref_name }}" ]; then
+            echo "Error: Package version ($PACKAGE_VERSION) doesn't match tag (${{ github.ref_name }})"
+            exit 1
+          fi
+          echo "Version verified: $PACKAGE_VERSION"
+
+      - name: Verify dist output
+        run: |
+          if [ ! -f "dist/cli.js" ]; then
+            echo "Error: dist/cli.js not found"
+            exit 1
+          fi
+          echo "Build output verified"
+
+      - run: npm publish --access public --provenance

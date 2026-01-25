@@ -1,25 +1,25 @@
+/* SPDX-FileCopyrightText: 2025-present Kriasoft */
+/* SPDX-License-Identifier: MIT */
+
 /**
- * TypeScript file builder for MCP client generation.
+ * File builder - assembles complete TS file from interfaces and classes.
  *
- * Assembles the complete TypeScript file with imports, utility functions,
- * interfaces, classes, and singleton instances.
- *
- * SPDX-FileCopyrightText: 2025-present Kriasoft
- * SPDX-License-Identifier: MIT
+ * Coordinates imports, utility functions, generated types, and factory exports.
  */
 
 import { Project, ts } from "ts-morph";
-import type { IntrospectionResult } from "../introspection.js";
+import type { IntrospectionSuccess } from "../introspection.js";
 import { generateClientClass } from "./class-generator.js";
-import { generateToolInterface } from "./interface-generator.js";
-import { camelCase, pascalCase } from "./utils.js";
+import {
+  generateToolInterface,
+  generateToolOutputInterface,
+} from "./tool-input-generator.js";
+import { pascalCase } from "./utils.js";
 
 /**
  * Options for code generation
  */
 export interface CodegenOptions {
-  /** Output file path */
-  outputPath?: string;
   /** Client class name prefix */
   clientPrefix?: string;
   /** Include JSDoc comments */
@@ -29,26 +29,38 @@ export interface CodegenOptions {
 }
 
 /**
- * Generate complete TypeScript client file
+ * Result from code generation including usage metadata.
+ */
+export interface CodegenResult {
+  /** Generated TypeScript source code */
+  code: string;
+  /** Exported factory function names (source of truth for CLI) */
+  exports: string[];
+}
+
+/**
+ * Generate complete TypeScript client file from successful introspections.
+ * Returns code and export metadata for CLI usage instructions.
  */
 export function generateClientFile(
-  servers: Map<string, IntrospectionResult>,
+  servers: Map<string, IntrospectionSuccess>,
   options: CodegenOptions = {},
-): string {
+): CodegenResult {
+  const exports: string[] = [];
   const project = new Project({
     useInMemoryFileSystem: true,
   });
 
-  const sourceFile = project.createSourceFile(
-    options.outputPath || "mcp-client.ts",
-    "",
-    { overwrite: true },
-  );
+  const sourceFile = project.createSourceFile("mcp-client.ts", "", {
+    overwrite: true,
+  });
 
   // Add file header
   sourceFile.addStatements([
     `/* Generated MCP Client SDK */`,
-    `/* Generated at: ${new Date().toISOString()} */`,
+    options.treeShakable !== false
+      ? `/* Import individual createXClient() functions for optimal tree-shaking */`
+      : ``,
     ``,
   ]);
 
@@ -59,7 +71,17 @@ export function generateClientFile(
   });
 
   sourceFile.addImportDeclaration({
-    moduleSpecifier: "./types.js",
+    moduleSpecifier: "@modelcontextprotocol/sdk/types.js",
+    namedImports: [
+      "BlobResourceContents",
+      "PromptMessage",
+      "TextResourceContents",
+    ],
+    isTypeOnly: true,
+  });
+
+  sourceFile.addImportDeclaration({
+    moduleSpecifier: "mcp-client-gen",
     namedImports: ["McpConnection"],
     isTypeOnly: true,
   });
@@ -70,41 +92,31 @@ export function generateClientFile(
   addUtilityFunctions(sourceFile);
 
   // Generate interfaces and classes for each server
-  const clientInstances: string[] = [];
-
   for (const [serverName, result] of servers) {
-    if (result.error) {
-      sourceFile.addStatements([
-        `// Error introspecting ${serverName}: ${result.error}`,
-        ``,
-      ]);
-      continue;
-    }
-
-    // Generate tool interfaces
+    // Generate tool input interfaces
     for (const tool of result.tools) {
       if (tool.inputSchema) {
         generateToolInterface(sourceFile, tool);
       }
     }
 
+    // Generate tool output interfaces (when outputSchema is present)
+    for (const tool of result.tools) {
+      generateToolOutputInterface(sourceFile, tool);
+    }
+
     // Generate client class
     const classDecl = generateClientClass(sourceFile, serverName, result);
 
-    // Create singleton instance if tree-shakable
+    // Add factory function for convenience
     if (options.treeShakable !== false) {
-      const instanceName = camelCase(serverName);
-      clientInstances.push(instanceName);
+      sourceFile.addStatements([``]);
 
-      sourceFile.addStatements([
-        ``,
-        `// Singleton instance for ${serverName}`,
-        `let _${instanceName}: ${classDecl.getName()} | undefined;`,
-        ``,
-      ]);
+      const factoryName = `create${pascalCase(serverName)}Client`;
+      exports.push(factoryName);
 
       sourceFile.addFunction({
-        name: `get${pascalCase(serverName)}Client`,
+        name: factoryName,
         isExported: true,
         parameters: [
           {
@@ -113,12 +125,7 @@ export function generateClientFile(
           },
         ],
         returnType: classDecl.getName()!,
-        statements: [
-          `if (!_${instanceName}) {`,
-          `  _${instanceName} = new ${classDecl.getName()}(connection);`,
-          `}`,
-          `return _${instanceName};`,
-        ],
+        statements: [`return new ${classDecl.getName()}(connection);`],
       });
     }
   }
@@ -129,7 +136,7 @@ export function generateClientFile(
     semicolons: ts.SemicolonPreference.Insert,
   });
 
-  return sourceFile.getFullText();
+  return { code: sourceFile.getFullText(), exports };
 }
 
 /**
@@ -180,10 +187,10 @@ function addUtilityFunctions(sourceFile: any): void {
     ` * @returns The first content item from the result`,
     ` * @throws Error if the resource returned empty contents`,
     ` */`,
-    `function handleResourceResult<T = any>(`,
+    `function handleResourceResult(`,
     `  result: any,`,
     `  resourceUri: string,`,
-    `): T {`,
+    `): TextResourceContents | BlobResourceContents {`,
     `  // Validate contents exist`,
     `  if (`,
     `    !result.contents ||`,
@@ -193,7 +200,7 @@ function addUtilityFunctions(sourceFile: any): void {
     `    throw new Error(\`Resource '\${resourceUri}' returned empty contents\`);`,
     `  }`,
     ``,
-    `  return result.contents[0] as T;`,
+    `  return result.contents[0];`,
     `}`,
     ``,
   ]);

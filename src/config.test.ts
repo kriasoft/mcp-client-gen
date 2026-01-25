@@ -4,7 +4,13 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { findMcpConfigFiles, getMcpServers, MCP_CONFIG_PATHS } from "./config";
+import {
+  findMcpConfigFiles,
+  formatConfigWarning,
+  getMcpServers,
+  MCP_CONFIG_PATHS,
+  resolveConfigFiles,
+} from "./config";
 
 const TEST_DIR = resolve(import.meta.dir, "../test-fixtures");
 
@@ -19,6 +25,49 @@ afterAll(() => {
 });
 
 describe("config", () => {
+  describe("formatConfigWarning", () => {
+    test("formats malformed JSON warning", () => {
+      const msg = formatConfigWarning({
+        kind: "malformed_json",
+        path: "/path/to/.mcp.json",
+        error: "Unexpected token",
+      });
+      expect(msg).toBe(".mcp.json: Invalid JSON - Unexpected token");
+    });
+
+    test("formats skipped stdio warning", () => {
+      const msg = formatConfigWarning({
+        kind: "skipped_stdio",
+        path: "/path/to/.mcp.json",
+        name: "local-server",
+      });
+      expect(msg).toBe(
+        '.mcp.json: Skipped "local-server" (stdio servers not supported)',
+      );
+    });
+
+    test("formats missing URL warning", () => {
+      const msg = formatConfigWarning({
+        kind: "missing_url",
+        path: "/path/to/.mcp.json",
+        name: "broken-server",
+      });
+      expect(msg).toBe('.mcp.json: Skipped "broken-server" (missing url)');
+    });
+
+    test("formats unknown type warning", () => {
+      const msg = formatConfigWarning({
+        kind: "unknown_type",
+        path: "/path/to/.mcp.json",
+        name: "custom-server",
+        type: "grpc",
+      });
+      expect(msg).toBe(
+        '.mcp.json: Skipped "custom-server" (unknown type "grpc")',
+      );
+    });
+  });
+
   describe("findMcpConfigFiles", () => {
     test("finds existing config files in priority order", async () => {
       // Simulate workspace with multiple config locations
@@ -46,6 +95,47 @@ describe("config", () => {
     });
   });
 
+  describe("resolveConfigFiles", () => {
+    test("uses explicit configPath when provided", async () => {
+      const configPath = resolve(TEST_DIR, "explicit.json");
+      writeFileSync(configPath, JSON.stringify({ mcpServers: {} }));
+
+      const files = await resolveConfigFiles({
+        cwd: TEST_DIR,
+        configPath: "explicit.json",
+      });
+
+      expect(files).toEqual([configPath]);
+    });
+
+    test("throws when explicit configPath does not exist", async () => {
+      await expect(
+        resolveConfigFiles({
+          cwd: TEST_DIR,
+          configPath: "nonexistent.json",
+        }),
+      ).rejects.toThrow("Configuration file not found: nonexistent.json");
+    });
+
+    test("uses discovery when no configPath provided", async () => {
+      writeFileSync(resolve(TEST_DIR, ".mcp.json"), "{}");
+
+      const files = await resolveConfigFiles({ cwd: TEST_DIR });
+
+      expect(files.length).toBeGreaterThan(0);
+      expect(files.some((f) => f.endsWith(".mcp.json"))).toBe(true);
+    });
+
+    test("throws when discovery finds nothing", async () => {
+      const emptyDir = resolve(TEST_DIR, "empty-dir");
+      mkdirSync(emptyDir, { recursive: true });
+
+      await expect(resolveConfigFiles({ cwd: emptyDir })).rejects.toThrow(
+        "No MCP configuration files found",
+      );
+    });
+  });
+
   describe("getMcpServers", () => {
     test("parses valid MCP configuration", () => {
       const configPath = resolve(TEST_DIR, "valid-config.json");
@@ -63,29 +153,29 @@ describe("config", () => {
       };
       writeFileSync(configPath, JSON.stringify(config, null, 2));
 
-      const servers = getMcpServers([configPath]);
+      const { servers, warnings } = getMcpServers([configPath]);
 
       expect(servers).toHaveLength(2);
+      expect(warnings).toHaveLength(0);
       expect(servers).toContainEqual({
         type: "http",
         url: "https://mcp.notion.com/mcp",
+        name: "notion",
       });
       expect(servers).toContainEqual({
         type: "sse",
         url: "https://api.githubcopilot.com/mcp/",
+        name: "github",
       });
     });
 
-    test("skips invalid server configurations", () => {
+    test("skips invalid server configurations with warnings", () => {
       // Only http/sse with URLs are valid
       const configPath = resolve(TEST_DIR, "invalid-servers.json");
       const config = {
         mcpServers: {
           valid: {
             type: "http",
-            url: "https://example.com",
-          },
-          missingType: {
             url: "https://example.com",
           },
           missingUrl: {
@@ -96,31 +186,41 @@ describe("config", () => {
       };
       writeFileSync(configPath, JSON.stringify(config, null, 2));
 
-      const servers = getMcpServers([configPath]);
+      const { servers, warnings } = getMcpServers([configPath]);
 
       expect(servers).toHaveLength(1);
       expect(servers[0]).toEqual({
         type: "http",
         url: "https://example.com",
+        name: "valid",
+      });
+      expect(warnings).toContainEqual({
+        kind: "missing_url",
+        path: configPath,
+        name: "missingUrl",
       });
     });
 
-    test("handles malformed JSON gracefully", () => {
+    test("handles malformed JSON with warning", () => {
       const configPath = resolve(TEST_DIR, "malformed.json");
       writeFileSync(configPath, "{ invalid json");
 
-      const servers = getMcpServers([configPath]);
+      const { servers, warnings } = getMcpServers([configPath]);
 
       expect(servers).toEqual([]);
+      expect(warnings).toHaveLength(1);
+      expect(warnings[0]?.kind).toBe("malformed_json");
+      expect(warnings[0]?.path).toBe(configPath);
     });
 
     test("handles missing mcpServers property", () => {
       const configPath = resolve(TEST_DIR, "no-mcp-servers.json");
       writeFileSync(configPath, JSON.stringify({ otherConfig: true }));
 
-      const servers = getMcpServers([configPath]);
+      const { servers, warnings } = getMcpServers([configPath]);
 
       expect(servers).toEqual([]);
+      expect(warnings).toEqual([]);
     });
 
     test("processes multiple config files", () => {
@@ -145,16 +245,18 @@ describe("config", () => {
         }),
       );
 
-      const servers = getMcpServers([config1Path, config2Path]);
+      const { servers } = getMcpServers([config1Path, config2Path]);
 
       expect(servers).toHaveLength(2);
       expect(servers).toContainEqual({
         type: "http",
         url: "https://server1.com",
+        name: "server1",
       });
       expect(servers).toContainEqual({
         type: "sse",
         url: "https://server2.com",
+        name: "server2",
       });
     });
 
@@ -182,20 +284,23 @@ describe("config", () => {
         }),
       );
 
-      const servers = getMcpServers([config1Path, config2Path]);
+      const { servers } = getMcpServers([config1Path, config2Path]);
 
       expect(servers).toHaveLength(3);
       expect(servers).toContainEqual({
         type: "http", // First occurrence wins
         url: "https://example.com",
+        name: "server1",
       });
       expect(servers).toContainEqual({
         type: "sse",
         url: "https://other.com",
+        name: "server2",
       });
       expect(servers).toContainEqual({
         type: "http",
         url: "https://new.com",
+        name: "server4",
       });
     });
 
@@ -219,20 +324,28 @@ describe("config", () => {
       };
       writeFileSync(configPath, JSON.stringify(config, null, 2));
 
-      const servers = getMcpServers([configPath]);
+      const { servers, warnings } = getMcpServers([configPath]);
 
       expect(servers).toHaveLength(2);
       expect(servers).toContainEqual({
         type: "http",
         url: "https://example.com", // Whitespace trimmed
+        name: "trimmed",
       });
       expect(servers).toContainEqual({
         type: "http",
         url: "https://normal.com",
+        name: "normal",
+      });
+      // Empty URL should generate a warning
+      expect(warnings).toContainEqual({
+        kind: "missing_url",
+        path: configPath,
+        name: "empty",
       });
     });
 
-    test("handles invalid server types", () => {
+    test("handles invalid server types with warning", () => {
       const configPath = resolve(TEST_DIR, "invalid-types.json");
       const config = {
         mcpServers: {
@@ -255,20 +368,29 @@ describe("config", () => {
       };
       writeFileSync(configPath, JSON.stringify(config, null, 2));
 
-      const servers = getMcpServers([configPath]);
+      const { servers, warnings } = getMcpServers([configPath]);
 
       expect(servers).toHaveLength(3);
       expect(servers).toContainEqual({
         type: "http",
         url: "https://example.com",
+        name: "validHttp",
       });
       expect(servers).toContainEqual({
         type: "sse",
         url: "https://sse.com",
+        name: "validSse",
       });
       expect(servers).toContainEqual({
         type: "http", // noType defaults to HTTP for mcpServers format
         url: "https://notype.com",
+        name: "noType",
+      });
+      expect(warnings).toContainEqual({
+        kind: "unknown_type",
+        path: configPath,
+        name: "invalidType",
+        type: "websocket",
       });
     });
 
@@ -292,16 +414,24 @@ describe("config", () => {
       };
       writeFileSync(configPath, JSON.stringify(config, null, 2));
 
-      const servers = getMcpServers([configPath]);
+      const { servers, warnings } = getMcpServers([configPath]);
 
       expect(servers).toHaveLength(2);
       expect(servers).toContainEqual({
         type: "http", // Default for VSCode HTTP servers
         url: "https://api.githubcopilot.com/mcp/",
+        name: "Github",
       });
       expect(servers).toContainEqual({
         type: "sse",
         url: "https://custom.example.com/mcp",
+        name: "Custom",
+      });
+      // stdio server should generate a warning
+      expect(warnings).toContainEqual({
+        kind: "skipped_stdio",
+        path: configPath,
+        name: "Perplexity",
       });
     });
 
@@ -323,16 +453,19 @@ describe("config", () => {
       };
       writeFileSync(configPath, JSON.stringify(config, null, 2));
 
-      const servers = getMcpServers([configPath]);
+      const { servers } = getMcpServers([configPath]);
 
       expect(servers).toHaveLength(2);
       expect(servers).toContainEqual({
         type: "http", // Default for Cursor format
         url: "http://localhost:3000/mcp",
+        name: "server-name",
+        headers: { API_KEY: "value" },
       });
       expect(servers).toContainEqual({
         type: "http",
         url: "https://explicit.example.com",
+        name: "explicit-http",
       });
     });
 
@@ -351,16 +484,18 @@ describe("config", () => {
       };
       writeFileSync(configPath, JSON.stringify(config, null, 2));
 
-      const servers = getMcpServers([configPath]);
+      const { servers } = getMcpServers([configPath]);
 
       expect(servers).toHaveLength(1);
       expect(servers[0]).toEqual({
         type: "sse",
         url: "${API_BASE_URL:-https://api.example.com}/mcp", // Environment variables preserved
+        name: "api-server",
+        headers: { Authorization: "Bearer ${API_KEY}" },
       });
     });
 
-    test("skips stdio servers from VSCode format", () => {
+    test("skips stdio servers from VSCode format with warning", () => {
       const configPath = resolve(TEST_DIR, "vscode-stdio.json");
       const config = {
         servers: {
@@ -376,12 +511,46 @@ describe("config", () => {
       };
       writeFileSync(configPath, JSON.stringify(config, null, 2));
 
-      const servers = getMcpServers([configPath]);
+      const { servers, warnings } = getMcpServers([configPath]);
 
       expect(servers).toHaveLength(1);
       expect(servers[0]).toEqual({
         type: "http",
         url: "https://http.example.com",
+        name: "HttpServer",
+      });
+      expect(warnings).toContainEqual({
+        kind: "skipped_stdio",
+        path: configPath,
+        name: "StdioServer",
+      });
+    });
+
+    test("supports VSCode nested mcp.servers format", () => {
+      const configPath = resolve(TEST_DIR, "vscode-nested.json");
+      const config = {
+        mcp: {
+          servers: {
+            web: {
+              type: "http",
+              url: "https://api.web-mcp.com/mcp",
+              headers: {
+                "X-API-Key": "${env:WEB_API_KEY}",
+              },
+            },
+          },
+        },
+      };
+      writeFileSync(configPath, JSON.stringify(config, null, 2));
+
+      const { servers } = getMcpServers([configPath]);
+
+      expect(servers).toHaveLength(1);
+      expect(servers[0]).toEqual({
+        type: "http",
+        url: "https://api.web-mcp.com/mcp",
+        name: "web",
+        headers: { "X-API-Key": "${env:WEB_API_KEY}" },
       });
     });
 
@@ -407,16 +576,18 @@ describe("config", () => {
         }),
       );
 
-      const servers = getMcpServers([vscodePath, claudePath]);
+      const { servers } = getMcpServers([vscodePath, claudePath]);
 
       expect(servers).toHaveLength(2);
       expect(servers).toContainEqual({
         type: "http",
         url: "https://vscode.example.com",
+        name: "VSCodeServer",
       });
       expect(servers).toContainEqual({
         type: "sse",
         url: "https://claude.example.com",
+        name: "ClaudeServer",
       });
     });
   });

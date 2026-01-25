@@ -1,69 +1,55 @@
+/* SPDX-FileCopyrightText: 2025-present Kriasoft */
+/* SPDX-License-Identifier: MIT */
+
 /**
- * Public API exports for MCP Client Generator library.
- * Tree-shakable modules for optimal bundle size.
- *
- * SPDX-FileCopyrightText: 2025-present Kriasoft
- * SPDX-License-Identifier: MIT
+ * Public API - stable exports for library consumers.
+ * For advanced/internal APIs, import from "mcp-client-gen/internal".
  */
 
 export {
-  findMcpConfigFiles,
-  getMcpServers,
-  MCP_CONFIG_PATHS,
-} from "./config.js";
+  formatTypeScript,
+  generateClient,
+  writeGeneratedClient,
+} from "./pipeline.js";
+
 export { createMcpConnection } from "./mcp-client.js";
 
-// Re-export browserAuth and related types from oauth-callback/mcp
+export {
+  findMcpConfigFiles,
+  formatConfigWarning,
+  getMcpServers,
+  resolveConfigFiles,
+  type ResolveConfigOptions,
+} from "./config.js";
+
+// OAuth (re-exported from oauth-callback)
 export {
   browserAuth,
+  fileStore,
+  inMemoryStore,
   type BrowserAuthOptions,
-  type TokenStore,
+  type ClientInfo,
   type OAuthStore,
   type Tokens,
-  type ClientInfo,
-  type OAuthSession,
-  inMemoryStore,
-  fileStore,
+  type TokenStore,
 } from "oauth-callback/mcp";
-export {
-  introspectServer,
-  introspectServersParallel,
-  getCachedCapabilities,
-  clearCapabilityCache,
-} from "./introspection.js";
-export {
-  jsonSchemaToTypeScript,
-  generateToolInterface,
-  generateClientClass,
-  generateClientFile,
-} from "./codegen/index.js";
-export {
-  SchemaTransformer,
-  schemaTransformer,
-  SchemaValidator,
-  schemaValidator,
-} from "./schema.js";
 
-export type { McpServer } from "./types.js";
-
-export type { McpClientConfig, McpConnection } from "./mcp-client.js";
-
-export type { IntrospectionResult } from "./introspection.js";
-
-export type { CodegenOptions } from "./codegen/index.js";
-
-// Re-export MCP SDK types
+// Types
 export type {
-  Tool,
-  Resource,
   Prompt,
+  Resource,
   ServerCapabilities,
+  Tool,
 } from "@modelcontextprotocol/sdk/types.js";
-
 export type {
-  JsonSchemaType,
-  TypeScriptType,
-  ValidatedTool,
-} from "./schema.js";
-
-export type { PromptsResult } from "./prompts.js";
+  IntrospectionFailure,
+  IntrospectionResult,
+  IntrospectionSuccess,
+} from "./introspection.js";
+export type { McpClientConfig, McpConnection } from "./mcp-client.js";
+export type { GenerationOptions, GenerationResult } from "./pipeline.js";
+export type {
+  ConfigWarning,
+  McpServerConfig,
+  ParseServersResult,
+} from "./types.js";

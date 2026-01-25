@@ -1,7 +1,8 @@
-import { test } from "bun:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import { test } from "bun:test";
 import { browserAuth, inMemoryStore } from "oauth-callback/mcp";
+import open from "open";
 
 /**
  * Manual OAuth flow example - demonstrates onRedirect handler
@@ -14,12 +15,11 @@ test.skip(
 
     const store = inMemoryStore();
 
-    // Manual OAuth flow - user handles the redirect
+    // Manual OAuth flow - user handles the redirect (no launch = headless mode)
     const authProvider = browserAuth({
       port: 3000,
       store,
       scope: "read:page:metadata read:database:metadata",
-      openBrowser: false, // Manual handling
     });
 
     const transport = new StreamableHTTPClientTransport(
@@ -50,11 +50,10 @@ test.skip(
 );
 
 /**
- * Automatic E2E test for Notion OAuth flow with callback handling
- * @requires User interaction for browser auth
- * @skip Enable with test.only() for manual testing
+ * E2E test for Notion OAuth flow with callback handling.
+ * Requires user interaction for browser auth.
  */
-test.only(
+test(
   "Notion MCP Introspection E2E with OAuth Callback",
   async () => {
     console.log(
@@ -68,7 +67,7 @@ test.only(
       port: 3000,
       store,
       scope: "read:page:metadata read:database:metadata",
-      openBrowser: true,
+      launch: open,
       authTimeout: 120000, // User has 2min to authorize
     });
 
@@ -91,7 +90,23 @@ test.only(
       console.log("4. Complete the token exchange");
       console.log("\nPlease complete the authorization in your browser...\n");
 
-      await client.connect(transport);
+      // First connect triggers OAuth flow and acquires tokens, but SDK returns
+      // 'REDIRECT' causing UnauthorizedError. Retry succeeds with saved tokens.
+      try {
+        await client.connect(transport);
+      } catch (e: any) {
+        if (e.message === "Unauthorized") {
+          console.log("🔄 Tokens acquired, retrying connection...");
+          // Create new transport for retry (transports are single-use after error)
+          const retryTransport = new StreamableHTTPClientTransport(
+            new URL("https://mcp.notion.com/mcp"),
+            { authProvider },
+          );
+          await client.connect(retryTransport);
+        } else {
+          throw e;
+        }
+      }
       console.log("✅ Connected successfully!");
 
       const capabilities = client.getServerCapabilities();
@@ -119,11 +134,8 @@ test.only(
       }
 
       // Verify OAuth flow completed successfully
-      const clientInfo = await storage.getClientInfo();
-      const tokens = await storage.getTokens();
-
-      console.log("\n✅ Client registered:", !!clientInfo);
-      console.log("✅ Tokens received:", !!tokens);
+      const tokens = await store.get("mcp-tokens");
+      console.log("\n✅ Tokens stored:", !!tokens);
 
       await client.close();
       console.log("\n🎉 Test completed successfully!");

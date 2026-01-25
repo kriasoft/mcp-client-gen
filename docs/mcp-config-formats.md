@@ -1,3 +1,7 @@
+# MCP Config Formats
+
+Config file formats supported by different tools.
+
 ## Claude
 
 <https://docs.anthropic.com/en/docs/claude-code/mcp>

@@ -1,0 +1,36 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v6
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - uses: actions/cache@v5
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-bun-${{ hashFiles('**/bun.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-bun-
+      - run: bun install --frozen-lockfile
+      - run: bun run format:check
+      - run: bun run typecheck
+      - run: bun run test
+      - run: bun run build
+
+      - name: Verify dist output
+        run: |
+          if [ ! -f "dist/cli.js" ]; then
+            echo "Error: dist/cli.js not found"
+            exit 1
+          fi
+          echo "Build output verified"
