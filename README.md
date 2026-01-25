@@ -1,5 +1,10 @@
 # MCP Client Generator
 
+[![npm](https://img.shields.io/npm/v/mcp-client-gen)](https://www.npmjs.com/package/mcp-client-gen)
+[![downloads](https://img.shields.io/npm/dw/mcp-client-gen)](https://www.npmjs.com/package/mcp-client-gen)
+[![Discord](https://img.shields.io/discord/643523529131950086?label=Chat)](https://discord.gg/bSsv7XM)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
 Generate type-safe TypeScript clients from [MCP](https://modelcontextprotocol.io) servers.
 
 ## Quick Start
