@@ -50,6 +50,20 @@ export interface McpConnection {
   prompts: Prompt[];
 }
 
+export function createBrowserAuthOptions(
+  oauth: Partial<BrowserAuthOptions> = {},
+  createStore: () => NonNullable<BrowserAuthOptions["store"]> = inMemoryStore,
+): BrowserAuthOptions {
+  return {
+    ...oauth,
+    port: oauth.port || 3000,
+    hostname: oauth.hostname || "localhost",
+    callbackPath: oauth.callbackPath || "/callback",
+    store: oauth.store || createStore(),
+    authTimeout: oauth.authTimeout || 300000,
+  };
+}
+
 /**
  * Wrap fetch to inject headers for every request.
  */
@@ -84,19 +98,7 @@ export async function createMcpConnection(
   // OAuth required for http/sse transports
   let authProvider: any | undefined;
   if (server.type === "http" || server.type === "sse") {
-    const port = config.oauth?.port || 3000;
-
-    authProvider = browserAuth({
-      port,
-      hostname: config.oauth?.hostname || "localhost",
-      callbackPath: config.oauth?.callbackPath || "/callback",
-      store: config.oauth?.store || inMemoryStore(),
-      scope: config.oauth?.scope,
-      clientId: config.oauth?.clientId,
-      clientSecret: config.oauth?.clientSecret,
-      launch: config.oauth?.launch,
-      authTimeout: config.oauth?.authTimeout || 300000,
-    });
+    authProvider = browserAuth(createBrowserAuthOptions(config.oauth));
   }
 
   // Transport factory - creates fresh transport for OAuth retry
