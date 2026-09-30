@@ -91,6 +91,20 @@ const connection = await createMcpConnection(server, {
 });
 ```
 
+If a server later demands authorization again, e.g. more scopes (step-up, Streamable HTTP only), the request fails with `UnauthorizedError`. Call `connection.authorize()` to finish the browser flow, then retry:
+
+```typescript
+import { UnauthorizedError } from "@modelcontextprotocol/client";
+
+try {
+  await notion.notionSearch({ query: "Meeting Notes" });
+} catch (error) {
+  if (!(error instanceof UnauthorizedError)) throw error;
+  await connection.authorize();
+  await notion.notionSearch({ query: "Meeting Notes" });
+}
+```
+
 ## License
 
 MIT — [Konstantin Tarkus](https://github.com/koistya)

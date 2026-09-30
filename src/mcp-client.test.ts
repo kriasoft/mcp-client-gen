@@ -6,11 +6,14 @@
  * can't hide behind a mock. OAuth itself is covered by oauth-callback's own suite.
  */
 
+import { UnauthorizedError } from "@modelcontextprotocol/client";
 import { createMcpHandler, McpServer } from "@modelcontextprotocol/server";
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 import type { CredentialStore } from "oauth-callback/mcp";
 import { createMcpConnection, type McpConnection } from "./mcp-client.js";
+import { createServer } from "node:net";
 import { startLegacySseServer } from "../test/utils/legacy-sse-server.js";
+import { startMockServer } from "../test/utils/mock-oauth-mcp-server.js";
 import type { McpServerConfig } from "./types.js";
 
 let fixture: ReturnType<typeof startFixture>;
@@ -186,9 +189,112 @@ describe("createMcpConnection", () => {
     expect(calls).toBe(callsAtFailure);
   }, 10_000);
 
+  test("authorize() resolves at once without OAuth", async () => {
+    const fetch = ((url: URL | string, init?: RequestInit) =>
+      globalThis.fetch(
+        String(url).replace("http://mcp.internal", fixture.server.url.origin),
+        init,
+      )) as typeof globalThis.fetch;
+    const connection = await connect(
+      { type: "http", url: "http://mcp.internal/mcp" },
+      { fetch },
+    );
+
+    await connection.authorize();
+  });
+
   test("rejects unsupported server types", async () => {
     await expect(
       createMcpConnection({ type: "stdio", url: "" } as never),
     ).rejects.toThrow("Unsupported server type: stdio");
+  });
+});
+
+describe("createMcpConnection OAuth", () => {
+  let oauth: Awaited<ReturnType<typeof startMockServer>>;
+
+  beforeEach(async () => {
+    oauth = await startMockServer();
+  });
+
+  afterEach(() => oauth.close());
+
+  /** A loopback port that was free a moment ago (redirect URIs can't use port 0). */
+  const freePort = () =>
+    new Promise<number>((resolve) => {
+      const server = createServer().listen(0, "127.0.0.1", () => {
+        const { port } = server.address() as { port: number };
+        server.close(() => resolve(port));
+      });
+    });
+
+  /** OAuth config whose "browser" approves at once via the mock authorization server. */
+  const oauthConfig = async () => ({
+    oauth: {
+      redirectUri: `http://127.0.0.1:${await freePort()}/callback`,
+      launch: (url: URL) => void oauth.authorize(url),
+      timeout: 5000,
+    },
+  });
+
+  test("completes a step-up demanded while listing capabilities", async () => {
+    // Initialize passes with the first grant; tools/list then demands the "admin" scope
+    const fetch = ((url: URL | string, init?: RequestInit) => {
+      if (typeof init?.body === "string" && init.body.includes('"tools/list"'))
+        oauth.knobs.requiredScope = "admin";
+      return globalThis.fetch(url, init);
+    }) as typeof globalThis.fetch;
+
+    const connection = await connect(
+      { type: "http", url: oauth.mcpUrl },
+      { ...(await oauthConfig()), fetch },
+    );
+
+    expect(connection.tools).toEqual([]);
+    expect(oauth.authorizeRequests).toHaveLength(2);
+    expect(oauth.authorizeRequests.at(-1)?.searchParams.get("scope")).toContain(
+      "admin",
+    );
+  });
+
+  test("completes every step-up it triggers, then gives up", async () => {
+    // Each tools/list demands a scope the previous grant lacks
+    let listings = 0;
+    const fetch = ((url: URL | string, init?: RequestInit) => {
+      if (typeof init?.body === "string" && init.body.includes('"tools/list"'))
+        oauth.knobs.requiredScope = `scope-${++listings}`;
+      return globalThis.fetch(url, init);
+    }) as typeof globalThis.fetch;
+    const config = { ...(await oauthConfig()), fetch };
+    const port = new URL(config.oauth.redirectUri).port;
+
+    await expect(
+      createMcpConnection({ type: "http", url: oauth.mcpUrl }, config),
+    ).rejects.toBeInstanceOf(UnauthorizedError);
+
+    expect(oauth.authorizeRequests).toHaveLength(4); // initial + 3 step-ups
+    // Every flow completed: its callback listener released the port
+    const listener = Bun.listen({
+      hostname: "127.0.0.1",
+      port: Number(port),
+      socket: { data() {} },
+    });
+    listener.stop(true);
+  });
+
+  test("authorize() completes a step-up after connecting", async () => {
+    const connection = await connect(
+      { type: "http", url: oauth.mcpUrl },
+      await oauthConfig(),
+    );
+    oauth.knobs.requiredScope = "admin";
+
+    await expect(connection.client.listTools()).rejects.toBeInstanceOf(
+      UnauthorizedError,
+    );
+    await connection.authorize();
+
+    expect((await connection.client.listTools()).tools).toEqual([]);
+    expect(oauth.authorizeRequests).toHaveLength(2);
   });
 });
