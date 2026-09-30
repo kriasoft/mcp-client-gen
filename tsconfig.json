@@ -2,6 +2,7 @@
   "compilerOptions": {
     // Environment setup & latest features
     "lib": ["ESNext"],
+    "types": ["bun"], // TS 6+ no longer auto-includes @types/*
     "target": "ESNext",
     "module": "Preserve",
     "moduleDetection": "force",
