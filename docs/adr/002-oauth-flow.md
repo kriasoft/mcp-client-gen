@@ -39,7 +39,7 @@ const connection = await createMcpConnection(server, {
 ## Impact
 
 - Positive: No OAuth protocol code here; token refresh and step-up come from the SDK.
-- Negative/Risks: Concurrent authorizations for several servers contend for the same loopback port. Requires Node.js 22+ (oauth-callback v3). v2 token files are not migrated; users authorize once after upgrading.
+- Negative/Risks: A step-up the caller never completes (no `authorize()` after `UnauthorizedError`) keeps its callback listener until the OAuth timeout; ending it early needs an oauth-callback API that cancels a flow without signing out. Concurrent authorizations for several servers contend for the same loopback port. Requires Node.js 22+ (oauth-callback v3). v2 token files are not migrated; users authorize once after upgrading.
 
 ## Links
 

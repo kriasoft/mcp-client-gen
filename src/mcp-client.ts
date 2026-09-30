@@ -98,10 +98,10 @@ function createFetchWithHeaders(
 }
 
 /**
- * Bound the wait for response headers, not the body: a stalled token exchange fails,
- * while an SSE stream stays open after its headers arrive.
+ * Bound each request, except an event stream's body: a stalled token exchange (headers
+ * or body) fails, while an SSE stream stays open once its headers arrive.
  */
-function createFetchWithHeaderTimeout(
+function createFetchWithTimeout(
   baseFetch: typeof fetch | undefined,
   ms: number,
 ): typeof fetch {
@@ -117,7 +117,15 @@ function createFetchWithHeaderTimeout(
       ? AbortSignal.any([init.signal, timeout.signal])
       : timeout.signal;
     try {
-      return await originalFetch(url, { ...init, signal });
+      const response = await originalFetch(url, { ...init, signal });
+      if (response.headers.get("content-type")?.startsWith("text/event-stream"))
+        return response;
+      // Finite body (JSON, errors): read it within the same deadline
+      const nullBody = [204, 205, 304].includes(response.status);
+      return new Response(
+        nullBody ? null : await response.arrayBuffer(),
+        response,
+      );
     } finally {
       clearTimeout(timer);
     }
@@ -284,7 +292,7 @@ async function connectSse(
     ? createFetchWithHeaders(config.fetch, server.headers)
     : config.fetch;
   // completeAuthorization() can't interrupt this transport's token exchange: bound it here
-  const fetch = createFetchWithHeaderTimeout(
+  const fetch = createFetchWithTimeout(
     baseFetch,
     config.timeout ?? DEFAULT_REQUEST_TIMEOUT_MSEC,
   );
