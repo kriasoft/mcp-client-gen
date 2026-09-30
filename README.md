@@ -58,6 +58,7 @@ npx mcp-client-gen <url> <file>       # Shorthand
 # Config mode (reads .mcp.json, .cursor/, .vscode/)
 npx mcp-client-gen                    # Interactive
 npx mcp-client-gen -y                 # Accept defaults
+npx mcp-client-gen -o <file>          # All servers → <file> (implies -y)
 ```
 
 ### Config File Format
@@ -67,10 +68,15 @@ npx mcp-client-gen -y                 # Accept defaults
 {
   "mcpServers": {
     "notion": { "url": "https://mcp.notion.com/mcp" },
-    "github": { "url": "https://api.githubcopilot.com/mcp/" },
+    "github": {
+      "url": "https://api.githubcopilot.com/mcp/",
+      "headers": { "Authorization": "Bearer ${GITHUB_TOKEN}" },
+    },
   },
 }
 ```
+
+Config files may contain comments and trailing commas. `${NAME}`, `${NAME:-default}` and `${env:NAME}` in `url` and `headers` expand from the environment; a server with an unset variable is skipped with a warning.
 
 ## Authentication
 

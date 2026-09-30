@@ -27,7 +27,9 @@ export type ConfigWarning =
   | { kind: "malformed_json"; path: string; error: string }
   | { kind: "skipped_stdio"; path: string; name: string }
   | { kind: "missing_url"; path: string; name: string }
-  | { kind: "unknown_type"; path: string; name: string; type: string };
+  | { kind: "unknown_type"; path: string; name: string; type: string }
+  /** Placeholders in url/headers with no value; names only, never values. */
+  | { kind: "unresolved_env"; path: string; name: string; variables: string[] };
 
 /**
  * Result of parsing MCP config files.
