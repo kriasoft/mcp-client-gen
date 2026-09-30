@@ -31,7 +31,74 @@ export function formatConfigWarning(warning: ConfigWarning): string {
       return `${file}: Skipped "${warning.name}" (missing url)`;
     case "unknown_type":
       return `${file}: Skipped "${warning.name}" (unknown type "${warning.type}")`;
+    case "unresolved_env":
+      return `${file}: Skipped "${warning.name}" (unset environment variable ${warning.variables.join(", ")})`;
   }
+}
+
+/**
+ * Parse JSON with comments and trailing commas (JSONC).
+ * VS Code and Cursor mcp.json files are JSONC; a small scanner avoids a
+ * dependency and Bun-only APIs (the CLI also runs on Node).
+ */
+export function parseJsonc(text: string): unknown {
+  let out = "";
+  let comma = -1; // Index in `out` of a comma that may turn out to be trailing
+  let i = 0;
+  while (i < text.length) {
+    const ch = text[i]!;
+    const next = text[i + 1];
+    if (ch === '"') {
+      let j = i + 1;
+      while (j < text.length && text[j] !== '"') j += text[j] === "\\" ? 2 : 1;
+      out += text.slice(i, j + 1);
+      i = j + 1;
+      comma = -1;
+    } else if (ch === "/" && next === "/") {
+      while (i < text.length && text[i] !== "\n") i++;
+    } else if (ch === "/" && next === "*") {
+      const end = text.indexOf("*/", i + 2);
+      i = end === -1 ? text.length : end + 2;
+      out += " ";
+    } else {
+      if ((ch === "}" || ch === "]") && comma !== -1) {
+        out = out.slice(0, comma) + out.slice(comma + 1);
+      }
+      if (ch === ",") comma = out.length;
+      else if (!/\s/.test(ch)) comma = -1;
+      out += ch;
+      i++;
+    }
+  }
+  return JSON.parse(out);
+}
+
+const ENV_PLACEHOLDER = /\$\{([^}]*)\}/g;
+const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+/**
+ * Expand `${env:NAME}` (VS Code/Cursor), `${NAME}` and `${NAME:-default}`
+ * (Claude Code) from process.env. Other placeholders, e.g. VS Code's
+ * `${input:id}`, can't be resolved here and are reported via `missing`.
+ */
+function expandEnv(value: string, missing: Set<string>): string {
+  return value.replace(ENV_PLACEHOLDER, (match, expr: string) => {
+    const body = expr.startsWith("env:") ? expr.slice(4) : expr;
+    const sep = body.indexOf(":-");
+    const name = sep === -1 ? body : body.slice(0, sep);
+    if (!ENV_NAME.test(name)) {
+      missing.add(expr);
+      return match;
+    }
+    const envValue = process.env[name];
+    if (sep === -1) {
+      if (envValue !== undefined) return envValue;
+      missing.add(name);
+      return match;
+    }
+    // Shell semantics: `:-` also replaces an empty value
+    return envValue || body.slice(sep + 2);
+  });
 }
 
 export interface ResolveConfigOptions {
@@ -117,13 +184,21 @@ export function getMcpServers(paths: string[]): ParseServersResult {
   for (const path of paths) {
     let config: unknown;
     try {
-      const content = readFileSync(path, "utf8");
-      config = JSON.parse(content);
+      config = parseJsonc(readFileSync(path, "utf8"));
     } catch (error) {
       warnings.push({
         kind: "malformed_json",
         path,
         error: (error as Error).message,
+      });
+      continue;
+    }
+
+    if (!config || typeof config !== "object" || Array.isArray(config)) {
+      warnings.push({
+        kind: "malformed_json",
+        path,
+        error: "Expected an object at the root",
       });
       continue;
     }
@@ -138,12 +213,41 @@ export function getMcpServers(paths: string[]): ParseServersResult {
       for (const [name, serverConfig] of Object.entries(serverConfigs)) {
         if (typeof serverConfig === "object" && serverConfig !== null) {
           const server = serverConfig as any;
-          const trimmedUrl =
-            typeof server.url === "string" ? server.url.trim() : "";
 
           // Check for stdio servers (unsupported)
           if (server.type === "stdio" || server.command) {
             warnings.push({ kind: "skipped_stdio", path, name });
+            continue;
+          }
+
+          const missing = new Set<string>();
+          const trimmedUrl =
+            typeof server.url === "string"
+              ? expandEnv(server.url, missing).trim()
+              : "";
+          let headers: Record<string, string> | undefined;
+          if (
+            server.headers &&
+            typeof server.headers === "object" &&
+            !Array.isArray(server.headers)
+          ) {
+            headers = {};
+            for (const [key, value] of Object.entries(server.headers)) {
+              headers[key] =
+                typeof value === "string"
+                  ? expandEnv(value, missing)
+                  : String(value);
+            }
+          }
+
+          // Skip rather than send a literal placeholder as a URL or credential
+          if (missing.size > 0) {
+            warnings.push({
+              kind: "unresolved_env",
+              path,
+              name,
+              variables: [...missing],
+            });
             continue;
           }
 
@@ -182,14 +286,7 @@ export function getMcpServers(paths: string[]): ParseServersResult {
             name,
           };
 
-          // Extract headers if present
-          if (
-            server.headers &&
-            typeof server.headers === "object" &&
-            !Array.isArray(server.headers)
-          ) {
-            result.headers = server.headers as Record<string, string>;
-          }
+          if (headers) result.headers = headers;
 
           servers.push(result);
         }
