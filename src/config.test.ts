@@ -606,6 +606,10 @@ describe("config", () => {
         );
         const json = JSON.stringify({ auth: `Bearer "Pass&word'123"` });
         expect(redactSecrets(json)).toBe('{"auth":"***"}');
+        // Go's encoding/json escapes & < > for HTML safety
+        expect(redactSecrets(String.raw`key: Pass\u0026word'123`)).toBe(
+          "key: ***",
+        );
         expect(redactSecrets("Invalid API key: TopSecret123")).toBe(
           "Invalid API key: ***",
         );

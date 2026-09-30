@@ -141,17 +141,22 @@ function registerSecret(value: string): void {
   }
 }
 
-/** HTML (both apostrophe styles) and JSON string escapings of `text`. */
+/** HTML (both apostrophe styles) and JSON string escapings (plain and Go's HTML-safe). */
 function escapes(text: string): string[] {
   const html = text
     .replaceAll("&", "&amp;")
     .replaceAll("<", "&lt;")
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;");
+  const json = JSON.stringify(text).slice(1, -1);
   return [
     html.replaceAll("'", "&#39;"),
     html.replaceAll("'", "&#x27;"),
-    JSON.stringify(text).slice(1, -1),
+    json,
+    json
+      .replaceAll("&", "\\u0026")
+      .replaceAll("<", "\\u003c")
+      .replaceAll(">", "\\u003e"),
   ];
 }
 
