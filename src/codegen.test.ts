@@ -297,6 +297,8 @@ function typecheck(code: string): string[] {
     compilerOptions: {
       strict: true,
       noUnusedLocals: true,
+      // Resolve to source: package exports point at dist, absent before a build
+      paths: { "mcp-client-gen": [resolve(import.meta.dir, "index.ts")] },
       noEmit: true,
       skipLibCheck: true,
       target: ScriptTarget.ESNext,

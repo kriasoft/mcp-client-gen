@@ -151,8 +151,12 @@ function printUsage(
   console.log(`  import { createMcpConnection } from "mcp-client-gen";`);
   console.log(``);
   console.log(`  const connection = await createMcpConnection({`);
+  // Never echo credentials: config URLs and headers may hold expanded secrets
+  const url = new URL(server.url);
   console.log(`    type: ${JSON.stringify(server.type)},`);
-  console.log(`    url: ${JSON.stringify(server.url)},`);
+  console.log(`    url: ${JSON.stringify(url.origin + url.pathname)},`);
+  if (server.headers || url.search || url.username)
+    console.log(`    // plus the headers/credentials from your MCP config`);
   console.log(`  });`);
   console.log(`  const client = ${factoryName}(connection);`);
 }

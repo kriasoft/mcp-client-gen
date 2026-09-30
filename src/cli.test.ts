@@ -4,6 +4,7 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { createMcpHandler, McpServer } from "@modelcontextprotocol/server";
 import { join, resolve } from "node:path";
 
 /**
@@ -85,6 +86,35 @@ describe("cli", () => {
       expect(exitCode).toBe(0);
       expect(stdout).toContain("Usage:");
       expect(stderr).toBe("");
+    });
+  });
+
+  describe("after generating", () => {
+    test("prints usage without echoing URL credentials", async () => {
+      const mcp = createMcpHandler(() => {
+        const server = new McpServer({ name: "demo", version: "1.0.0" });
+        server.registerTool("ping", {}, async () => ({ content: [] }));
+        return server;
+      });
+      const server = Bun.serve({
+        hostname: "127.0.0.1",
+        port: 0,
+        fetch: (request) => mcp.fetch(request),
+      });
+      try {
+        // Async spawn: a sync one would block this process's server
+        const proc = Bun.spawn(
+          ["bun", CLI, `${server.url}mcp?api_key=SECRET_123`, "-o", "out.ts"],
+          { cwd, stdout: "pipe", stderr: "pipe" },
+        );
+        const stdout = await new Response(proc.stdout).text();
+        expect(await proc.exited).toBe(0);
+        expect(stdout).toContain(`url: "${server.url}mcp"`);
+        expect(stdout).toContain("headers/credentials from your MCP config");
+        expect(stdout).not.toContain("SECRET_123");
+      } finally {
+        await server.stop(true);
+      }
     });
   });
 });
