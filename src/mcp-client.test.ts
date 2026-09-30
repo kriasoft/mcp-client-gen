@@ -10,6 +10,7 @@ import { createMcpHandler, McpServer } from "@modelcontextprotocol/server";
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 import type { CredentialStore } from "oauth-callback/mcp";
 import { createMcpConnection, type McpConnection } from "./mcp-client.js";
+import { startLegacySseServer } from "../test/utils/legacy-sse-server.js";
 import type { McpServerConfig } from "./types.js";
 
 let fixture: ReturnType<typeof startFixture>;
@@ -112,25 +113,35 @@ describe("createMcpConnection", () => {
     expect(connection.tools).toHaveLength(1);
   });
 
-  test("merges SSE server headers with Headers-instance request headers", async () => {
-    const seen: Headers[] = [];
-    const fetch = (async (
-      _url: URL | string,
-      init?: RequestInit,
-    ): Promise<Response> => {
-      seen.push(new Headers(init?.headers));
-      throw new Error("stop");
-    }) as typeof globalThis.fetch;
+  test("connects over legacy SSE with server headers on every request", async () => {
+    const sse = startLegacySseServer();
+    try {
+      const connection = await connect(
+        {
+          type: "sse",
+          url: sse.url,
+          // Content-Type conflicts with the SDK's JSON POSTs: request headers must win
+          headers: { "X-Api-Key": "secret", "Content-Type": "text/plain" },
+        },
+        { timeout: 100 },
+      );
 
-    await expect(
-      createMcpConnection(
-        { type: "sse", url: fixture.url, headers: { "X-Api-Key": "secret" } },
-        { fetch },
-      ),
-    ).rejects.toThrow();
-
-    expect(seen[0]?.get("x-api-key")).toBe("secret");
-    expect(seen[0]?.get("accept")).toBe("text/event-stream");
+      expect(connection.tools.map((t) => t.name)).toEqual(["echo"]);
+      // The header timeout bounds only the wait for headers: the stream outlives it
+      await Bun.sleep(300);
+      expect((await connection.client.listTools()).tools).toHaveLength(1);
+      const get = sse.requests.filter((r) => r.method === "GET");
+      const posts = sse.requests.filter((r) => r.method === "POST");
+      expect(get).toHaveLength(1);
+      expect(posts.length).toBeGreaterThan(0);
+      for (const { headers } of sse.requests)
+        expect(headers.get("x-api-key")).toBe("secret");
+      expect(get[0]?.headers.get("accept")).toBe("text/event-stream");
+      for (const { headers } of posts)
+        expect(headers.get("content-type")).toBe("application/json");
+    } finally {
+      await sse.close();
+    }
   });
 
   test("connects to a private-network http: server without OAuth", async () => {
