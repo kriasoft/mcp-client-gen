@@ -14,11 +14,11 @@ export { introspectServer, introspectServers } from "./introspection.js";
 export {
   generateClientClass,
   generateClientFile,
-  generateToolInterface,
-  generateToolOutputInterface,
+  generateToolInputType,
+  generateToolOutputType,
   hasOutputSchema,
   jsonSchemaToTypeScript,
-  type CodegenOptions,
+  type CodegenResult,
 } from "./codegen/index.js";
 
 export { MCP_CONFIG_PATHS } from "./config.js";

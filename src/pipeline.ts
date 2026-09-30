@@ -11,7 +11,7 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import { format as prettierFormat, resolveConfig } from "prettier";
-import { generateClientFile, type CodegenOptions } from "./codegen/index.js";
+import { clientClassName, generateClientFile } from "./codegen/index.js";
 import {
   introspectServers,
   type IntrospectionFailure,
@@ -20,7 +20,7 @@ import {
 import type { McpClientConfig } from "./mcp-client.js";
 import type { McpServerConfig } from "./types.js";
 
-export interface GenerationOptions extends CodegenOptions {
+export interface GenerationOptions {
   /** MCP client config for connections */
   clientConfig?: McpClientConfig;
   /** Format with Prettier (default: true) */
@@ -108,34 +108,27 @@ export async function generateClient(
     throw new Error("No servers provided");
   }
 
-  // Introspect all servers in parallel
-  const results = await introspectServers(servers, options.clientConfig);
-
-  // First pass: derive names and detect collisions
-  const names = results.map((result, i) => extractServerName(result.server, i));
-  const seen = new Map<string, number[]>();
-  for (let i = 0; i < names.length; i++) {
-    const name = names[i]!;
-    const indices = seen.get(name) ?? [];
-    indices.push(i);
-    seen.set(name, indices);
-  }
-
-  // Check for collisions and fail with actionable message
-  const collisions = [...seen.entries()].filter(
-    ([, indices]) => indices.length > 1,
-  );
+  // Names must map to distinct classes; check before introspecting (it may run OAuth)
+  const names = servers.map((server, i) => extractServerName(server, i));
+  const byClass = new Map<string, number[]>();
+  names.forEach((name, i) => {
+    const className = clientClassName(name);
+    byClass.set(className, [...(byClass.get(className) ?? []), i]);
+  });
+  const collisions = [...byClass.values()].filter((ids) => ids.length > 1);
   if (collisions.length > 0) {
     const details = collisions
-      .map(([name, indices]) => {
-        const urls = indices.map((i) => `  - ${servers[i]!.url}`).join("\n");
-        return `Name "${name}" from:\n${urls}`;
-      })
+      .map((ids) =>
+        ids.map((i) => `  - "${names[i]}" (${servers[i]!.url})`).join("\n"),
+      )
       .join("\n\n");
     throw new Error(
-      `Server name collision detected. Add explicit "name" property to distinguish:\n\n${details}`,
+      `Server names collide in generated code. Give each server a distinct "name":\n\n${details}`,
     );
   }
+
+  // Introspect all servers in parallel
+  const results = await introspectServers(servers, options.clientConfig);
 
   // Aggregate successes and failures by derived server name
   const successes = new Map<string, IntrospectionSuccess>();
@@ -160,7 +153,7 @@ export async function generateClient(
   }
 
   // Generate TypeScript code
-  const result = generateClientFile(successes, options);
+  const result = generateClientFile(successes);
 
   // Format with Prettier
   let code = result.code;

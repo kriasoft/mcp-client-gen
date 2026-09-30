@@ -7,46 +7,10 @@
  * SPDX-License-Identifier: MIT
  */
 
-// JS reserved words that need escaping when used as identifiers
-const RESERVED = new Set([
-  "break",
-  "case",
-  "catch",
-  "class",
-  "const",
-  "continue",
-  "debugger",
-  "default",
-  "delete",
-  "do",
-  "else",
-  "export",
-  "extends",
-  "finally",
-  "for",
-  "function",
-  "if",
-  "import",
-  "in",
-  "instanceof",
-  "new",
-  "return",
-  "super",
-  "switch",
-  "this",
-  "throw",
-  "try",
-  "typeof",
-  "var",
-  "void",
-  "while",
-  "with",
-  "yield",
-]);
-
 /**
  * Convert string to PascalCase.
- * Produces valid TypeScript identifiers (prepends underscore if starts with digit).
+ * Produces valid identifiers (prepends underscore if starts with digit). Reserved words
+ * need no escaping: results only name types, classes and class members.
  */
 export function pascalCase(str: string): string {
   const result = str
@@ -57,7 +21,6 @@ export function pascalCase(str: string): string {
 
   if (!result) return "Unknown";
   if (/^[0-9]/.test(result)) return "_" + result;
-  if (RESERVED.has(result.toLowerCase())) return "_" + result;
   return result;
 }
 
@@ -74,6 +37,31 @@ export function camelCase(str: string): string {
 
   if (!result) return "unknown";
   if (/^[0-9]/.test(result)) return "_" + result;
-  if (RESERVED.has(result)) return "_" + result;
   return result;
+}
+
+/** Object key as written in TypeScript: bare when a valid identifier, else a string literal. */
+export function propertyKey(name: string): string {
+  return /^[A-Za-z_$][\w$]*$/.test(name) ? name : JSON.stringify(name);
+}
+
+/** Server-provided text made safe inside a comment: `*\/` would end it early. */
+export function commentText(text: string): string {
+  return text.replace(/\*\//g, "*\\/");
+}
+
+/** JSDoc block for server-provided text. */
+export function docComment(text: string): string {
+  const lines = commentText(text.trim()).split(/\r?\n/);
+  return lines.length === 1
+    ? `/** ${lines[0]} */`
+    : `/**\n${lines.map((line) => ` * ${line}`.trimEnd()).join("\n")}\n */`;
+}
+
+/** `base`, or `base2`, `base3`, … — the first name not in `taken`, which it then joins. */
+export function uniqueName(base: string, taken: Set<string>): string {
+  let name = base;
+  for (let n = 2; taken.has(name); n++) name = `${base}${n}`;
+  taken.add(name);
+  return name;
 }

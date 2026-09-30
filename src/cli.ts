@@ -172,7 +172,6 @@ async function runGeneration(servers: McpServerConfig[], outputFile: string) {
 
   const result = await showGenerationProgress(servers, () =>
     generateClient(servers, {
-      treeShakable: true,
       outputPath: absoluteOutput,
     }),
   );
@@ -213,9 +212,7 @@ async function main() {
           await runGeneration([server], mode.output);
         } else {
           // Stdout: just output the code
-          const result = await generateClient([server], {
-            treeShakable: true,
-          });
+          const result = await generateClient([server], {});
           process.stdout.write(result.code);
         }
       } catch (error) {

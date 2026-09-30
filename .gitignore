@@ -42,3 +42,6 @@ report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
 *.local.md
 *.local.ts
 *.local.json
+
+# agent worktrees
+.claude/worktrees/

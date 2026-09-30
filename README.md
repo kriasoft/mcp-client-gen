@@ -35,7 +35,7 @@ const pages = await notion.notionSearch({ query: "Meeting Notes" });
 
 - **Type-safe** — Generated TypeScript types from server schemas
 - **Zero config auth** — OAuth 2.1 with PKCE, just approve in browser
-- **Tree-shakable** — Only bundle the methods you import
+- **Tree-shakable** — One class per server; bundles include only the clients you use
 
 ## Installation
 

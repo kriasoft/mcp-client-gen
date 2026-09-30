@@ -79,10 +79,7 @@ async function generateClient(introspectionResult: IntrospectionSuccess) {
   const servers = new Map<string, IntrospectionSuccess>();
   servers.set("notion", introspectionResult);
 
-  const generatedCode = generateClientFile(servers, {
-    includeComments: true,
-    treeShakable: true,
-  });
+  const { code: generatedCode } = generateClientFile(servers);
 
   console.log("   Client code generated successfully!");
   console.log(`   Total size: ${(generatedCode.length / 1024).toFixed(2)} KB`);

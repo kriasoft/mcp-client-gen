@@ -53,8 +53,8 @@ const expectedMethods = [
   "notionGetComments",
   "notionGetTeams",
   "notionGetUsers",
-  "getResource",
-  "getEnhancedMarkdownSpecification",
+  "readResource",
+  "readEnhancedMarkdownSpecification",
 ];
 
 const missingMethods = expectedMethods.filter(
