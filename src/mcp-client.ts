@@ -61,7 +61,10 @@ export interface McpClientConfig {
   oauth?: McpOAuthOptions;
   /** Custom fetch for proxies/interceptors */
   fetch?: typeof fetch;
-  /** Per-request timeout in ms (SDK default: 60s) */
+  /**
+   * Timeout in ms for each request made while connecting and listing capabilities
+   * (SDK default: 60s). Generated client methods take per-call `options` instead.
+   */
   timeout?: number;
 }
 

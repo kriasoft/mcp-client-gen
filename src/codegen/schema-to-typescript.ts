@@ -26,6 +26,8 @@ function convert(schema: Schema, root: Schema, refs: Set<string>): string {
     return "unknown";
   if (schema === false) return "never";
   if (typeof schema !== "object") return "unknown";
+  // A nested $id starts a new resource: its `#/...` refs resolve within it
+  if (typeof schema.$id === "string" && schema !== root) root = schema;
 
   if (typeof schema.$ref === "string") {
     const ref: string = schema.$ref;
@@ -135,10 +137,17 @@ function objectType(
     lines.push(`${propertyKey(key)}: unknown;`);
   }
 
+  // Keys beyond `properties`: additionalProperties and patternProperties (patterns
+  // aren't modeled, so their value types join one string index signature)
   const additional = schema.additionalProperties;
-  if (additional !== undefined && additional !== false) {
+  const patterns = Object.values(schema.patternProperties ?? {}) as Schema[];
+  const extraTypes = [
+    ...(additional !== undefined && additional !== false ? [additional] : []),
+    ...patterns,
+  ].map((s) => convert(s, root, refs));
+  if (extraTypes.length > 0) {
     // The index signature must admit every declared property's type (TS2411)
-    const indexType = convert(additional, root, refs);
+    const indexType = union(extraTypes);
     const types = indexType === "unknown" ? [] : [indexType, ...valueTypes];
     lines.push(
       `[key: string]: ${types.length ? union(types.map(group)) : "unknown"};`,
@@ -157,9 +166,15 @@ function objectType(
 function resolveRef(root: Schema, ref: string): Schema {
   if (ref === "#") return root;
   if (!ref.startsWith("#/")) return undefined;
+  let pointer: string;
+  try {
+    pointer = decodeURIComponent(ref.slice(2)); // URI-decode, then split (RFC 6901 §6)
+  } catch {
+    return undefined;
+  }
   let node: any = root;
-  for (const raw of ref.slice(2).split("/")) {
-    const key = decodeURIComponent(raw).replace(/~1/g, "/").replace(/~0/g, "~");
+  for (const raw of pointer.split("/")) {
+    const key = raw.replace(/~1/g, "/").replace(/~0/g, "~");
     if (node === null || typeof node !== "object" || !(key in node))
       return undefined;
     node = node[key];

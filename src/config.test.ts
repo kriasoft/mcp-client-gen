@@ -538,6 +538,23 @@ describe("config", () => {
         expect(servers[0]?.url).toBe("https://a.dev");
       });
 
+      test("never reports fallback values; rejects nested placeholders", () => {
+        process.env.MCP_TEST_KEY = "primary";
+        const { servers, warnings } = parse({
+          url: "https://a.dev/mcp",
+          headers: {
+            Authorization: "${API-KEY:-super-secret}",
+            "X-Nested": "${MCP_TEST_KEY:-${MCP_TEST_OTHER}}",
+          },
+        });
+        expect(servers).toEqual([]);
+        expect(JSON.stringify(warnings)).not.toContain("super-secret");
+        expect(warnings[0]).toMatchObject({
+          kind: "unresolved_env",
+          variables: ["API-KEY", "MCP_TEST_KEY"],
+        });
+      });
+
       test("skips a server with unset variables and names them", () => {
         delete process.env.MCP_TEST_MISSING;
         delete process.env.MCP_TEST_HOST;
@@ -596,8 +613,15 @@ describe("config", () => {
         });
       });
 
-      test("still rejects invalid JSON", () => {
+      test("ends line comments at CR; strips a BOM", () => {
+        expect(parseJsonc('\uFEFF// c\r{"a": 1}')).toEqual({ a: 1 });
+      });
+
+      test("still rejects invalid JSON and unterminated comments", () => {
         expect(() => parseJsonc("{,,}")).toThrow();
+        expect(() => parseJsonc('{"a": 1} /* oops')).toThrow(
+          "Unterminated /* comment",
+        );
         expect(() => parseJsonc('{"a": 1 "b": 2}')).toThrow();
       });
     });

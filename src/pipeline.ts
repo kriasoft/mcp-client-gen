@@ -52,9 +52,14 @@ export function extractServerName(
     // Extract subdomain or first path segment as name
     const hostname = url.hostname;
     const parts = hostname.split(".");
+    // IP addresses and localhost name nothing (127.0.0.1 would yield "0")
+    const namedHost =
+      hostname !== "localhost" &&
+      !hostname.startsWith("[") &&
+      !/^\d+(\.\d+){3}$/.test(hostname);
 
     // Handle subdomains like "api.notion.com" -> "notion"
-    if (parts.length >= 2) {
+    if (namedHost && parts.length >= 2) {
       const name = parts.length > 2 ? parts[parts.length - 2] : parts[0];
       if (name && name !== "www" && name !== "api") {
         return name;

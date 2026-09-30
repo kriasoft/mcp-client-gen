@@ -68,6 +68,7 @@ export function generateClientFile(
       "Client",
       ...(usesPrompts ? ["PromptMessage"] : []),
       ...(usesResources ? ["ReadResourceResult"] : []),
+      ...(usesTools || usesPrompts || usesResources ? ["RequestOptions"] : []),
     ],
     isTypeOnly: true,
   });
@@ -86,6 +87,7 @@ export function generateClientFile(
     "McpConnection",
     "PromptMessage",
     "ReadResourceResult",
+    "RequestOptions",
     ...classes.keys(),
   ]);
 

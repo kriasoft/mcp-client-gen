@@ -59,6 +59,13 @@ describe("extractServerName", () => {
     ).toBe("notion");
   });
 
+  test("ignores IP and localhost hosts", () => {
+    const name = (url: string) => extractServerName({ type: "http", url }, 0);
+    expect(name("http://127.0.0.1:8080/mcp")).toBe("server1");
+    expect(name("http://localhost:3000/github")).toBe("github");
+    expect(name("http://[::1]:3000/mcp")).toBe("server1");
+  });
+
   test("falls back to index for unresolvable URLs", () => {
     expect(extractServerName({ type: "http", url: "https://api.com" }, 0)).toBe(
       "server1",
@@ -186,6 +193,37 @@ describe("jsonSchemaToTypeScript", () => {
     expect(type).toContain("next?: {\nid?: string;\nnext?: unknown;\n};");
     expect(ts({ $ref: "https://example.com/schema" })).toBe("unknown");
   });
+
+  test("scopes refs to the nearest $id and decodes pointers first", () => {
+    const type = ts({
+      type: "object",
+      properties: {
+        child: {
+          $id: "child",
+          type: "object",
+          properties: { x: { $ref: "#/$defs/X" } },
+          $defs: { X: { type: "string" } },
+        },
+        y: { $ref: "#/$defs/a%2F$defs%2Fb" },
+      },
+      $defs: {
+        X: { type: "number" },
+        a: { $defs: { b: { type: "boolean" } } },
+      },
+    });
+    expect(type).toContain("x?: string;");
+    expect(type).toContain("y?: boolean;");
+  });
+
+  test("patternProperties widen the index signature", () => {
+    expect(
+      ts({
+        type: "object",
+        patternProperties: { "^x": { type: "string" } },
+        additionalProperties: false,
+      }),
+    ).toBe("{\n[key: string]: string;\n}");
+  });
 });
 
 /** Every naming and escaping hazard the generator must survive, on two servers. */
@@ -213,6 +251,7 @@ const edgeCases = new Map<string, IntrospectionSuccess>([
         tool("get_user"),
         tool("client"),
         tool("constructor"),
+        tool("then"),
         tool('say"hi\\n'),
         tool("search", {
           outputSchema: {
@@ -302,10 +341,15 @@ describe("generateClientFile", () => {
   });
 
   test("allocates collision-free member and type names", () => {
-    expect(code).toContain("async getUser(input: GetUserInput)");
-    expect(code).toContain("async getUser2(input: GetUser2Input = {})");
+    expect(code).toContain(
+      "async getUser(input: GetUserInput, options?: RequestOptions)",
+    );
+    expect(code).toContain(
+      "async getUser2(input: GetUser2Input = {}, options?: RequestOptions)",
+    );
     expect(code).toContain("async client2(");
     expect(code).toContain("async constructor2(");
+    expect(code).toContain("async then2(");
     // Same tool on two servers: the second server's types get its prefix
     expect(code).toContain("export type SearchInput =");
     expect(code).toContain("export type BetaSearchInput =");
@@ -333,7 +377,9 @@ describe("generateClientFile", () => {
   });
 
   test("emits resource readers only for servers with resources", () => {
-    expect(code).toContain("async readResource(uri: string)");
+    expect(code).toContain(
+      "async readResource(uri: string, options?: RequestOptions)",
+    );
     const onlyBeta = generateClientFile(
       new Map([["beta", edgeCases.get("beta")!]]),
     ).code;
@@ -347,10 +393,11 @@ describe("generated client at runtime", () => {
   /** Fake connection whose client returns canned results and records calls. */
   const fakeConnection = (results: Record<string, unknown>) => {
     const calls: unknown[] = [];
-    const respond = (method: string) => async (params: unknown) => {
-      calls.push({ method, params });
-      return results[method];
-    };
+    const respond =
+      (method: string) => async (params: unknown, options?: unknown) => {
+        calls.push(options ? { method, params, options } : { method, params });
+        return results[method];
+      };
     const client = {
       callTool: respond("callTool"),
       readResource: respond("readResource"),
@@ -377,13 +424,17 @@ describe("generated client at runtime", () => {
       ],
     };
     const { connection, calls } = fakeConnection({ callTool: multi });
+    const options = { timeout: 5 };
     expect(
-      await mod.createAlphaClient(connection).getUser({ "user-id": "1" }),
+      await mod
+        .createAlphaClient(connection)
+        .getUser({ "user-id": "1" }, options),
     ).toEqual(multi);
     expect(calls).toEqual([
       {
         method: "callTool",
         params: { name: "get-user", arguments: { "user-id": "1" } },
+        options,
       },
     ]);
   });

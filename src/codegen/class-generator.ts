@@ -26,8 +26,18 @@ import {
   uniqueName,
 } from "./utils.js";
 
-/** Members every generated class defines; tools/prompts/resources can't take these names. */
-const RESERVED_MEMBERS = ["constructor", "client", "readResource"];
+/**
+ * Names tools/prompts/resources can't take: members every class defines, and `then`,
+ * which would make the client a thenable (`await`-ing it would call that tool).
+ */
+const RESERVED_MEMBERS = ["constructor", "client", "readResource", "then"];
+
+/** Trailing parameter of every generated method: per-call timeout, signal, progress. */
+const OPTIONS_PARAM = {
+  name: "options",
+  type: "RequestOptions",
+  hasQuestionToken: true,
+};
 
 /**
  * Generate the client class (and its tool types) for one server.
@@ -41,6 +51,16 @@ export function generateClientClass(
 ): ClassDeclaration {
   const className = clientClassName(serverName);
   const members = new Set(RESERVED_MEMBERS);
+
+  // Allocate names and emit tool types first, so they precede the class
+  const tools = result.tools.map((tool) => {
+    const methodName = uniqueName(camelCase(tool.name), members);
+    return {
+      tool,
+      methodName,
+      ...addToolTypes(sourceFile, tool, methodName, serverName, typeNames),
+    };
+  });
 
   const classDecl = sourceFile.addClass({
     name: className,
@@ -66,18 +86,8 @@ export function generateClientClass(
     statements: ["return this.#connection.client;"],
   });
 
-  // Tools first: they get the plainest names
-  for (const tool of result.tools) {
-    const methodName = uniqueName(camelCase(tool.name), members);
-    addToolMethod(
-      sourceFile,
-      classDecl,
-      tool,
-      methodName,
-      serverName,
-      typeNames,
-    );
-  }
+  // Tools were named first: they get the plainest names
+  for (const entry of tools) addToolMethod(classDecl, entry);
   for (const prompt of result.prompts) {
     const methodName = uniqueName(camelCase(prompt.name) + "Prompt", members);
     addPromptMethod(classDecl, prompt, methodName);
@@ -102,14 +112,14 @@ export function clientClassName(serverName: string): string {
   return pascalCase(serverName) + "Client";
 }
 
-function addToolMethod(
+/** Emit a tool's input (and output) types; returns their names. */
+function addToolTypes(
   sourceFile: SourceFile,
-  classDecl: ClassDeclaration,
   tool: Tool,
   methodName: string,
   serverName: string,
   typeNames: Set<string>,
-): void {
+): { inputType: string; outputType?: string } {
   const typeBase = allocateTypeBase(
     pascalCase(methodName),
     pascalCase(serverName),
@@ -117,9 +127,21 @@ function addToolMethod(
   );
   const inputType = `${typeBase}Input`;
   generateToolInputType(sourceFile, tool, inputType);
-  const outputType = hasOutputSchema(tool) ? `${typeBase}Output` : undefined;
-  if (outputType) generateToolOutputType(sourceFile, tool, outputType);
+  if (!hasOutputSchema(tool)) return { inputType };
+  const outputType = `${typeBase}Output`;
+  generateToolOutputType(sourceFile, tool, outputType);
+  return { inputType, outputType };
+}
 
+function addToolMethod(
+  classDecl: ClassDeclaration,
+  {
+    tool,
+    methodName,
+    inputType,
+    outputType,
+  }: { tool: Tool; methodName: string; inputType: string; outputType?: string },
+): void {
   const wireName = JSON.stringify(tool.name);
   classDecl.addMethod({
     name: methodName,
@@ -130,11 +152,12 @@ function addToolMethod(
         type: inputType,
         ...(hasOptionalInput(tool) && { initializer: "{}" }),
       },
+      OPTIONS_PARAM,
     ],
     returnType: `Promise<${outputType ?? "CallToolResult"}>`,
     docs: tool.description ? [commentText(tool.description)] : [],
     statements: [
-      `const result = await this.#connection.client.callTool({ name: ${wireName}, arguments: input });`,
+      `const result = await this.#connection.client.callTool({ name: ${wireName}, arguments: input }, options);`,
       outputType
         ? `return structuredResult<${outputType}>(result, ${wireName});`
         : `return toolResult(result, ${wireName});`,
@@ -156,19 +179,22 @@ function addPromptMethod(
   classDecl.addMethod({
     name: methodName,
     isAsync: true,
-    parameters: args.length
-      ? [
-          {
-            name: "args",
-            type: argsType,
-            ...(optional && { initializer: "{}" }),
-          },
-        ]
-      : [],
+    parameters: [
+      ...(args.length
+        ? [
+            {
+              name: "args",
+              type: argsType,
+              ...(optional && { initializer: "{}" }),
+            },
+          ]
+        : []),
+      OPTIONS_PARAM,
+    ],
     returnType: "Promise<PromptMessage[]>",
     docs: prompt.description ? [commentText(prompt.description)] : [],
     statements: [
-      `const result = await this.#connection.client.getPrompt({ name: ${JSON.stringify(prompt.name)}${args.length ? ", arguments: args" : ""} });`,
+      `const result = await this.#connection.client.getPrompt({ name: ${JSON.stringify(prompt.name)}${args.length ? ", arguments: args" : ""} }, options);`,
       "return result.messages;",
     ],
   });
@@ -178,11 +204,11 @@ function addReadResourceMethod(classDecl: ClassDeclaration): void {
   classDecl.addMethod({
     name: "readResource",
     isAsync: true,
-    parameters: [{ name: "uri", type: "string" }],
+    parameters: [{ name: "uri", type: "string" }, OPTIONS_PARAM],
     returnType: `Promise<ReadResourceResult["contents"]>`,
     docs: ["Read a resource by URI (listed or from a resource template)."],
     statements: [
-      "const result = await this.#connection.client.readResource({ uri });",
+      "const result = await this.#connection.client.readResource({ uri }, options);",
       "return result.contents;",
     ],
   });
@@ -198,9 +224,12 @@ function addResourceMethod(
     .join("\n\n");
   classDecl.addMethod({
     name: methodName,
+    parameters: [OPTIONS_PARAM],
     returnType: `Promise<ReadResourceResult["contents"]>`,
     docs: [commentText(docs)],
-    statements: [`return this.readResource(${JSON.stringify(resource.uri)});`],
+    statements: [
+      `return this.readResource(${JSON.stringify(resource.uri)}, options);`,
+    ],
   });
 }
 

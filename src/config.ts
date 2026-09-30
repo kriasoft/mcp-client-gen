@@ -42,6 +42,7 @@ export function formatConfigWarning(warning: ConfigWarning): string {
  * dependency and Bun-only APIs (the CLI also runs on Node).
  */
 export function parseJsonc(text: string): unknown {
+  if (text.startsWith("\uFEFF")) text = text.slice(1); // BOM, common on Windows
   let out = "";
   let comma = -1; // Index in `out` of a comma that may turn out to be trailing
   let i = 0;
@@ -55,10 +56,12 @@ export function parseJsonc(text: string): unknown {
       i = j + 1;
       comma = -1;
     } else if (ch === "/" && next === "/") {
-      while (i < text.length && text[i] !== "\n") i++;
+      while (i < text.length && text[i] !== "\n" && text[i] !== "\r") i++;
     } else if (ch === "/" && next === "*") {
       const end = text.indexOf("*/", i + 2);
-      i = end === -1 ? text.length : end + 2;
+      // A truncated file must fail, not silently drop its tail
+      if (end === -1) throw new SyntaxError("Unterminated /* comment");
+      i = end + 2;
       out += " ";
     } else {
       if ((ch === "}" || ch === "]") && comma !== -1) {
@@ -86,8 +89,11 @@ function expandEnv(value: string, missing: Set<string>): string {
     const body = expr.startsWith("env:") ? expr.slice(4) : expr;
     const sep = body.indexOf(":-");
     const name = sep === -1 ? body : body.slice(0, sep);
-    if (!ENV_NAME.test(name)) {
-      missing.add(expr);
+    // Report names only: a fallback may be a secret. Nested placeholders in a
+    // fallback aren't supported (the pattern ends at the first "}").
+    const fallback = sep === -1 ? undefined : body.slice(sep + 2);
+    if (!ENV_NAME.test(name) || fallback?.includes("${")) {
+      missing.add(name || "(empty)");
       return match;
     }
     const envValue = process.env[name];
@@ -97,7 +103,7 @@ function expandEnv(value: string, missing: Set<string>): string {
       return match;
     }
     // Shell semantics: `:-` also replaces an empty value
-    return envValue || body.slice(sep + 2);
+    return envValue || fallback!;
   });
 }
 

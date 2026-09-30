@@ -87,7 +87,10 @@ Wire names, URIs and argument names are emitted as string literals; server-provi
 
 ## Type Generation
 
-Tool input and output types are `type` aliases generated from the whole schema (roots may be unions or dictionaries, and only aliases are assignable to the SDK's `Record<string, unknown>` arguments). Types may be looser than the schema, never stricter.
+Tool input and output types are `type` aliases generated from the whole schema (roots may be unions or dictionaries, and only aliases are assignable to the SDK's `Record<string, unknown>` arguments). Types may be looser than the schema, never stricter, with two deliberate exceptions that keep typos in tool arguments visible:
+
+- An object without `additionalProperties` gets no index signature (JSON Schema would allow extra keys). Servers rarely mean it, and an open signature on every object disables excess-property checks.
+- `properties` / `items` without `type` imply an object / array (JSON Schema applies them conditionally).
 
 | JSON Schema                                         | TypeScript                                                |
 | --------------------------------------------------- | --------------------------------------------------------- |

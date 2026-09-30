@@ -132,9 +132,13 @@ function parseArguments(): CliMode {
  * Print usage instructions after generation.
  * Uses export names from codegen result (source of truth).
  */
-function printUsage(outputFile: string, exports: string[]) {
+function printUsage(
+  outputFile: string,
+  exports: string[],
+  server: McpServerConfig | undefined,
+) {
   const factoryName = exports[0];
-  if (!factoryName) return;
+  if (!factoryName || !server) return;
 
   // Ensure relative import path
   const importPath = outputFile.startsWith(".")
@@ -147,8 +151,8 @@ function printUsage(outputFile: string, exports: string[]) {
   console.log(`  import { createMcpConnection } from "mcp-client-gen";`);
   console.log(``);
   console.log(`  const connection = await createMcpConnection({`);
-  console.log(`    type: "http",`);
-  console.log(`    url: "https://your-mcp-server.com/mcp",`);
+  console.log(`    type: ${JSON.stringify(server.type)},`);
+  console.log(`    url: ${JSON.stringify(server.url)},`);
   console.log(`  });`);
   console.log(`  const client = ${factoryName}(connection);`);
 }
@@ -176,7 +180,9 @@ async function runGeneration(servers: McpServerConfig[], outputFile: string) {
     }
   }
 
-  printUsage(outputFile, result.exports);
+  // exports follow the servers map order: the first factory belongs to the first server
+  const [first] = result.servers.values();
+  printUsage(outputFile, result.exports, first?.server);
 }
 
 async function main() {

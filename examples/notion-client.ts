@@ -3,6 +3,7 @@ import type {
   CallToolResult,
   Client,
   ReadResourceResult,
+  RequestOptions,
 } from "@modelcontextprotocol/client";
 import type { McpConnection } from "mcp-client-gen";
 /** Throws when a tool reports failure (`isError`), with its text content as the message. */
@@ -12,377 +13,6 @@ function toolResult(result: CallToolResult, toolName: string): CallToolResult {
     .flatMap((block) => (block.type === "text" ? [block.text] : []))
     .join("\n");
   throw new Error(`Tool '${toolName}' failed: ${message || "no details"}`);
-}
-
-/** MCP client for the `notion` server. */
-export class NotionClient {
-  readonly #connection: McpConnection;
-
-  constructor(connection: McpConnection) {
-    this.#connection = connection;
-  }
-
-  /** Underlying MCP client, for requests this class doesn't wrap. */
-  get client(): Client {
-    return this.#connection.client;
-  }
-
-  /**
-   * Perform a search over:
-   * - "internal": Semantic search over Notion workspace and connected sources (Slack, Google Drive, Github, Jira, Microsoft Teams, Sharepoint, OneDrive, Linear). Supports filtering by creation date and creator.
-   * - "user": Search for users by name or email.
-   *
-   * Auto-selects AI search (with connected sources) or workspace search (workspace-only, faster) based on user's access to Notion AI. Use content_search_mode to override.
-   * Use "fetch" tool for full page/database contents after getting search results.
-   * To search within a database: First fetch the database to get the data source URL (collection://...) from <data-source url="..."> tags, then use that as data_source_url. For multi-source databases, match by view ID (?v=...) in URL or search all sources separately.
-   * Don't combine database URL/ID with collection:// prefix for data_source_url. Don't use database URL as page_url.
-   * 		<example description="Search with date range filter (only documents created in 2024)">
-   * 		{
-   * 			"query": "quarterly revenue report",
-   * 			"query_type": "internal",
-   * 			"filters": {
-   * 				"created_date_range": {
-   * 					"start_date": "2024-01-01",
-   * 					"end_date": "2025-01-01"
-   * 				}
-   * 			}
-   * 		}
-   * 		</example>
-   * 		<example description="Teamspace + creator filter">
-   * 		{"query": "project updates", "query_type": "internal", "teamspace_id": "f336d0bc-b841-465b-8045-024475c079dd", "filters": {"created_by_user_ids": ["a1b2c3d4-e5f6-7890-abcd-ef1234567890"]}}
-   * 		</example>
-   * 		<example description="Database with date + creator filters">
-   * 		{"query": "design review", "data_source_url": "collection://f336d0bc-b841-465b-8045-024475c079dd", "filters": {"created_date_range": {"start_date": "2024-10-01"}, "created_by_user_ids": ["a1b2c3d4-e5f6-7890-abcd-ef1234567890", "b2c3d4e5-f6a7-8901-bcde-f12345678901"]}}
-   * 		</example>
-   * 		<example description="User search">
-   * 		{"query": "john@example.com", "query_type": "user"}
-   * 		</example>
-   */
-  async notionSearch(input: NotionSearchInput): Promise<CallToolResult> {
-    const result = await this.#connection.client.callTool({
-      name: "notion-search",
-      arguments: input,
-    });
-    return toolResult(result, "notion-search");
-  }
-
-  /**
-   * Retrieves details about a Notion entity (page or database) by URL or ID.
-   * Provide URL or ID in `id` parameter. Make multiple calls to fetch multiple entities.
-   * Pages use enhanced Markdown format. For the complete specification, fetch the MCP resource at `notion://docs/enhanced-markdown-spec`.
-   * Databases return all data sources (collections of pages with same schema). For multi-source databases with URLs like notion.so/db-id?v=view-id, the view ID helps identify which data source to use (check response for view's dataSourceUrl).
-   * 		<example>{"id": "https://notion.so/workspace/Page-a1b2c3d4e5f67890"}</example>
-   * 		<example>{"id": "12345678-90ab-cdef-1234-567890abcdef"}</example>
-   */
-  async notionFetch(input: NotionFetchInput): Promise<CallToolResult> {
-    const result = await this.#connection.client.callTool({
-      name: "notion-fetch",
-      arguments: input,
-    });
-    return toolResult(result, "notion-fetch");
-  }
-
-  /**
-   * ## Overview
-   * Creates one or more Notion pages, with the specified properties and content.
-   * ## Parent
-   * All pages created with a single call to this tool will have the same parent. The parent can be a Notion page ("page_id") or data source ("data_source_id"). If the parent is omitted, the pages are created as standalone, workspace-level private pages, and the person that created them can organize them later as they see fit.
-   * If you have a database URL, ALWAYS pass it to the "fetch" tool first to get the schema and URLs of each data source under the database. You can't use the "database_id" parent type if the database has more than one data source, so you'll need to identify which "data_source_id" to use based on the situation and the results from the fetch tool (data source URLs look like collection://<data_source_id>).
-   * If you know the pages should be created under a data source, do NOT use the database ID or URL under the "page_id" parameter; "page_id" is only for regular, non-database pages.
-   * ## Content
-   * Notion page content is a string in Notion-flavored Markdown format.
-   * Don't include the page title at the top of the page's content. Only include it under "properties".
-   * **IMPORTANT**: For the complete Markdown specification, always first fetch the MCP resource at `notion://docs/enhanced-markdown-spec`. Do NOT guess or hallucinate Markdown syntax. This spec is also applicable to other tools like update-page and fetch.
-   * ## Properties
-   * Notion page properties are a JSON map of property names to SQLite values.
-   * When creating pages in a database:
-   * - Use the correct property names from the data source schema shown in the fetch tool results.
-   * - Always include a title property. Data sources always have exactly one title property, but it may not be named "title", so, again, rely on the fetched data source schema.
-   *
-   * For pages outside of a database:
-   * - The only allowed property is "title",	which is the title of the page in inline markdown format. Always include a "title" property.
-   *
-   * **IMPORTANT**: Some property types require expanded formats:
-   * - Date properties: Split into "date:{property}:start", "date:{property}:end" (optional), and "date:{property}:is_datetime" (0 or 1)
-   * - Place properties: Split into "place:{property}:name", "place:{property}:address", "place:{property}:latitude", "place:{property}:longitude", and "place:{property}:google_place_id" (optional)
-   * - Number properties: Use JavaScript numbers (not strings)
-   * - Checkbox properties: Use "__YES__" for checked, "__NO__" for unchecked
-   *
-   * **Special property naming**: Properties named "id" or "url" (case insensitive) must be prefixed with "userDefined:" (e.g., "userDefined:URL", "userDefined:id")
-   * ## Examples
-   * 		<example description="Create a standalone page with a title and content">
-   * 		{
-   * 			"pages": [
-   * 				{
-   * 					"properties": {"title": "Page title"},
-   * 					"content": "# Section 1 {color="blue"}
-   * Section 1 content
-   * ▶ Toggle block
-   * 	Hidden content inside toggle"
-   * 				}
-   * 			]
-   * 		}
-   * 		</example>
-   * 		<example description="Create a page under a database's data source">
-   * 		{
-   * 			"parent": {"data_source_id": "f336d0bc-b841-465b-8045-024475c079dd"},
-   * 			"pages": [
-   * 				{
-   * 					"properties": {
-   * 						"Task Name": "Task 123",
-   * 						"Status": "In Progress",
-   * 						"Priority": 5,
-   * 						"Is Complete": "__YES__",
-   * 						"date:Due Date:start": "2024-12-25",
-   * 						"date:Due Date:is_datetime": 0
-   * 					}
-   * 				}
-   * 			]
-   * 		}
-   * 		</example>
-   * 		<example description="Create a page with an existing page as a parent">
-   * 		{
-   * 			"parent": {"page_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890"},
-   * 			"pages": [
-   * 				{
-   * 					"properties": {"title": "Page title"},
-   * 					"content": "# Section 1
-   * Section 1 content
-   * # Section 2
-   * Section 2 content"
-   * 				}
-   * 			]
-   * 		}
-   * 		</example>
-   */
-  async notionCreatePages(
-    input: NotionCreatePagesInput,
-  ): Promise<CallToolResult> {
-    const result = await this.#connection.client.callTool({
-      name: "notion-create-pages",
-      arguments: input,
-    });
-    return toolResult(result, "notion-create-pages");
-  }
-
-  /**
-   * ## Overview
-   * Update a Notion page's properties or content.
-   * ## Properties
-   * Notion page properties are a JSON map of property names to SQLite values.
-   * For pages in a database:
-   * - ALWAYS use the "fetch" tool first to get the data source schema and the	exact property names.
-   * - Provide a non-null value to update a property's value.
-   * - Omitted properties are left unchanged.
-   *
-   * **IMPORTANT**: Some property types require expanded formats:
-   * - Date properties: Split into "date:{property}:start", "date:{property}:end" (optional), and "date:{property}:is_datetime" (0 or 1)
-   * - Place properties: Split into "place:{property}:name", "place:{property}:address", "place:{property}:latitude", "place:{property}:longitude", and "place:{property}:google_place_id" (optional)
-   * - Number properties: Use JavaScript numbers (not strings)
-   * - Checkbox properties: Use "__YES__" for checked, "__NO__" for unchecked
-   *
-   * **Special property naming**: Properties named "id" or "url" (case insensitive) must be prefixed with "userDefined:" (e.g., "userDefined:URL", "userDefined:id")
-   * For pages outside of a database:
-   * - The only allowed property is "title",	which is the title of the page in inline markdown format.
-   *
-   * ## Content
-   * Notion page content is a string in Notion-flavored Markdown format.
-   * **IMPORTANT**: For the complete Markdown specification, first fetch the MCP resource at `notion://docs/enhanced-markdown-spec`. Do NOT guess or hallucinate Markdown syntax.
-   * Before updating a page's content with this tool, use the "fetch" tool first to get the existing content to find out the Markdown snippets to use in the "replace_content_range" or "insert_content_after" commands.
-   * ## Examples
-   * 		<example description="Update page properties">
-   * 		{
-   * 			"page_id": "f336d0bc-b841-465b-8045-024475c079dd",
-   * 			"command": "update_properties",
-   * 			"properties": {
-   * 				"title": "New Page Title",
-   * 				"status": "In Progress",
-   * 				"priority": 5,
-   * 				"checkbox": "__YES__",
-   * 				"date:deadline:start": "2024-12-25",
-   * 				"date:deadline:is_datetime": 0,
-   * 				"place:office:name": "HQ",
-   * 				"place:office:latitude": 37.7749,
-   * 				"place:office:longitude": -122.4194
-   * 			}
-   * 		}
-   * 		</example>
-   * 		<example description="Replace the entire content of a page">
-   * 		{
-   * 			"page_id": "f336d0bc-b841-465b-8045-024475c079dd",
-   * 			"command": "replace_content",
-   * 			"new_str": "# New Section
-   * Updated content goes here"
-   * 		}
-   * 		</example>
-   * 		<example description="Replace specific content in a page">
-   * 		{
-   * 			"page_id": "f336d0bc-b841-465b-8045-024475c079dd",
-   * 			"command": "replace_content_range",
-   * 			"selection_with_ellipsis": "# Old Section...end of section",
-   * 			"new_str": "# New Section
-   * Updated content goes here"
-   * 		}
-   * 		</example>
-   * 		<example description="Insert content after specific text">
-   * 		{
-   * 			"page_id": "f336d0bc-b841-465b-8045-024475c079dd",
-   * 			"command": "insert_content_after",
-   * 			"selection_with_ellipsis": "## Previous section...",
-   * 			"new_str": "
-   * ## New Section
-   * Content to insert goes here"
-   * 		}
-   * 		</example>
-   * **Note**: For selection_with_ellipsis, provide only the first ~10 characters, an ellipsis, and the last ~10 characters. Ensure the selection is unique; use longer snippets if needed to avoid ambiguity.
-   */
-  async notionUpdatePage(
-    input: NotionUpdatePageInput,
-  ): Promise<CallToolResult> {
-    const result = await this.#connection.client.callTool({
-      name: "notion-update-page",
-      arguments: input,
-    });
-    return toolResult(result, "notion-update-page");
-  }
-
-  /** Move one or more Notion pages or databases to a new parent. */
-  async notionMovePages(input: NotionMovePagesInput): Promise<CallToolResult> {
-    const result = await this.#connection.client.callTool({
-      name: "notion-move-pages",
-      arguments: input,
-    });
-    return toolResult(result, "notion-move-pages");
-  }
-
-  /** Duplicate a Notion page. The page must be within the current workspace, and you must have permission to access it. The duplication completes asynchronously, so do not rely on the new page identified by the returned ID or URL to be populated immediately. Let the user know that the duplication is in progress and that they can check back later using the 'fetch' tool or by clicking the returned URL and viewing it in the Notion app. */
-  async notionDuplicatePage(
-    input: NotionDuplicatePageInput,
-  ): Promise<CallToolResult> {
-    const result = await this.#connection.client.callTool({
-      name: "notion-duplicate-page",
-      arguments: input,
-    });
-    return toolResult(result, "notion-duplicate-page");
-  }
-
-  /**
-   * Creates a new Notion database with the specified properties schema.
-   * If no title property provided, "Name" is auto-added. Returns Markdown with schema and SQLite definition.
-   * Property types: title (required), rich_text, number, select, multi_select, date, people, checkbox, url, email, phone_number, formula, relation, rollup.
-   *
-   * 		<example description="Minimal">{"properties": {}}</example>
-   * 		<example description="Task DB">{"parent": {"page_id": "f336d0bc-b841-465b-8045-024475c079dd"}, "title": [{"text": {"content": "Tasks"}}], "properties": {"Status": {"type": "select", "select": {"options": [{"name": "To Do", "color": "red"}, {"name": "Done", "color": "green"}]}}, "Due Date": {"type": "date", "date": {}}}}</example>
-   */
-  async notionCreateDatabase(
-    input: NotionCreateDatabaseInput,
-  ): Promise<CallToolResult> {
-    const result = await this.#connection.client.callTool({
-      name: "notion-create-database",
-      arguments: input,
-    });
-    return toolResult(result, "notion-create-database");
-  }
-
-  /**
-   * Update a Notion database's properties, name, description, or other attributes. Returns Markdown showing updated structure and schema.
-   * Database properties define columns/fields. See create_database for property types.
-   * Examples:
-   * (1) Update database title and description: { "database_id": "f336d0bc-b841-465b-8045-024475c079dd", "title": [{"type": "text", "text": {"content": "Project Tracker 2024"}}], "description": [{"type": "text", "text": {"content": "Track all projects and deliverables"}}] }
-   * (2) Add new properties to a database: { "database_id": "f336d0bc-b841-465b-8045-024475c079dd", "properties": { "Priority": { "select": { "options": [ {"name": "High", "color": "red"}, {"name": "Medium", "color": "yellow"}, {"name": "Low", "color": "green"} ] } }, "Due Date": {"date": {}}, "Assigned To": {"people": {}} } }
-   * (3) Rename an existing property (use the property ID or current name): { "database_id": "f336d0bc-b841-465b-8045-024475c079dd", "properties": { "Status": {"name": "Project Status"} } }
-   * (4) Remove a property (set to null): { "database_id": "f336d0bc-b841-465b-8045-024475c079dd", "properties": { "Old Property": null } }
-   * (5) Change display mode from inline to full page: { "database_id": "f336d0bc-b841-465b-8045-024475c079dd", "is_inline": false }
-   * (6) Move to trash (DANGER: confirm with user, cannot undo without Notion UI): {"database_id": "f336d0bc-b841-465b-8045-024475c079dd", "in_trash": true}
-   * Notes: Cannot delete/create title properties. Max one unique_id property. Cannot update synced databases. Use "fetch" first to see current schema.
-   */
-  async notionUpdateDatabase(
-    input: NotionUpdateDatabaseInput,
-  ): Promise<CallToolResult> {
-    const result = await this.#connection.client.callTool({
-      name: "notion-update-database",
-      arguments: input,
-    });
-    return toolResult(result, "notion-update-database");
-  }
-
-  /** Add a comment to a page */
-  async notionCreateComment(
-    input: NotionCreateCommentInput,
-  ): Promise<CallToolResult> {
-    const result = await this.#connection.client.callTool({
-      name: "notion-create-comment",
-      arguments: input,
-    });
-    return toolResult(result, "notion-create-comment");
-  }
-
-  /** Get all comments of a page */
-  async notionGetComments(
-    input: NotionGetCommentsInput,
-  ): Promise<CallToolResult> {
-    const result = await this.#connection.client.callTool({
-      name: "notion-get-comments",
-      arguments: input,
-    });
-    return toolResult(result, "notion-get-comments");
-  }
-
-  /**
-   * Retrieves a list of teams (teamspaces) in the current workspace. Shows which teams exist, user membership status, IDs, names, and roles.
-   * Teams are returned split by membership status and limited to a maximum of 10 results.
-   * <examples>
-   * 1. List all teams (up to the limit of each type): {}
-   * 2. Search for teams by name: {"query": "engineering"}
-   * 3. Find a specific team: {"query": "Product Design"}
-   * </examples>
-   */
-  async notionGetTeams(
-    input: NotionGetTeamsInput = {},
-  ): Promise<CallToolResult> {
-    const result = await this.#connection.client.callTool({
-      name: "notion-get-teams",
-      arguments: input,
-    });
-    return toolResult(result, "notion-get-teams");
-  }
-
-  /**
-   * Retrieves a list of users in the current workspace. Shows workspace members and guests with their IDs, names, emails (if available), and types (person or bot).
-   * Supports cursor-based pagination to iterate through all users in the workspace.
-   * <examples>
-   * 1. List all users (first page): {}
-   * 2. Search for users by name or email: {"query": "john"}
-   * 3. Get next page of results: {"start_cursor": "abc123"}
-   * 4. Set custom page size: {"page_size": 20}
-   * 5. Fetch a specific user by ID: {"user_id": "00000000-0000-4000-8000-000000000000"}
-   * 6. Fetch the current user: {"user_id": "self"}
-   * </examples>
-   */
-  async notionGetUsers(
-    input: NotionGetUsersInput = {},
-  ): Promise<CallToolResult> {
-    const result = await this.#connection.client.callTool({
-      name: "notion-get-users",
-      arguments: input,
-    });
-    return toolResult(result, "notion-get-users");
-  }
-
-  /** Read a resource by URI (listed or from a resource template). */
-  async readResource(uri: string): Promise<ReadResourceResult["contents"]> {
-    const result = await this.#connection.client.readResource({ uri });
-    return result.contents;
-  }
-
-  /**
-   * Complete specification for Notion's enhanced Markdown format, including all block types, rich text formatting, and XML elements. This specification is subject to change as Notion's capabilities evolve.
-   *
-   * URI: notion://docs/enhanced-markdown-spec
-   */
-  readEnhancedMarkdownSpecification(): Promise<ReadResourceResult["contents"]> {
-    return this.readResource("notion://docs/enhanced-markdown-spec");
-  }
 }
 
 /**
@@ -1653,6 +1283,400 @@ export type NotionGetUsersInput = {
   /** Return only the user matching this ID. Pass "self" to fetch the current user. */
   user_id?: string;
 };
+
+/** MCP client for the `notion` server. */
+export class NotionClient {
+  readonly #connection: McpConnection;
+
+  constructor(connection: McpConnection) {
+    this.#connection = connection;
+  }
+
+  /** Underlying MCP client, for requests this class doesn't wrap. */
+  get client(): Client {
+    return this.#connection.client;
+  }
+
+  /**
+   * Perform a search over:
+   * - "internal": Semantic search over Notion workspace and connected sources (Slack, Google Drive, Github, Jira, Microsoft Teams, Sharepoint, OneDrive, Linear). Supports filtering by creation date and creator.
+   * - "user": Search for users by name or email.
+   *
+   * Auto-selects AI search (with connected sources) or workspace search (workspace-only, faster) based on user's access to Notion AI. Use content_search_mode to override.
+   * Use "fetch" tool for full page/database contents after getting search results.
+   * To search within a database: First fetch the database to get the data source URL (collection://...) from <data-source url="..."> tags, then use that as data_source_url. For multi-source databases, match by view ID (?v=...) in URL or search all sources separately.
+   * Don't combine database URL/ID with collection:// prefix for data_source_url. Don't use database URL as page_url.
+   * 		<example description="Search with date range filter (only documents created in 2024)">
+   * 		{
+   * 			"query": "quarterly revenue report",
+   * 			"query_type": "internal",
+   * 			"filters": {
+   * 				"created_date_range": {
+   * 					"start_date": "2024-01-01",
+   * 					"end_date": "2025-01-01"
+   * 				}
+   * 			}
+   * 		}
+   * 		</example>
+   * 		<example description="Teamspace + creator filter">
+   * 		{"query": "project updates", "query_type": "internal", "teamspace_id": "f336d0bc-b841-465b-8045-024475c079dd", "filters": {"created_by_user_ids": ["a1b2c3d4-e5f6-7890-abcd-ef1234567890"]}}
+   * 		</example>
+   * 		<example description="Database with date + creator filters">
+   * 		{"query": "design review", "data_source_url": "collection://f336d0bc-b841-465b-8045-024475c079dd", "filters": {"created_date_range": {"start_date": "2024-10-01"}, "created_by_user_ids": ["a1b2c3d4-e5f6-7890-abcd-ef1234567890", "b2c3d4e5-f6a7-8901-bcde-f12345678901"]}}
+   * 		</example>
+   * 		<example description="User search">
+   * 		{"query": "john@example.com", "query_type": "user"}
+   * 		</example>
+   */
+  async notionSearch(
+    input: NotionSearchInput,
+    options?: RequestOptions,
+  ): Promise<CallToolResult> {
+    const result = await this.#connection.client.callTool(
+      { name: "notion-search", arguments: input },
+      options,
+    );
+    return toolResult(result, "notion-search");
+  }
+
+  /**
+   * Retrieves details about a Notion entity (page or database) by URL or ID.
+   * Provide URL or ID in `id` parameter. Make multiple calls to fetch multiple entities.
+   * Pages use enhanced Markdown format. For the complete specification, fetch the MCP resource at `notion://docs/enhanced-markdown-spec`.
+   * Databases return all data sources (collections of pages with same schema). For multi-source databases with URLs like notion.so/db-id?v=view-id, the view ID helps identify which data source to use (check response for view's dataSourceUrl).
+   * 		<example>{"id": "https://notion.so/workspace/Page-a1b2c3d4e5f67890"}</example>
+   * 		<example>{"id": "12345678-90ab-cdef-1234-567890abcdef"}</example>
+   */
+  async notionFetch(
+    input: NotionFetchInput,
+    options?: RequestOptions,
+  ): Promise<CallToolResult> {
+    const result = await this.#connection.client.callTool(
+      { name: "notion-fetch", arguments: input },
+      options,
+    );
+    return toolResult(result, "notion-fetch");
+  }
+
+  /**
+   * ## Overview
+   * Creates one or more Notion pages, with the specified properties and content.
+   * ## Parent
+   * All pages created with a single call to this tool will have the same parent. The parent can be a Notion page ("page_id") or data source ("data_source_id"). If the parent is omitted, the pages are created as standalone, workspace-level private pages, and the person that created them can organize them later as they see fit.
+   * If you have a database URL, ALWAYS pass it to the "fetch" tool first to get the schema and URLs of each data source under the database. You can't use the "database_id" parent type if the database has more than one data source, so you'll need to identify which "data_source_id" to use based on the situation and the results from the fetch tool (data source URLs look like collection://<data_source_id>).
+   * If you know the pages should be created under a data source, do NOT use the database ID or URL under the "page_id" parameter; "page_id" is only for regular, non-database pages.
+   * ## Content
+   * Notion page content is a string in Notion-flavored Markdown format.
+   * Don't include the page title at the top of the page's content. Only include it under "properties".
+   * **IMPORTANT**: For the complete Markdown specification, always first fetch the MCP resource at `notion://docs/enhanced-markdown-spec`. Do NOT guess or hallucinate Markdown syntax. This spec is also applicable to other tools like update-page and fetch.
+   * ## Properties
+   * Notion page properties are a JSON map of property names to SQLite values.
+   * When creating pages in a database:
+   * - Use the correct property names from the data source schema shown in the fetch tool results.
+   * - Always include a title property. Data sources always have exactly one title property, but it may not be named "title", so, again, rely on the fetched data source schema.
+   *
+   * For pages outside of a database:
+   * - The only allowed property is "title",	which is the title of the page in inline markdown format. Always include a "title" property.
+   *
+   * **IMPORTANT**: Some property types require expanded formats:
+   * - Date properties: Split into "date:{property}:start", "date:{property}:end" (optional), and "date:{property}:is_datetime" (0 or 1)
+   * - Place properties: Split into "place:{property}:name", "place:{property}:address", "place:{property}:latitude", "place:{property}:longitude", and "place:{property}:google_place_id" (optional)
+   * - Number properties: Use JavaScript numbers (not strings)
+   * - Checkbox properties: Use "__YES__" for checked, "__NO__" for unchecked
+   *
+   * **Special property naming**: Properties named "id" or "url" (case insensitive) must be prefixed with "userDefined:" (e.g., "userDefined:URL", "userDefined:id")
+   * ## Examples
+   * 		<example description="Create a standalone page with a title and content">
+   * 		{
+   * 			"pages": [
+   * 				{
+   * 					"properties": {"title": "Page title"},
+   * 					"content": "# Section 1 {color="blue"}
+   * Section 1 content
+   * ▶ Toggle block
+   * 	Hidden content inside toggle"
+   * 				}
+   * 			]
+   * 		}
+   * 		</example>
+   * 		<example description="Create a page under a database's data source">
+   * 		{
+   * 			"parent": {"data_source_id": "f336d0bc-b841-465b-8045-024475c079dd"},
+   * 			"pages": [
+   * 				{
+   * 					"properties": {
+   * 						"Task Name": "Task 123",
+   * 						"Status": "In Progress",
+   * 						"Priority": 5,
+   * 						"Is Complete": "__YES__",
+   * 						"date:Due Date:start": "2024-12-25",
+   * 						"date:Due Date:is_datetime": 0
+   * 					}
+   * 				}
+   * 			]
+   * 		}
+   * 		</example>
+   * 		<example description="Create a page with an existing page as a parent">
+   * 		{
+   * 			"parent": {"page_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890"},
+   * 			"pages": [
+   * 				{
+   * 					"properties": {"title": "Page title"},
+   * 					"content": "# Section 1
+   * Section 1 content
+   * # Section 2
+   * Section 2 content"
+   * 				}
+   * 			]
+   * 		}
+   * 		</example>
+   */
+  async notionCreatePages(
+    input: NotionCreatePagesInput,
+    options?: RequestOptions,
+  ): Promise<CallToolResult> {
+    const result = await this.#connection.client.callTool(
+      { name: "notion-create-pages", arguments: input },
+      options,
+    );
+    return toolResult(result, "notion-create-pages");
+  }
+
+  /**
+   * ## Overview
+   * Update a Notion page's properties or content.
+   * ## Properties
+   * Notion page properties are a JSON map of property names to SQLite values.
+   * For pages in a database:
+   * - ALWAYS use the "fetch" tool first to get the data source schema and the	exact property names.
+   * - Provide a non-null value to update a property's value.
+   * - Omitted properties are left unchanged.
+   *
+   * **IMPORTANT**: Some property types require expanded formats:
+   * - Date properties: Split into "date:{property}:start", "date:{property}:end" (optional), and "date:{property}:is_datetime" (0 or 1)
+   * - Place properties: Split into "place:{property}:name", "place:{property}:address", "place:{property}:latitude", "place:{property}:longitude", and "place:{property}:google_place_id" (optional)
+   * - Number properties: Use JavaScript numbers (not strings)
+   * - Checkbox properties: Use "__YES__" for checked, "__NO__" for unchecked
+   *
+   * **Special property naming**: Properties named "id" or "url" (case insensitive) must be prefixed with "userDefined:" (e.g., "userDefined:URL", "userDefined:id")
+   * For pages outside of a database:
+   * - The only allowed property is "title",	which is the title of the page in inline markdown format.
+   *
+   * ## Content
+   * Notion page content is a string in Notion-flavored Markdown format.
+   * **IMPORTANT**: For the complete Markdown specification, first fetch the MCP resource at `notion://docs/enhanced-markdown-spec`. Do NOT guess or hallucinate Markdown syntax.
+   * Before updating a page's content with this tool, use the "fetch" tool first to get the existing content to find out the Markdown snippets to use in the "replace_content_range" or "insert_content_after" commands.
+   * ## Examples
+   * 		<example description="Update page properties">
+   * 		{
+   * 			"page_id": "f336d0bc-b841-465b-8045-024475c079dd",
+   * 			"command": "update_properties",
+   * 			"properties": {
+   * 				"title": "New Page Title",
+   * 				"status": "In Progress",
+   * 				"priority": 5,
+   * 				"checkbox": "__YES__",
+   * 				"date:deadline:start": "2024-12-25",
+   * 				"date:deadline:is_datetime": 0,
+   * 				"place:office:name": "HQ",
+   * 				"place:office:latitude": 37.7749,
+   * 				"place:office:longitude": -122.4194
+   * 			}
+   * 		}
+   * 		</example>
+   * 		<example description="Replace the entire content of a page">
+   * 		{
+   * 			"page_id": "f336d0bc-b841-465b-8045-024475c079dd",
+   * 			"command": "replace_content",
+   * 			"new_str": "# New Section
+   * Updated content goes here"
+   * 		}
+   * 		</example>
+   * 		<example description="Replace specific content in a page">
+   * 		{
+   * 			"page_id": "f336d0bc-b841-465b-8045-024475c079dd",
+   * 			"command": "replace_content_range",
+   * 			"selection_with_ellipsis": "# Old Section...end of section",
+   * 			"new_str": "# New Section
+   * Updated content goes here"
+   * 		}
+   * 		</example>
+   * 		<example description="Insert content after specific text">
+   * 		{
+   * 			"page_id": "f336d0bc-b841-465b-8045-024475c079dd",
+   * 			"command": "insert_content_after",
+   * 			"selection_with_ellipsis": "## Previous section...",
+   * 			"new_str": "
+   * ## New Section
+   * Content to insert goes here"
+   * 		}
+   * 		</example>
+   * **Note**: For selection_with_ellipsis, provide only the first ~10 characters, an ellipsis, and the last ~10 characters. Ensure the selection is unique; use longer snippets if needed to avoid ambiguity.
+   */
+  async notionUpdatePage(
+    input: NotionUpdatePageInput,
+    options?: RequestOptions,
+  ): Promise<CallToolResult> {
+    const result = await this.#connection.client.callTool(
+      { name: "notion-update-page", arguments: input },
+      options,
+    );
+    return toolResult(result, "notion-update-page");
+  }
+
+  /** Move one or more Notion pages or databases to a new parent. */
+  async notionMovePages(
+    input: NotionMovePagesInput,
+    options?: RequestOptions,
+  ): Promise<CallToolResult> {
+    const result = await this.#connection.client.callTool(
+      { name: "notion-move-pages", arguments: input },
+      options,
+    );
+    return toolResult(result, "notion-move-pages");
+  }
+
+  /** Duplicate a Notion page. The page must be within the current workspace, and you must have permission to access it. The duplication completes asynchronously, so do not rely on the new page identified by the returned ID or URL to be populated immediately. Let the user know that the duplication is in progress and that they can check back later using the 'fetch' tool or by clicking the returned URL and viewing it in the Notion app. */
+  async notionDuplicatePage(
+    input: NotionDuplicatePageInput,
+    options?: RequestOptions,
+  ): Promise<CallToolResult> {
+    const result = await this.#connection.client.callTool(
+      { name: "notion-duplicate-page", arguments: input },
+      options,
+    );
+    return toolResult(result, "notion-duplicate-page");
+  }
+
+  /**
+   * Creates a new Notion database with the specified properties schema.
+   * If no title property provided, "Name" is auto-added. Returns Markdown with schema and SQLite definition.
+   * Property types: title (required), rich_text, number, select, multi_select, date, people, checkbox, url, email, phone_number, formula, relation, rollup.
+   *
+   * 		<example description="Minimal">{"properties": {}}</example>
+   * 		<example description="Task DB">{"parent": {"page_id": "f336d0bc-b841-465b-8045-024475c079dd"}, "title": [{"text": {"content": "Tasks"}}], "properties": {"Status": {"type": "select", "select": {"options": [{"name": "To Do", "color": "red"}, {"name": "Done", "color": "green"}]}}, "Due Date": {"type": "date", "date": {}}}}</example>
+   */
+  async notionCreateDatabase(
+    input: NotionCreateDatabaseInput,
+    options?: RequestOptions,
+  ): Promise<CallToolResult> {
+    const result = await this.#connection.client.callTool(
+      { name: "notion-create-database", arguments: input },
+      options,
+    );
+    return toolResult(result, "notion-create-database");
+  }
+
+  /**
+   * Update a Notion database's properties, name, description, or other attributes. Returns Markdown showing updated structure and schema.
+   * Database properties define columns/fields. See create_database for property types.
+   * Examples:
+   * (1) Update database title and description: { "database_id": "f336d0bc-b841-465b-8045-024475c079dd", "title": [{"type": "text", "text": {"content": "Project Tracker 2024"}}], "description": [{"type": "text", "text": {"content": "Track all projects and deliverables"}}] }
+   * (2) Add new properties to a database: { "database_id": "f336d0bc-b841-465b-8045-024475c079dd", "properties": { "Priority": { "select": { "options": [ {"name": "High", "color": "red"}, {"name": "Medium", "color": "yellow"}, {"name": "Low", "color": "green"} ] } }, "Due Date": {"date": {}}, "Assigned To": {"people": {}} } }
+   * (3) Rename an existing property (use the property ID or current name): { "database_id": "f336d0bc-b841-465b-8045-024475c079dd", "properties": { "Status": {"name": "Project Status"} } }
+   * (4) Remove a property (set to null): { "database_id": "f336d0bc-b841-465b-8045-024475c079dd", "properties": { "Old Property": null } }
+   * (5) Change display mode from inline to full page: { "database_id": "f336d0bc-b841-465b-8045-024475c079dd", "is_inline": false }
+   * (6) Move to trash (DANGER: confirm with user, cannot undo without Notion UI): {"database_id": "f336d0bc-b841-465b-8045-024475c079dd", "in_trash": true}
+   * Notes: Cannot delete/create title properties. Max one unique_id property. Cannot update synced databases. Use "fetch" first to see current schema.
+   */
+  async notionUpdateDatabase(
+    input: NotionUpdateDatabaseInput,
+    options?: RequestOptions,
+  ): Promise<CallToolResult> {
+    const result = await this.#connection.client.callTool(
+      { name: "notion-update-database", arguments: input },
+      options,
+    );
+    return toolResult(result, "notion-update-database");
+  }
+
+  /** Add a comment to a page */
+  async notionCreateComment(
+    input: NotionCreateCommentInput,
+    options?: RequestOptions,
+  ): Promise<CallToolResult> {
+    const result = await this.#connection.client.callTool(
+      { name: "notion-create-comment", arguments: input },
+      options,
+    );
+    return toolResult(result, "notion-create-comment");
+  }
+
+  /** Get all comments of a page */
+  async notionGetComments(
+    input: NotionGetCommentsInput,
+    options?: RequestOptions,
+  ): Promise<CallToolResult> {
+    const result = await this.#connection.client.callTool(
+      { name: "notion-get-comments", arguments: input },
+      options,
+    );
+    return toolResult(result, "notion-get-comments");
+  }
+
+  /**
+   * Retrieves a list of teams (teamspaces) in the current workspace. Shows which teams exist, user membership status, IDs, names, and roles.
+   * Teams are returned split by membership status and limited to a maximum of 10 results.
+   * <examples>
+   * 1. List all teams (up to the limit of each type): {}
+   * 2. Search for teams by name: {"query": "engineering"}
+   * 3. Find a specific team: {"query": "Product Design"}
+   * </examples>
+   */
+  async notionGetTeams(
+    input: NotionGetTeamsInput = {},
+    options?: RequestOptions,
+  ): Promise<CallToolResult> {
+    const result = await this.#connection.client.callTool(
+      { name: "notion-get-teams", arguments: input },
+      options,
+    );
+    return toolResult(result, "notion-get-teams");
+  }
+
+  /**
+   * Retrieves a list of users in the current workspace. Shows workspace members and guests with their IDs, names, emails (if available), and types (person or bot).
+   * Supports cursor-based pagination to iterate through all users in the workspace.
+   * <examples>
+   * 1. List all users (first page): {}
+   * 2. Search for users by name or email: {"query": "john"}
+   * 3. Get next page of results: {"start_cursor": "abc123"}
+   * 4. Set custom page size: {"page_size": 20}
+   * 5. Fetch a specific user by ID: {"user_id": "00000000-0000-4000-8000-000000000000"}
+   * 6. Fetch the current user: {"user_id": "self"}
+   * </examples>
+   */
+  async notionGetUsers(
+    input: NotionGetUsersInput = {},
+    options?: RequestOptions,
+  ): Promise<CallToolResult> {
+    const result = await this.#connection.client.callTool(
+      { name: "notion-get-users", arguments: input },
+      options,
+    );
+    return toolResult(result, "notion-get-users");
+  }
+
+  /** Read a resource by URI (listed or from a resource template). */
+  async readResource(
+    uri: string,
+    options?: RequestOptions,
+  ): Promise<ReadResourceResult["contents"]> {
+    const result = await this.#connection.client.readResource({ uri }, options);
+    return result.contents;
+  }
+
+  /**
+   * Complete specification for Notion's enhanced Markdown format, including all block types, rich text formatting, and XML elements. This specification is subject to change as Notion's capabilities evolve.
+   *
+   * URI: notion://docs/enhanced-markdown-spec
+   */
+  readEnhancedMarkdownSpecification(
+    options?: RequestOptions,
+  ): Promise<ReadResourceResult["contents"]> {
+    return this.readResource("notion://docs/enhanced-markdown-spec", options);
+  }
+}
 
 export function createNotionClient(connection: McpConnection): NotionClient {
   return new NotionClient(connection);

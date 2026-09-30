@@ -39,13 +39,13 @@ const pages = await notion.notionSearch({ query: "Meeting Notes" });
 
 ## Installation
 
+Generated clients import types from this package and the MCP SDK, so install both in the project that uses them:
+
 ```bash
-npm install -g mcp-client-gen
-# or
-bun add -g mcp-client-gen
+npm install mcp-client-gen @modelcontextprotocol/client
 ```
 
-Requires Node.js 22+ (or Bun). Projects that use generated clients also need `@modelcontextprotocol/client` 2.x.
+The CLI runs without installing (`npx mcp-client-gen`). Requires Node.js 22+ (or Bun).
 
 ## CLI Usage
 
