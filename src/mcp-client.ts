@@ -34,6 +34,9 @@ import type { McpServerConfig } from "./types.js";
  */
 const DEFAULT_REDIRECT_URI = "http://127.0.0.1:3000/callback";
 
+/** Authorizations one capability listing may complete before giving up. */
+const MAX_AUTHORIZATIONS = 3;
+
 /** Hosts where oauth-callback allows plain `http:` (bearer tokens stay on this machine). */
 const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]"]);
 
@@ -70,6 +73,12 @@ export interface McpConnection {
   tools: Tool[];
   resources: Resource[];
   prompts: Prompt[];
+  /**
+   * Completes an authorization the server demanded after connecting (a request failed with
+   * `UnauthorizedError`, e.g. a 403 step-up over Streamable HTTP or a 401 over SSE); then
+   * retry that request. Resolves at once without OAuth.
+   */
+  authorize(): Promise<void>;
 }
 
 /**
@@ -160,14 +169,20 @@ export async function createMcpConnection(
   // Server advertises its capabilities during the handshake
   const client = new Client(clientInfo, { capabilities: {} });
 
+  // Completes a pending step-up on the live connection (see McpConnection.authorize)
+  let completeAuthorization: (() => Promise<void>) | undefined;
   if (server.type === "http") {
     const transportOptions = {
       fetch: config.fetch,
       ...(server.headers && { requestInit: { headers: server.headers } }),
     };
     if (auth) {
-      // Runs the browser flow (and step-up re-authorization) when the server demands it
-      await auth.connect(client, { ...requestOptions, transportOptions });
+      // Runs the browser flow when the server demands it; on a connected client it
+      // completes a pending step-up instead of reconnecting
+      const connect = () =>
+        auth.connect(client, { ...requestOptions, transportOptions });
+      await connect();
+      completeAuthorization = connect;
     } else {
       await client.connect(
         new StreamableHTTPClientTransport(url, transportOptions),
@@ -175,8 +190,41 @@ export async function createMcpConnection(
       );
     }
   } else {
-    await connectSse(client, auth, url, server, config, requestOptions);
+    const transport = await connectSse(
+      client,
+      auth,
+      url,
+      server,
+      config,
+      requestOptions,
+    );
+    if (auth)
+      completeAuthorization = () => auth.completeAuthorization(transport);
   }
+
+  // Concurrent callers share one completion: on SSE, overlapping completions are unsupported
+  let pending: Promise<void> | undefined;
+  const authorize = async () => {
+    if (!completeAuthorization) return;
+    pending ??= completeAuthorization().finally(() => (pending = undefined));
+    return pending;
+  };
+
+  // Every UnauthorizedError leaves a browser flow pending, and oauth-callback can't cancel
+  // one short of signing out: complete it (approval or timeout) so none outlives the
+  // connection. Bounded, since a server may keep demanding scopes.
+  const withAuthorization = async <T>(request: () => Promise<T>) => {
+    for (let attempt = 1; ; attempt++) {
+      try {
+        return await request();
+      } catch (error) {
+        if (!completeAuthorization || !(error instanceof UnauthorizedError))
+          throw error;
+        await authorize();
+        if (attempt === MAX_AUTHORIZATIONS) throw error;
+      }
+    }
+  };
 
   try {
     // Fetch advertised capabilities; a listing failure is a connection error.
@@ -184,16 +232,36 @@ export async function createMcpConnection(
     // List calls without a cursor return every page.
     const capabilities = client.getServerCapabilities() ?? {};
     const tools = capabilities.tools
-      ? (await client.listTools(undefined, requestOptions)).tools
+      ? (
+          await withAuthorization(() =>
+            client.listTools(undefined, requestOptions),
+          )
+        ).tools
       : [];
     const resources = capabilities.resources
-      ? (await client.listResources(undefined, requestOptions)).resources
+      ? (
+          await withAuthorization(() =>
+            client.listResources(undefined, requestOptions),
+          )
+        ).resources
       : [];
     const prompts = capabilities.prompts
-      ? (await client.listPrompts(undefined, requestOptions)).prompts
+      ? (
+          await withAuthorization(() =>
+            client.listPrompts(undefined, requestOptions),
+          )
+        ).prompts
       : [];
 
-    return { client, server, capabilities, tools, resources, prompts };
+    return {
+      client,
+      server,
+      capabilities,
+      tools,
+      resources,
+      prompts,
+      authorize,
+    };
   } catch (error) {
     await client.close().catch(() => {}); // don't mask the listing error
     throw error;
@@ -211,7 +279,7 @@ async function connectSse(
   server: McpServerConfig,
   config: McpClientConfig,
   requestOptions: RequestOptions,
-): Promise<void> {
+): Promise<SSEClientTransport> {
   const baseFetch = server.headers
     ? createFetchWithHeaders(config.fetch, server.headers)
     : config.fetch;
@@ -226,6 +294,7 @@ async function connectSse(
   const transport = createTransport();
   try {
     await client.connect(transport, requestOptions);
+    return transport;
   } catch (error) {
     try {
       if (!auth || !(error instanceof UnauthorizedError)) throw error;
@@ -238,6 +307,7 @@ async function connectSse(
       await closeQuietly(retry);
       throw e;
     });
+    return retry;
   }
 }
 

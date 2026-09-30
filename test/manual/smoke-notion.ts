@@ -21,6 +21,7 @@ const mockConnection = {
   tools: [],
   resources: [],
   prompts: [],
+  authorize: async () => {},
 };
 
 console.log("Smoke test: Generated Notion client\n");
