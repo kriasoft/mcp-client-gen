@@ -121,14 +121,15 @@ describe("cli", () => {
         // Async spawn: a sync one would block this process's server
         const proc = Bun.spawn(["bun", CLI, "-y", "-o", "out.ts"], {
           cwd: dir,
-          env: { ...process.env, TOKEN: "SECRET_123" },
+          // Space and slash: URLs serialize these differently than the raw value
+          env: { ...process.env, TOKEN: "SECRET 123/x" },
           stdout: "pipe",
           stderr: "pipe",
         });
         const stdout = await new Response(proc.stdout).text();
         const stderr = await new Response(proc.stderr).text();
         await proc.exited;
-        expect(stdout + stderr).not.toContain("SECRET_123");
+        expect(stdout + stderr).not.toContain("SECRET");
         expect(stdout).toContain('"demo" in your MCP config');
       } finally {
         await server.stop(true);

@@ -557,12 +557,21 @@ describe("config", () => {
         });
       });
 
-      test("redacts substituted values, raw and URL-encoded", () => {
-        process.env.MCP_TEST_KEY = "s3cret/key";
-        parse({ url: "https://a.dev/${MCP_TEST_KEY}" });
-        expect(
-          redactSecrets("GET https://a.dev/s3cret%2Fkey failed: s3cret/key"),
-        ).toBe("GET https://a.dev/*** failed: ***");
+      test("redacts substituted values in every URL-serialized form", () => {
+        process.env.MCP_TEST_KEY = "my secret/Key";
+        delete process.env.MCP_TEST_MISSING;
+        parse({
+          url: "https://a.dev/${MCP_TEST_KEY}?k=${MCP_TEST_MISSING:-fallback-secret}",
+        });
+        for (const form of [
+          "my secret/Key", // raw
+          "my%20secret/Key", // path
+          "my+secret%2FKey", // query (form encoding)
+          "my%20secret%2FKey", // component
+          "my secret/key", // lowercased host
+          "fallback-secret", // fallback value
+        ])
+          expect(redactSecrets(`x ${form} y`)).toBe("x *** y");
       });
 
       test("an empty config key doesn't derive a name from the URL", () => {

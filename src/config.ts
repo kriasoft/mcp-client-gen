@@ -82,19 +82,33 @@ export function parseJsonc(text: string): unknown {
  */
 const substituted = new Set<string>();
 
-/** Mask environment-substituted values (raw and URL-encoded) in text meant for output. */
+/** Mask substituted values, as written or as serialized in a URL, in text meant for output. */
 export function redactSecrets(text: string): string {
-  let out = text;
-  for (const value of substituted)
-    out = out
-      .replaceAll(value, "***")
-      .replaceAll(encodeURIComponent(value), "***");
-  return out;
+  // Longest first: a shorter secret inside a longer one must not leave a remainder
+  const forms = [...substituted].sort((a, b) => b.length - a.length);
+  return forms.reduce((out, form) => out.replaceAll(form, "***"), text);
 }
 
-/** Record a substituted value; very short ones would mask unrelated text, not secrets. */
+/**
+ * Record a substituted value in every form a URL may print it (errors echo URLs):
+ * path, query and component encoding, and lowercased hosts. Very short values would
+ * mask unrelated text, not secrets.
+ */
 function substitute(value: string): string {
-  if (value.length >= 4) substituted.add(value);
+  if (value.length < 4) return value;
+  const url = new URL("http://host/");
+  url.pathname = value;
+  url.search = value;
+  for (const form of [
+    value,
+    value.toLowerCase(),
+    encodeURIComponent(value),
+    encodeURI(value),
+    url.pathname.slice(1),
+    url.search.slice(1),
+    new URLSearchParams([["k", value]]).toString().slice(2),
+  ])
+    substituted.add(form);
   return value;
 }
 
@@ -125,7 +139,8 @@ function expandEnv(value: string, missing: Set<string>): string {
       return match;
     }
     // Shell semantics: `:-` also replaces an empty value
-    return envValue ? substitute(envValue) : fallback!;
+    // A fallback comes from the config file, but may be a secret all the same
+    return substitute(envValue || fallback!);
   });
 }
 
