@@ -76,6 +76,28 @@ export function parseJsonc(text: string): unknown {
   return JSON.parse(out);
 }
 
+/**
+ * Values substituted from the environment, typically secrets. The CLI masks them in
+ * everything it prints, since labels and SDK errors embed expanded URLs and headers.
+ */
+const substituted = new Set<string>();
+
+/** Mask environment-substituted values (raw and URL-encoded) in text meant for output. */
+export function redactSecrets(text: string): string {
+  let out = text;
+  for (const value of substituted)
+    out = out
+      .replaceAll(value, "***")
+      .replaceAll(encodeURIComponent(value), "***");
+  return out;
+}
+
+/** Record a substituted value; very short ones would mask unrelated text, not secrets. */
+function substitute(value: string): string {
+  if (value.length >= 4) substituted.add(value);
+  return value;
+}
+
 const ENV_PLACEHOLDER = /\$\{([^}]*)\}/g;
 const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
@@ -98,12 +120,12 @@ function expandEnv(value: string, missing: Set<string>): string {
     }
     const envValue = process.env[name];
     if (sep === -1) {
-      if (envValue !== undefined) return envValue;
+      if (envValue !== undefined) return substitute(envValue);
       missing.add(name);
       return match;
     }
     // Shell semantics: `:-` also replaces an empty value
-    return envValue || fallback!;
+    return envValue ? substitute(envValue) : fallback!;
   });
 }
 

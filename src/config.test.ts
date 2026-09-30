@@ -11,12 +11,14 @@ import {
 } from "bun:test";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { extractServerName } from "./pipeline.js";
 import {
   findMcpConfigFiles,
   formatConfigWarning,
   getMcpServers,
   MCP_CONFIG_PATHS,
   parseJsonc,
+  redactSecrets,
   resolveConfigFiles,
 } from "./config";
 
@@ -553,6 +555,27 @@ describe("config", () => {
           kind: "unresolved_env",
           variables: ["API-KEY", "MCP_TEST_KEY"],
         });
+      });
+
+      test("redacts substituted values, raw and URL-encoded", () => {
+        process.env.MCP_TEST_KEY = "s3cret/key";
+        parse({ url: "https://a.dev/${MCP_TEST_KEY}" });
+        expect(
+          redactSecrets("GET https://a.dev/s3cret%2Fkey failed: s3cret/key"),
+        ).toBe("GET https://a.dev/*** failed: ***");
+      });
+
+      test("an empty config key doesn't derive a name from the URL", () => {
+        process.env.MCP_TEST_KEY = "s3cret";
+        const configPath = resolve(TEST_DIR, "env.json");
+        writeFileSync(
+          configPath,
+          JSON.stringify({
+            mcpServers: { "": { url: "https://${MCP_TEST_KEY}.dev" } },
+          }),
+        );
+        const [server] = getMcpServers([configPath]).servers;
+        expect(extractServerName(server!, 0)).toBe("server1");
       });
 
       test("skips a server with unset variables and names them", () => {

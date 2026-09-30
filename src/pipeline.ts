@@ -45,7 +45,9 @@ export function extractServerName(
   server: McpServerConfig,
   index: number,
 ): string {
-  if (server.name) return server.name;
+  // An empty config key still means "named": deriving from a config URL could
+  // copy an expanded secret into generated identifiers
+  if (server.name !== undefined) return server.name || `server${index + 1}`;
 
   try {
     const url = new URL(server.url);
@@ -83,7 +85,7 @@ export function extractServerName(
  * embed expanded secrets. A name derived from the URL comes with the URL itself.
  */
 function describeServer(name: string, server: McpServerConfig): string {
-  return server.name ? `"${name}"` : `"${name}" (${server.url})`;
+  return server.name !== undefined ? `"${name}"` : `"${name}" (${server.url})`;
 }
 
 /**

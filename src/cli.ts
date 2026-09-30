@@ -11,6 +11,7 @@
 
 import { resolve } from "node:path";
 import { parseArgs } from "node:util";
+import { redactSecrets } from "./config.js";
 import { generateClient, writeGeneratedClient } from "./pipeline.js";
 import { runInteractiveSetup, showGenerationProgress } from "./prompts.js";
 import type { McpServerConfig } from "./types.js";
@@ -189,7 +190,7 @@ async function runGeneration(
   if (result.failures.size > 0) {
     console.log(`\nWarnings:`);
     for (const [name, failure] of result.failures) {
-      console.log(`  - ${name}: ${failure.error}`);
+      console.log(`  - ${name}: ${redactSecrets(failure.error)}`);
     }
   }
 
@@ -224,7 +225,7 @@ async function main() {
           process.stdout.write(result.code);
         }
       } catch (error) {
-        console.error("Error:", (error as Error).message);
+        console.error("Error:", redactSecrets((error as Error).message));
         process.exit(1);
       }
       return;
@@ -240,7 +241,7 @@ async function main() {
         });
         await runGeneration(result.servers, result.outputFile, true);
       } catch (error) {
-        console.error("Error:", (error as Error).message);
+        console.error("Error:", redactSecrets((error as Error).message));
         process.exit(1);
       }
       return;

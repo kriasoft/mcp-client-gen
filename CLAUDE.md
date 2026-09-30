@@ -110,6 +110,7 @@ Keep module DAG clean: lower modules must not import from higher ones.
 - **Discriminated unions** for per-item failures (introspection returns `{ ok: true, ... } | { ok: false, error }`)
 - **Console.warn** for non-fatal issues (single capability fetch failure)
 - Error messages: include context ("Tool 'search' error: ..."), never stack traces to users
+- CLI output: pass anything derived from config (URLs, headers, SDK error messages) through `redactSecrets()`: env placeholders expand to secrets
 
 ## Naming Conventions
 

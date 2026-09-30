@@ -99,7 +99,11 @@ describe("cli", () => {
       const server = Bun.serve({
         hostname: "127.0.0.1",
         port: 0,
-        fetch: (request) => mcp.fetch(request),
+        // Like many servers, a 404 echoes the requested URL
+        fetch: (request) =>
+          new URL(request.url).pathname.startsWith("/fail")
+            ? new Response(`Not found: ${request.url}`, { status: 404 })
+            : mcp.fetch(request),
       });
       const dir = mkdtempSync(join(tmpdir(), "mcp-cli-"));
       writeFileSync(
@@ -108,6 +112,8 @@ describe("cli", () => {
           mcpServers: {
             // The secret sits in the path as well as the query
             demo: { url: `${server.url}\${TOKEN}?key=\${TOKEN}` },
+            // Fails to connect: its error message must not carry the secret either
+            broken: { url: `${server.url}fail/\${TOKEN}?key=\${TOKEN}` },
           },
         }),
       );

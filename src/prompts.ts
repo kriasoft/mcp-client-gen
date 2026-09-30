@@ -23,6 +23,7 @@ import {
   findMcpConfigFiles,
   formatConfigWarning,
   getMcpServers,
+  redactSecrets,
   resolveConfigFiles,
 } from "./config.js";
 import type { GenerationResult } from "./pipeline.js";
@@ -104,8 +105,9 @@ export async function promptForServers(
     message: "Select MCP servers to include:",
     options: servers.map((server) => ({
       value: server,
-      label: `${server.url}`,
-      hint: `Type: ${server.type}`,
+      // Config URLs may hold expanded secrets
+      label: server.name ?? redactSecrets(server.url),
+      hint: `${server.type} · ${redactSecrets(server.url)}`,
     })),
     initialValues: servers, // Select all by default
     required: true,
