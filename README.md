@@ -21,6 +21,7 @@ import { createNotionClient } from "./notion";
 import { createMcpConnection } from "mcp-client-gen";
 
 const connection = await createMcpConnection({
+  type: "http",
   url: "https://mcp.notion.com/mcp",
 });
 
@@ -43,6 +44,8 @@ npm install -g mcp-client-gen
 # or
 bun add -g mcp-client-gen
 ```
+
+Requires Node.js 22+ (or Bun). Projects that use generated clients also need `@modelcontextprotocol/client` 2.x.
 
 ## CLI Usage
 
@@ -71,7 +74,22 @@ npx mcp-client-gen -y                 # Accept defaults
 
 ## Authentication
 
-No credentials required. OAuth-protected servers trigger automatic browser authentication via Dynamic Client Registration (RFC 7591) and PKCE.
+No credentials required. OAuth-protected servers trigger automatic browser authentication via Dynamic Client Registration (RFC 7591) and PKCE, using the loopback redirect `http://127.0.0.1:3000/callback`.
+
+Credentials live in memory by default. To persist them, give each server its own file:
+
+```typescript
+import { createMcpConnection, fileStore } from "mcp-client-gen";
+
+const connection = await createMcpConnection(server, {
+  oauth: {
+    store: (server) =>
+      fileStore(
+        `/home/me/.config/my-app/${encodeURIComponent(server.url)}.json`,
+      ),
+  },
+});
+```
 
 ## License
 

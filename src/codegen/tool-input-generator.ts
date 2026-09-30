@@ -8,7 +8,7 @@
  * SPDX-License-Identifier: MIT
  */
 
-import type { Tool } from "@modelcontextprotocol/sdk/types.js";
+import type { Tool } from "@modelcontextprotocol/client";
 import type { InterfaceDeclaration, SourceFile } from "ts-morph";
 import { jsonSchemaToTypeScript } from "./schema-to-typescript.js";
 import { pascalCase } from "./utils.js";

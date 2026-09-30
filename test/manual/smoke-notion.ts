@@ -10,7 +10,7 @@
  * Usage: bun run test/manual/smoke-notion.ts
  */
 
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import type { Client } from "@modelcontextprotocol/client";
 import { createNotionClient, NotionClient } from "../../examples/notion-client";
 
 // Mock MCP connection for smoke testing

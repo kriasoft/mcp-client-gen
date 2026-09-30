@@ -13,7 +13,7 @@ import type {
   Resource,
   ServerCapabilities,
   Tool,
-} from "@modelcontextprotocol/sdk/types.js";
+} from "@modelcontextprotocol/client";
 import {
   createMcpConnection,
   type McpClientConfig,

@@ -8,8 +8,8 @@
  * Usage: bun run test/manual/e2e-notion.ts
  */
 
-import open from "open";
 import { createNotionClient } from "../../examples/notion-client";
+import { resolve } from "node:path";
 import { createMcpConnection, fileStore } from "../../src/index";
 
 async function main() {
@@ -24,10 +24,9 @@ async function main() {
     { type: "http", url: "https://mcp.notion.com/mcp" },
     {
       oauth: {
-        port: 3000,
-        store: fileStore(".oauth-tokens.json"),
-        launch: open,
-        authTimeout: 120000,
+        // fileStore() needs an absolute path; the file is gitignored
+        store: () => fileStore(resolve(".oauth-credentials.json")),
+        timeout: 120000,
       },
     },
   );

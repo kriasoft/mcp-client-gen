@@ -6,7 +6,7 @@ import type {
   Resource,
   ServerCapabilities,
   Tool,
-} from "@modelcontextprotocol/sdk/types.js";
+} from "@modelcontextprotocol/client";
 import { describe, expect, mock, test } from "bun:test";
 import { introspectServer, introspectServers } from "./introspection.js";
 import * as mcpClient from "./mcp-client.js";

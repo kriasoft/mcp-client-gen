@@ -14,7 +14,6 @@
 
 import { mkdir, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
-import open from "open";
 import { format as prettierFormat, resolveConfig } from "prettier";
 import { generateClientFile } from "../../src/codegen";
 import type { IntrospectionSuccess } from "../../src/introspection";
@@ -42,16 +41,14 @@ async function captureCapabilities(): Promise<IntrospectionSuccess> {
   console.log("   URL: https://mcp.notion.com/mcp");
   console.log("\n   The OAuth flow will:");
   console.log("   1. Open your browser for Notion authorization");
-  console.log("   2. Start a callback server on http://localhost:3000");
+  console.log("   2. Start a callback server on http://127.0.0.1:3000");
   console.log("   3. Capture and exchange the authorization code");
   console.log("\n   Please complete the authorization in your browser...\n");
 
   const connection = await createMcpConnection(server, {
     oauth: {
-      port: 3000,
-      scope: "read:page:metadata read:database:metadata",
-      launch: open,
-      authTimeout: 120000,
+      clientMetadata: { scope: "read:page:metadata read:database:metadata" },
+      timeout: 120000,
     },
   });
 

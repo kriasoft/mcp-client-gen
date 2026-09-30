@@ -12,7 +12,12 @@ Generated files follow this order:
 /* Generated at: {ISO timestamp} */
 
 // 2. Imports
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import type {
+  BlobResourceContents,
+  Client,
+  PromptMessage,
+  TextResourceContents,
+} from "@modelcontextprotocol/client";
 import type { McpConnection } from "mcp-client-gen";
 
 // 3. Embedded utility functions
