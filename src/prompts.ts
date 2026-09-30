@@ -264,7 +264,7 @@ export async function showGenerationProgress(
 
     return result;
   } catch (error) {
-    s.stop(`Failed to introspect servers`);
+    s.error(`Failed to introspect servers`);
     throw error;
   }
 }
