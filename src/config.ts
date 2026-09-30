@@ -82,6 +82,8 @@ export function parseJsonc(text: string): unknown {
  */
 const substituted = new Set<string>();
 
+const MIN_SECRET_LENGTH = 4;
+
 /** Mask substituted values, as written or as serialized in a URL, in text meant for output. */
 export function redactSecrets(text: string): string {
   // Longest first: a shorter secret inside a longer one must not leave a remainder
@@ -91,11 +93,11 @@ export function redactSecrets(text: string): string {
 
 /**
  * Record a substituted value in every form a URL may print it (errors echo URLs):
- * path, query and component encoding, and lowercased hosts. Very short values would
- * mask unrelated text, not secrets.
+ * path, query and component encoding, and lowercased hosts. Very short forms (which
+ * normalization can produce, e.g. `a/..` → "") would mask unrelated text, not secrets.
  */
 function substitute(value: string): string {
-  if (value.length < 4) return value;
+  if (value.length < MIN_SECRET_LENGTH) return value;
   const url = new URL("http://host/");
   url.pathname = value;
   url.search = value;
@@ -108,7 +110,7 @@ function substitute(value: string): string {
     url.search.slice(1),
     new URLSearchParams([["k", value]]).toString().slice(2),
   ])
-    substituted.add(form);
+    if (form.length >= MIN_SECRET_LENGTH) substituted.add(form);
   return value;
 }
 

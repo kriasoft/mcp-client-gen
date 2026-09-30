@@ -574,6 +574,12 @@ describe("config", () => {
           expect(redactSecrets(`x ${form} y`)).toBe("x *** y");
       });
 
+      test("ignores forms that URL normalization shrinks away", () => {
+        process.env.MCP_TEST_KEY = "a/..";
+        parse({ url: "https://a.dev/${MCP_TEST_KEY}" });
+        expect(redactSecrets("All servers failed")).toBe("All servers failed");
+      });
+
       test("an empty config key doesn't derive a name from the URL", () => {
         process.env.MCP_TEST_KEY = "s3cret";
         const configPath = resolve(TEST_DIR, "env.json");
