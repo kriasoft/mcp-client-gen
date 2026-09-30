@@ -64,16 +64,12 @@ export function generateClientFile(
     ``,
   ]);
 
-  // Add imports
+  // Add imports (type-only: generated code has no runtime SDK dependency)
   sourceFile.addImportDeclaration({
-    moduleSpecifier: "@modelcontextprotocol/sdk/client/index.js",
-    namedImports: ["Client"],
-  });
-
-  sourceFile.addImportDeclaration({
-    moduleSpecifier: "@modelcontextprotocol/sdk/types.js",
+    moduleSpecifier: "@modelcontextprotocol/client",
     namedImports: [
       "BlobResourceContents",
+      "Client",
       "PromptMessage",
       "TextResourceContents",
     ],

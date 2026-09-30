@@ -1,10 +1,11 @@
 /* Generated MCP Client SDK */
 /* Import individual createXClient() functions for optimal tree-shaking */
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import type {
   BlobResourceContents,
+  Client,
+  PromptMessage,
   TextResourceContents,
-} from "@modelcontextprotocol/sdk/types.js";
+} from "@modelcontextprotocol/client";
 import type { McpConnection } from "mcp-client-gen";
 /**
  * Helper function to handle MCP tool call results with proper error checking
@@ -876,7 +877,7 @@ export class NotionClient {
   async notionSearch(input: NotionSearchInput): Promise<any> {
     const result = await this.connection.client.callTool({
       name: "notion-search",
-      arguments: input,
+      arguments: { ...input },
     });
     return handleToolResult(result, "notion-search");
   }
@@ -892,7 +893,7 @@ export class NotionClient {
   async notionFetch(input: NotionFetchInput): Promise<any> {
     const result = await this.connection.client.callTool({
       name: "notion-fetch",
-      arguments: input,
+      arguments: { ...input },
     });
     return handleToolResult(result, "notion-fetch");
   }
@@ -973,7 +974,7 @@ export class NotionClient {
   async notionCreatePages(input: NotionCreatePagesInput): Promise<any> {
     const result = await this.connection.client.callTool({
       name: "notion-create-pages",
-      arguments: input,
+      arguments: { ...input },
     });
     return handleToolResult(result, "notion-create-pages");
   }
@@ -1052,7 +1053,7 @@ export class NotionClient {
   async notionUpdatePage(input: NotionUpdatePageInput): Promise<any> {
     const result = await this.connection.client.callTool({
       name: "notion-update-page",
-      arguments: input,
+      arguments: { ...input },
     });
     return handleToolResult(result, "notion-update-page");
   }
@@ -1061,7 +1062,7 @@ export class NotionClient {
   async notionMovePages(input: NotionMovePagesInput): Promise<any> {
     const result = await this.connection.client.callTool({
       name: "notion-move-pages",
-      arguments: input,
+      arguments: { ...input },
     });
     return handleToolResult(result, "notion-move-pages");
   }
@@ -1070,7 +1071,7 @@ export class NotionClient {
   async notionDuplicatePage(input: NotionDuplicatePageInput): Promise<any> {
     const result = await this.connection.client.callTool({
       name: "notion-duplicate-page",
-      arguments: input,
+      arguments: { ...input },
     });
     return handleToolResult(result, "notion-duplicate-page");
   }
@@ -1086,7 +1087,7 @@ export class NotionClient {
   async notionCreateDatabase(input: NotionCreateDatabaseInput): Promise<any> {
     const result = await this.connection.client.callTool({
       name: "notion-create-database",
-      arguments: input,
+      arguments: { ...input },
     });
     return handleToolResult(result, "notion-create-database");
   }
@@ -1106,7 +1107,7 @@ export class NotionClient {
   async notionUpdateDatabase(input: NotionUpdateDatabaseInput): Promise<any> {
     const result = await this.connection.client.callTool({
       name: "notion-update-database",
-      arguments: input,
+      arguments: { ...input },
     });
     return handleToolResult(result, "notion-update-database");
   }
@@ -1115,7 +1116,7 @@ export class NotionClient {
   async notionCreateComment(input: NotionCreateCommentInput): Promise<any> {
     const result = await this.connection.client.callTool({
       name: "notion-create-comment",
-      arguments: input,
+      arguments: { ...input },
     });
     return handleToolResult(result, "notion-create-comment");
   }
@@ -1124,7 +1125,7 @@ export class NotionClient {
   async notionGetComments(input: NotionGetCommentsInput): Promise<any> {
     const result = await this.connection.client.callTool({
       name: "notion-get-comments",
-      arguments: input,
+      arguments: { ...input },
     });
     return handleToolResult(result, "notion-get-comments");
   }
@@ -1141,7 +1142,7 @@ export class NotionClient {
   async notionGetTeams(input: NotionGetTeamsInput): Promise<any> {
     const result = await this.connection.client.callTool({
       name: "notion-get-teams",
-      arguments: input,
+      arguments: { ...input },
     });
     return handleToolResult(result, "notion-get-teams");
   }
@@ -1161,7 +1162,7 @@ export class NotionClient {
   async notionGetUsers(input: NotionGetUsersInput): Promise<any> {
     const result = await this.connection.client.callTool({
       name: "notion-get-users",
-      arguments: input,
+      arguments: { ...input },
     });
     return handleToolResult(result, "notion-get-users");
   }

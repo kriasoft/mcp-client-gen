@@ -17,6 +17,9 @@
   "bin": {
     "mcp-client-gen": "./dist/cli.js"
   },
+  "engines": {
+    "node": ">=22"
+  },
   "files": [
     "dist",
     "src",
@@ -55,21 +58,21 @@
   },
   "dependencies": {
     "@clack/prompts": "^1.8.1",
-    "oauth-callback": "^2.2.1",
-    "open": "^11.0.4",
+    "oauth-callback": "^3.0.0",
     "ts-morph": "^28.0.0"
   },
   "peerDependencies": {
-    "@modelcontextprotocol/sdk": "^1.25.3",
-    "typescript": "^5.9.3"
+    "@modelcontextprotocol/client": "^2.2.0",
+    "typescript": ">=5.9.3"
   },
   "devDependencies": {
-    "@modelcontextprotocol/sdk": "^1.31.0",
+    "@modelcontextprotocol/client": "^2.2.0",
+    "@modelcontextprotocol/server": "^2.2.0",
     "@types/bun": "1.4.2",
     "dotenv": "^18.0.5",
     "prettier": "^3.9.9",
     "srcpack": "^1.0.0",
-    "typescript": "^5.9.3"
+    "typescript": "^7.0.2"
   },
   "prettier": {
     "trailingComma": "all",

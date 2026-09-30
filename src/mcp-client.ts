@@ -8,31 +8,57 @@
  * Invariant: Throws on connection failure; never exposes SDK internals.
  */
 
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
 import {
+  Client,
+  DEFAULT_REQUEST_TIMEOUT_MSEC,
+  SSEClientTransport,
   StreamableHTTPClientTransport,
-  type StreamableHTTPClientTransportOptions,
-} from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import type {
-  Prompt,
-  Resource,
-  ServerCapabilities,
-  Tool,
-} from "@modelcontextprotocol/sdk/types.js";
-import { browserAuth, type BrowserAuthOptions } from "oauth-callback/mcp";
+  UnauthorizedError,
+  type Prompt,
+  type RequestOptions,
+  type Resource,
+  type ServerCapabilities,
+  type Tool,
+} from "@modelcontextprotocol/client";
+import {
+  browserAuth,
+  type BrowserAuth,
+  type BrowserAuthOptions,
+  type CredentialStore,
+} from "oauth-callback/mcp";
 import type { McpServerConfig } from "./types.js";
 
+/**
+ * Loopback redirect used when `oauth.redirectUri` is omitted. The port is fixed because
+ * Dynamic Client Registration records the exact URI.
+ */
+const DEFAULT_REDIRECT_URI = "http://127.0.0.1:3000/callback";
+
+/** Hosts where oauth-callback allows plain `http:` (bearer tokens stay on this machine). */
+const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]"]);
+
+/** `browserAuth()` options; `serverUrl` comes from the server config. */
+export interface McpOAuthOptions extends Omit<
+  Partial<BrowserAuthOptions>,
+  "serverUrl" | "store"
+> {
+  /**
+   * Credential store per server. A factory, because oauth-callback binds a store to one
+   * server and a config is shared by every server in `generateClient()`. Default: memory.
+   */
+  store?: (server: McpServerConfig) => CredentialStore;
+}
+
 export interface McpClientConfig {
-  /** Client identifier sent to servers */
+  /** Client identifier sent to servers; also the OAuth client name for registration */
   name?: string;
   /** Client version for compatibility checks */
   version?: string;
-  /** OAuth 2.1 auth settings */
-  oauth?: BrowserAuthOptions;
+  /** OAuth 2.1 browser authorization settings */
+  oauth?: McpOAuthOptions;
   /** Custom fetch for proxies/interceptors */
   fetch?: typeof fetch;
-  /** Request timeout in ms (applies to HTTP transport) */
+  /** Per-request timeout in ms (SDK default: 60s) */
   timeout?: number;
 }
 
@@ -47,18 +73,46 @@ export interface McpConnection {
 }
 
 /**
- * Wrap fetch to inject headers for every request.
+ * Wrap fetch to inject headers for every request; request headers win.
  */
 function createFetchWithHeaders(
   baseFetch: typeof fetch | undefined,
   headers: Record<string, string>,
 ): typeof fetch {
   const originalFetch = baseFetch || globalThis.fetch;
-  return ((url: URL | string, init?: RequestInit) =>
-    originalFetch(url, {
-      ...init,
-      headers: { ...headers, ...init?.headers },
-    })) as typeof fetch;
+  return ((url: URL | string, init?: RequestInit) => {
+    // Headers instances don't spread, so merge through the Headers API
+    const merged = new Headers(headers);
+    new Headers(init?.headers).forEach((value, key) => merged.set(key, value));
+    return originalFetch(url, { ...init, headers: merged });
+  }) as typeof fetch;
+}
+
+/**
+ * Bound the wait for response headers, not the body: a stalled token exchange fails,
+ * while an SSE stream stays open after its headers arrive.
+ */
+function createFetchWithHeaderTimeout(
+  baseFetch: typeof fetch | undefined,
+  ms: number,
+): typeof fetch {
+  const originalFetch = baseFetch || globalThis.fetch;
+  return (async (url: URL | string, init?: RequestInit) => {
+    const timeout = new AbortController();
+    const timer = setTimeout(
+      () =>
+        timeout.abort(new DOMException("Request timed out", "TimeoutError")),
+      ms,
+    );
+    const signal = init?.signal
+      ? AbortSignal.any([init.signal, timeout.signal])
+      : timeout.signal;
+    try {
+      return await originalFetch(url, { ...init, signal });
+    } finally {
+      clearTimeout(timer);
+    }
+  }) as typeof fetch;
 }
 
 /**
@@ -72,104 +126,122 @@ export async function createMcpConnection(
   server: McpServerConfig,
   config: McpClientConfig = {},
 ): Promise<McpConnection> {
+  if (server.type !== "http" && server.type !== "sse") {
+    throw new Error(`Unsupported server type: ${server.type}`);
+  }
+
   const clientInfo = {
     name: config.name || "mcp-client-gen",
     version: config.version || "1.0.0",
   };
 
-  // OAuth required for http/sse transports
-  let authProvider: any | undefined;
-  if (server.type === "http" || server.type === "sse") {
-    // Forward options as-is; browserAuth() owns the defaults (port, store, ...).
-    authProvider = browserAuth(config.oauth);
-  }
-
-  // Transport factory - creates fresh transport for OAuth retry
-  const createTransport = () => {
-    if (server.type === "http") {
-      const transportOptions: StreamableHTTPClientTransportOptions = {
-        authProvider,
-        fetch: config.fetch,
-      };
-
-      // Apply timeout and/or server headers via requestInit
-      if (config.timeout || server.headers) {
-        transportOptions.requestInit = {
-          ...(config.timeout && {
-            signal: AbortSignal.timeout(config.timeout),
+  // OAuth only where tokens can't leak (https: or loopback http:); elsewhere, e.g. a
+  // private-network http: server, connect unauthenticated (server.headers still apply).
+  const url = new URL(server.url);
+  const { store, ...oauth } = config.oauth ?? {};
+  const auth =
+    url.protocol === "https:" || LOOPBACK_HOSTS.has(url.hostname)
+      ? browserAuth({
+          ...oauth,
+          serverUrl: url,
+          redirectUri: oauth.redirectUri ?? DEFAULT_REDIRECT_URI,
+          // clientName and clientInformation are exclusive; default the name only for DCR
+          ...(!oauth.clientInformation && {
+            clientName: oauth.clientName ?? clientInfo.name,
           }),
-          ...(server.headers && { headers: server.headers }),
-        };
-      }
+          store: store?.(server),
+        })
+      : undefined;
 
-      return new StreamableHTTPClientTransport(
-        new URL(server.url),
-        transportOptions,
-      );
-    } else if (server.type === "sse") {
-      // SSE transport: wrap fetch to inject headers if needed
-      const baseFetch = config.fetch;
-      const fetchWithHeaders = server.headers
-        ? createFetchWithHeaders(baseFetch, server.headers)
-        : baseFetch;
+  const requestOptions: RequestOptions = config.timeout
+    ? { timeout: config.timeout }
+    : {};
 
-      return new SSEClientTransport(new URL(server.url), {
-        authProvider,
-        fetch: fetchWithHeaders,
-      });
-    } else {
-      throw new Error(`Unsupported server type: ${server.type}`);
-    }
-  };
-
-  // Initialize client (server advertises its capabilities during handshake)
+  // Server advertises its capabilities during the handshake
   const client = new Client(clientInfo, { capabilities: {} });
 
-  // Connect with OAuth retry: after browser auth completes, tokens are saved but
-  // SDK throws UnauthorizedError anyway. Retry with fresh transport succeeds.
-  try {
-    await client.connect(createTransport());
-  } catch (error: unknown) {
-    const isUnauthorized =
-      error instanceof Error &&
-      (error.constructor.name === "UnauthorizedError" ||
-        error.message === "Unauthorized");
-
-    if (isUnauthorized) {
-      await client.connect(createTransport());
+  if (server.type === "http") {
+    const transportOptions = {
+      fetch: config.fetch,
+      ...(server.headers && { requestInit: { headers: server.headers } }),
+    };
+    if (auth) {
+      // Runs the browser flow (and step-up re-authorization) when the server demands it
+      await auth.connect(client, { ...requestOptions, transportOptions });
     } else {
-      throw error;
+      await client.connect(
+        new StreamableHTTPClientTransport(url, transportOptions),
+        requestOptions,
+      );
     }
+  } else {
+    await connectSse(client, auth, url, server, config, requestOptions);
   }
 
-  // Introspect: fetch tools/resources/prompts if server advertises support
-  const capabilities = client.getServerCapabilities() ?? {};
-  let tools: Tool[] = [];
-  let resources: Resource[] = [];
-  let prompts: Prompt[] = [];
+  try {
+    // Fetch advertised capabilities; a listing failure is a connection error.
+    // Sequential: OAuth refreshes on a caller-owned (SSE) transport must not overlap.
+    // List calls without a cursor return every page.
+    const capabilities = client.getServerCapabilities() ?? {};
+    const tools = capabilities.tools
+      ? (await client.listTools(undefined, requestOptions)).tools
+      : [];
+    const resources = capabilities.resources
+      ? (await client.listResources(undefined, requestOptions)).resources
+      : [];
+    const prompts = capabilities.prompts
+      ? (await client.listPrompts(undefined, requestOptions)).prompts
+      : [];
 
-  // Fetch advertised capabilities - if server advertises but listing fails, that's a connection error
-  if (capabilities?.tools) {
-    const result = await client.listTools();
-    tools = result.tools;
+    return { client, server, capabilities, tools, resources, prompts };
+  } catch (error) {
+    await client.close().catch(() => {}); // don't mask the listing error
+    throw error;
   }
+}
 
-  if (capabilities?.resources) {
-    const result = await client.listResources();
-    resources = result.resources;
+/**
+ * SSE (deprecated in MCP, still supported): `auth.connect()` only speaks Streamable HTTP,
+ * so complete the browser flow on the transport that got the 401, then reconnect.
+ */
+async function connectSse(
+  client: Client,
+  auth: BrowserAuth | undefined,
+  url: URL,
+  server: McpServerConfig,
+  config: McpClientConfig,
+  requestOptions: RequestOptions,
+): Promise<void> {
+  const baseFetch = server.headers
+    ? createFetchWithHeaders(config.fetch, server.headers)
+    : config.fetch;
+  // completeAuthorization() can't interrupt this transport's token exchange: bound it here
+  const fetch = createFetchWithHeaderTimeout(
+    baseFetch,
+    config.timeout ?? DEFAULT_REQUEST_TIMEOUT_MSEC,
+  );
+  const createTransport = () =>
+    new SSEClientTransport(url, { authProvider: auth, fetch });
+
+  const transport = createTransport();
+  try {
+    await client.connect(transport, requestOptions);
+  } catch (error) {
+    try {
+      if (!auth || !(error instanceof UnauthorizedError)) throw error;
+      await auth.completeAuthorization(transport);
+    } finally {
+      await closeQuietly(transport);
+    }
+    const retry = createTransport();
+    await client.connect(retry, requestOptions).catch(async (e: unknown) => {
+      await closeQuietly(retry);
+      throw e;
+    });
   }
+}
 
-  if (capabilities?.prompts) {
-    const result = await client.listPrompts();
-    prompts = result.prompts;
-  }
-
-  return {
-    client,
-    server,
-    capabilities,
-    tools,
-    resources,
-    prompts,
-  };
+/** A failed SSE start keeps reconnecting until closed; close errors mustn't mask the cause. */
+async function closeQuietly(transport: SSEClientTransport): Promise<void> {
+  await transport.close().catch(() => {});
 }

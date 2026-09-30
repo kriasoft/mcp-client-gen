@@ -22,17 +22,8 @@ export {
   type ResolveConfigOptions,
 } from "./config.js";
 
-// OAuth (re-exported from oauth-callback)
-export {
-  browserAuth,
-  fileStore,
-  inMemoryStore,
-  type BrowserAuthOptions,
-  type ClientInfo,
-  type OAuthStore,
-  type Tokens,
-  type TokenStore,
-} from "oauth-callback/mcp";
+// OAuth credential persistence for McpClientConfig.oauth.store (from oauth-callback)
+export { fileStore, type CredentialStore } from "oauth-callback/mcp";
 
 // Types
 export type {
@@ -40,13 +31,17 @@ export type {
   Resource,
   ServerCapabilities,
   Tool,
-} from "@modelcontextprotocol/sdk/types.js";
+} from "@modelcontextprotocol/client";
 export type {
   IntrospectionFailure,
   IntrospectionResult,
   IntrospectionSuccess,
 } from "./introspection.js";
-export type { McpClientConfig, McpConnection } from "./mcp-client.js";
+export type {
+  McpClientConfig,
+  McpConnection,
+  McpOAuthOptions,
+} from "./mcp-client.js";
 export type { GenerationOptions, GenerationResult } from "./pipeline.js";
 export type {
   ConfigWarning,

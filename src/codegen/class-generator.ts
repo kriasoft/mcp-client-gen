@@ -8,11 +8,7 @@
  * SPDX-License-Identifier: MIT
  */
 
-import type {
-  Prompt,
-  Resource,
-  Tool,
-} from "@modelcontextprotocol/sdk/types.js";
+import type { Prompt, Resource, Tool } from "@modelcontextprotocol/client";
 import {
   type ClassDeclaration,
   type MethodDeclaration,
@@ -129,8 +125,9 @@ function generateToolMethod(
     });
   }
 
-  // Add implementation using helper function
-  const callArgs = inputType !== "void" ? "input" : "{}";
+  // Add implementation using helper function. Spread: an interface isn't assignable to the
+  // SDK's Record<string, unknown> arguments, but an object literal type is.
+  const callArgs = inputType !== "void" ? "{ ...input }" : "{}";
   method.addStatements([
     `const result = await this.connection.client.callTool({`,
     `  name: "${tool.name}",`,

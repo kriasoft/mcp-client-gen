@@ -17,9 +17,11 @@
  * SPDX-License-Identifier: MIT
  */
 
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import type { StreamableHTTPClientTransportOptions } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import {
+  Client,
+  StreamableHTTPClientTransport,
+  type StreamableHTTPClientTransportOptions,
+} from "@modelcontextprotocol/client";
 
 export interface FetchInput {
   id: string;

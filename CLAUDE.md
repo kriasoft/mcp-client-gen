@@ -99,7 +99,7 @@ Keep module DAG clean: lower modules must not import from higher ones.
 ## Key Constraints
 
 - Runtime: Always use Bun (not Node.js/NPM). Bun auto-loads .env files
-- MCP SDK: OAuth/auth implementation in `node_modules/@modelcontextprotocol/sdk/dist/esm/client/auth.js`, `node_modules/@modelcontextprotocol/sdk/dist/esm/client/auth.d.ts`
+- MCP SDK: `@modelcontextprotocol/client` 2.x (single entry point). The SDK owns OAuth; `oauth-callback/mcp` supplies the browser + loopback provider (ADR-002)
 - Generated Client: Must be tree-shakable for optimal bundle size
 - Design Philosophy: Prioritize ideal design over backward compatibility
 
@@ -140,7 +140,7 @@ Keep module DAG clean: lower modules must not import from higher ones.
 ## Public API
 
 ```typescript
-import { generateClient, browserAuth } from "mcp-client-gen";
+import { generateClient, createMcpConnection } from "mcp-client-gen";
 ```
 
 - `generateClient(servers, options?)` — generate TypeScript client
@@ -151,9 +151,9 @@ import { generateClient, browserAuth } from "mcp-client-gen";
 - `formatConfigWarning(warning)` — format a config warning for display
 - `findMcpConfigFiles(cwd?)` — discover config files
 - `formatTypeScript(code, configPath?)` — format code with Prettier
-- `browserAuth()`, `inMemoryStore()`, `fileStore()` — OAuth helpers
+- `fileStore(path)` — persistent OAuth credential store (one per server)
 
-Types: `McpServerConfig`, `ConfigWarning`, `ParseServersResult`, `McpConnection`, `McpClientConfig`, `GenerationOptions`, `GenerationResult`, `IntrospectionResult`, `ResolveConfigOptions`, `Tool`, `Resource`, `Prompt`, `ServerCapabilities`
+Types: `McpServerConfig`, `ConfigWarning`, `ParseServersResult`, `McpConnection`, `McpClientConfig`, `McpOAuthOptions`, `CredentialStore`, `GenerationOptions`, `GenerationResult`, `IntrospectionResult`, `ResolveConfigOptions`, `Tool`, `Resource`, `Prompt`, `ServerCapabilities`
 
 ## Internal API
 

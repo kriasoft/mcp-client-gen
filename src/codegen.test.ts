@@ -1,9 +1,15 @@
 /* SPDX-FileCopyrightText: 2025-present Kriasoft */
 /* SPDX-License-Identifier: MIT */
 
-import type { Tool } from "@modelcontextprotocol/sdk/types.js";
+import type { Tool } from "@modelcontextprotocol/client";
 import { describe, expect, test } from "bun:test";
-import { Project } from "ts-morph";
+import { resolve } from "node:path";
+import {
+  ModuleKind,
+  ModuleResolutionKind,
+  Project,
+  ScriptTarget,
+} from "ts-morph";
 import {
   camelCase,
   generateClientClass,
@@ -664,10 +670,7 @@ describe("codegen", () => {
 
       // Check imports
       expect(code).toContain(
-        'import { Client } from "@modelcontextprotocol/sdk/client/index.js"',
-      );
-      expect(code).toContain(
-        'import type { BlobResourceContents, PromptMessage, TextResourceContents } from "@modelcontextprotocol/sdk/types.js"',
+        'import type { BlobResourceContents, Client, PromptMessage, TextResourceContents } from "@modelcontextprotocol/client"',
       );
       expect(code).toContain(
         'import type { McpConnection } from "mcp-client-gen"',
@@ -747,5 +750,40 @@ describe("codegen", () => {
       expect(result1.code).not.toContain("Generated at:");
       expect(result1.code).not.toContain("@generated");
     });
+  });
+});
+
+describe("generated client", () => {
+  // Real fixture + real SDK types: catches SDK type drift that string assertions can't
+  test("typechecks against @modelcontextprotocol/client", async () => {
+    const fixture = await Bun.file(
+      resolve(import.meta.dir, "../test/fixtures/notion/introspection.json"),
+    ).json();
+    const { code } = generateClientFile(new Map([["notion", fixture]]), {
+      treeShakable: true,
+    });
+
+    const project = new Project({
+      compilerOptions: {
+        strict: true,
+        noEmit: true,
+        skipLibCheck: true,
+        target: ScriptTarget.ESNext,
+        module: ModuleKind.Preserve,
+        moduleResolution: ModuleResolutionKind.Bundler,
+      },
+    });
+    // In src/ so imports resolve from this package (incl. its "mcp-client-gen" self-reference)
+    const file = project.createSourceFile(
+      resolve(import.meta.dir, "__generated__.ts"),
+      code,
+    );
+    project.resolveSourceFileDependencies();
+
+    const errors = file
+      .getPreEmitDiagnostics()
+      .map((d) => d.getMessageText())
+      .map((m) => (typeof m === "string" ? m : m.getMessageText()));
+    expect(errors).toEqual([]);
   });
 });

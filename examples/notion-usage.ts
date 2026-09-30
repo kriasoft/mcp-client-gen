@@ -21,7 +21,7 @@ async function basicExample() {
 async function withAuth() {
   // For OAuth, you'd pass an authProvider
   // import { browserAuth } from "oauth-callback/mcp";
-  // const authProvider = browserAuth({ port: 3000, ... });
+  // const authProvider = browserAuth({ serverUrl, redirectUri, clientName });
 
   await using client = new NotionClient({
     url: process.env.NOTION_URL,

@@ -83,7 +83,7 @@ const page = await fetchPage({ id: "page-id" });
 
 Generated clients require:
 
-- `@modelcontextprotocol/sdk` - MCP protocol implementation
+- `@modelcontextprotocol/client` - MCP protocol implementation
 - TypeScript 5.0+ for proper type inference
 
 ## Adding More Examples
