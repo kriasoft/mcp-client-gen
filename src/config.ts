@@ -116,14 +116,18 @@ export function redactSecrets(text: string): string {
   return out + text.slice(pos);
 }
 
-/** Register a secret as written, trimmed (header/URL normalization) and URL-encoded. */
+/**
+ * Register a secret as written, trimmed (header/URL normalization), URL-encoded, and as
+ * error bodies commonly echo it (HTML-escaped 404 pages, JSON). Best effort: a server
+ * may transform it in ways no list anticipates.
+ */
 function registerSecret(value: string): void {
   for (const form of new Set([value, value.trim()])) {
     if (form.length < MIN_SECRET_LENGTH) continue;
     const url = new URL("http://host/");
     url.pathname = form;
     url.search = form;
-    for (const variant of [
+    const encoded = [
       form,
       form.toLowerCase(),
       encodeURIComponent(form),
@@ -131,9 +135,24 @@ function registerSecret(value: string): void {
       url.pathname.slice(1),
       url.search.slice(1),
       new URLSearchParams([["k", form]]).toString().slice(2),
-    ])
+    ];
+    for (const variant of encoded.flatMap((e) => [e, ...escapes(e)]))
       if (variant.length >= MIN_SECRET_LENGTH) secrets.add(variant);
   }
+}
+
+/** HTML (both apostrophe styles) and JSON string escapings of `text`. */
+function escapes(text: string): string[] {
+  const html = text
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;");
+  return [
+    html.replaceAll("'", "&#39;"),
+    html.replaceAll("'", "&#x27;"),
+    JSON.stringify(text).slice(1, -1),
+  ];
 }
 
 /** Register an expanded config URL: any of its canonical pieces may carry the secret. */
@@ -147,8 +166,23 @@ function registerSecretUrl(expanded: string): void {
     url.pathname + url.search,
     url.pathname,
     url.search.slice(1),
+    // Servers echo single credentials too (e.g. "Invalid API key: …")
+    ...url.searchParams.values(),
+    ...url.pathname
+      .split("/")
+      .map((segment) => decodeURIComponentSafe(segment)),
+    url.username,
+    url.password,
   ])
     registerSecret(piece);
+}
+
+function decodeURIComponentSafe(text: string): string {
+  try {
+    return decodeURIComponent(text);
+  } catch {
+    return text;
+  }
 }
 
 const ENV_PLACEHOLDER = /\$\{([^}]*)\}/g;

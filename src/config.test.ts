@@ -594,6 +594,23 @@ describe("config", () => {
         expect(redactSecrets("/abcdefghi/")).toBe("/***/");
       });
 
+      test("masks escaped echoes and credentials inside substituted URLs", () => {
+        process.env.MCP_TEST_KEY = "Pass&word'123";
+        process.env.MCP_TEST_URL = "https://a.dev/mcp?api_key=TopSecret123";
+        parse({
+          url: "${MCP_TEST_URL}",
+          headers: { Authorization: 'Bearer "${MCP_TEST_KEY}"' },
+        });
+        expect(redactSecrets("Cannot GET /Pass&amp;word&#39;123")).toBe(
+          "Cannot GET /***",
+        );
+        const json = JSON.stringify({ auth: `Bearer "Pass&word'123"` });
+        expect(redactSecrets(json)).toBe('{"auth":"***"}');
+        expect(redactSecrets("Invalid API key: TopSecret123")).toBe(
+          "Invalid API key: ***",
+        );
+      });
+
       test("ignores forms that URL normalization shrinks away", () => {
         process.env.MCP_TEST_KEY = "a/..";
         parse({ url: "https://a.dev/${MCP_TEST_KEY}" });
