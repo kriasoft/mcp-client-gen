@@ -574,6 +574,26 @@ describe("config", () => {
           expect(redactSecrets(`x ${form} y`)).toBe("x *** y");
       });
 
+      test("masks trimmed values, canonical URLs and overlapping secrets", () => {
+        process.env.MCP_TEST_KEY = "  SuperSecretKey  ";
+        process.env.MCP_TEST_URL = "http://LOCALHOST:9/my secret/Key";
+        process.env.MCP_TEST_A = "abcdef";
+        process.env.MCP_TEST_B = "defghi";
+        parse({
+          url: "${MCP_TEST_URL}",
+          headers: {
+            "X-Key": "${MCP_TEST_KEY}",
+            "X-A": "${MCP_TEST_A}",
+            "X-B": "${MCP_TEST_B}",
+          },
+        });
+        expect(redactSecrets("KEY=SuperSecretKey")).toBe("KEY=***");
+        expect(
+          redactSecrets("GET http://localhost:9/my%20secret/Key: 404"),
+        ).toBe("GET ***: 404");
+        expect(redactSecrets("/abcdefghi/")).toBe("/***/");
+      });
+
       test("ignores forms that URL normalization shrinks away", () => {
         process.env.MCP_TEST_KEY = "a/..";
         parse({ url: "https://a.dev/${MCP_TEST_KEY}" });

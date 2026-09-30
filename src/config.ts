@@ -77,41 +77,78 @@ export function parseJsonc(text: string): unknown {
 }
 
 /**
- * Values substituted from the environment, typically secrets. The CLI masks them in
- * everything it prints, since labels and SDK errors embed expanded URLs and headers.
+ * Text the CLI must never print: values substituted from the environment (or fallbacks),
+ * and the expanded config fields holding them. Labels, warnings and SDK errors embed
+ * expanded URLs and headers, serialized in ways a single form can't anticipate.
  */
-const substituted = new Set<string>();
+const secrets = new Set<string>();
 
+/** Shorter forms (normalization can produce "", e.g. `a/..`) would mask unrelated text. */
 const MIN_SECRET_LENGTH = 4;
 
-/** Mask substituted values, as written or as serialized in a URL, in text meant for output. */
+/** Mask every registered secret; overlapping matches merge, so no fragment survives. */
 export function redactSecrets(text: string): string {
-  // Longest first: a shorter secret inside a longer one must not leave a remainder
-  const forms = [...substituted].sort((a, b) => b.length - a.length);
-  return forms.reduce((out, form) => out.replaceAll(form, "***"), text);
+  const ranges: [number, number][] = [];
+  for (const secret of secrets)
+    for (
+      let i = text.indexOf(secret);
+      i !== -1;
+      i = text.indexOf(secret, i + 1)
+    )
+      ranges.push([i, i + secret.length]);
+  if (ranges.length === 0) return text;
+
+  // Merge overlaps first: masking one match must not leave part of another visible
+  ranges.sort((a, b) => a[0] - b[0]);
+  const merged: [number, number][] = [];
+  for (const [start, end] of ranges) {
+    const last = merged.at(-1);
+    if (last && start <= last[1]) last[1] = Math.max(last[1], end);
+    else merged.push([start, end]);
+  }
+
+  let out = "";
+  let pos = 0;
+  for (const [start, end] of merged) {
+    out += text.slice(pos, start) + "***";
+    pos = end;
+  }
+  return out + text.slice(pos);
 }
 
-/**
- * Record a substituted value in every form a URL may print it (errors echo URLs):
- * path, query and component encoding, and lowercased hosts. Very short forms (which
- * normalization can produce, e.g. `a/..` → "") would mask unrelated text, not secrets.
- */
-function substitute(value: string): string {
-  if (value.length < MIN_SECRET_LENGTH) return value;
-  const url = new URL("http://host/");
-  url.pathname = value;
-  url.search = value;
-  for (const form of [
-    value,
-    value.toLowerCase(),
-    encodeURIComponent(value),
-    encodeURI(value),
-    url.pathname.slice(1),
+/** Register a secret as written, trimmed (header/URL normalization) and URL-encoded. */
+function registerSecret(value: string): void {
+  for (const form of new Set([value, value.trim()])) {
+    if (form.length < MIN_SECRET_LENGTH) continue;
+    const url = new URL("http://host/");
+    url.pathname = form;
+    url.search = form;
+    for (const variant of [
+      form,
+      form.toLowerCase(),
+      encodeURIComponent(form),
+      encodeURI(form),
+      url.pathname.slice(1),
+      url.search.slice(1),
+      new URLSearchParams([["k", form]]).toString().slice(2),
+    ])
+      if (variant.length >= MIN_SECRET_LENGTH) secrets.add(variant);
+  }
+}
+
+/** Register an expanded config URL: any of its canonical pieces may carry the secret. */
+function registerSecretUrl(expanded: string): void {
+  registerSecret(expanded);
+  if (!URL.canParse(expanded)) return;
+  const url = new URL(expanded);
+  for (const piece of [
+    url.href,
+    url.host,
+    url.pathname + url.search,
+    url.pathname,
     url.search.slice(1),
-    new URLSearchParams([["k", value]]).toString().slice(2),
   ])
-    if (form.length >= MIN_SECRET_LENGTH) substituted.add(form);
-  return value;
+    registerSecret(piece);
 }
 
 const ENV_PLACEHOLDER = /\$\{([^}]*)\}/g;
@@ -123,6 +160,10 @@ const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
  * `${input:id}`, can't be resolved here and are reported via `missing`.
  */
 function expandEnv(value: string, missing: Set<string>): string {
+  const keep = (substituted: string) => (
+    registerSecret(substituted),
+    substituted
+  );
   return value.replace(ENV_PLACEHOLDER, (match, expr: string) => {
     const body = expr.startsWith("env:") ? expr.slice(4) : expr;
     const sep = body.indexOf(":-");
@@ -136,13 +177,13 @@ function expandEnv(value: string, missing: Set<string>): string {
     }
     const envValue = process.env[name];
     if (sep === -1) {
-      if (envValue !== undefined) return substitute(envValue);
+      if (envValue !== undefined) return keep(envValue);
       missing.add(name);
       return match;
     }
     // Shell semantics: `:-` also replaces an empty value
     // A fallback comes from the config file, but may be a secret all the same
-    return substitute(envValue || fallback!);
+    return keep(envValue || fallback!);
   });
 }
 
@@ -270,6 +311,8 @@ export function getMcpServers(paths: string[]): ParseServersResult {
             typeof server.url === "string"
               ? expandEnv(server.url, missing).trim()
               : "";
+          if (typeof server.url === "string" && server.url.includes("${"))
+            registerSecretUrl(trimmedUrl);
           let headers: Record<string, string> | undefined;
           if (
             server.headers &&
@@ -282,6 +325,9 @@ export function getMcpServers(paths: string[]): ParseServersResult {
                 typeof value === "string"
                   ? expandEnv(value, missing)
                   : String(value);
+              // The whole value: printed errors show headers as sent (trimmed, joined)
+              if (typeof value === "string" && value.includes("${"))
+                registerSecret(headers[key]!);
             }
           }
 
