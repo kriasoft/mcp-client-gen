@@ -35,17 +35,17 @@ const pages = await notion.notionSearch({ query: "Meeting Notes" });
 
 - **Type-safe** — Generated TypeScript types from server schemas
 - **Zero config auth** — OAuth 2.1 with PKCE, just approve in browser
-- **Tree-shakable** — Only bundle the methods you import
+- **Tree-shakable** — One class per server; bundles include only the clients you use
 
 ## Installation
 
+Generated clients import types from this package and the MCP SDK, so install both in the project that uses them:
+
 ```bash
-npm install -g mcp-client-gen
-# or
-bun add -g mcp-client-gen
+npm install mcp-client-gen @modelcontextprotocol/client
 ```
 
-Requires Node.js 22+ (or Bun). Projects that use generated clients also need `@modelcontextprotocol/client` 2.x.
+The CLI runs without installing (`npx mcp-client-gen`). Requires Node.js 22+ (or Bun).
 
 ## CLI Usage
 
@@ -58,6 +58,7 @@ npx mcp-client-gen <url> <file>       # Shorthand
 # Config mode (reads .mcp.json, .cursor/, .vscode/)
 npx mcp-client-gen                    # Interactive
 npx mcp-client-gen -y                 # Accept defaults
+npx mcp-client-gen -o <file>          # All servers → <file> (implies -y)
 ```
 
 ### Config File Format
@@ -67,10 +68,15 @@ npx mcp-client-gen -y                 # Accept defaults
 {
   "mcpServers": {
     "notion": { "url": "https://mcp.notion.com/mcp" },
-    "github": { "url": "https://api.githubcopilot.com/mcp/" },
+    "github": {
+      "url": "https://api.githubcopilot.com/mcp/",
+      "headers": { "Authorization": "Bearer ${GITHUB_TOKEN}" },
+    },
   },
 }
 ```
+
+Config files may contain comments and trailing commas. `${NAME}`, `${NAME:-default}` and `${env:NAME}` in `url` and `headers` expand from the environment; a server with an unset variable is skipped with a warning.
 
 ## Authentication
 

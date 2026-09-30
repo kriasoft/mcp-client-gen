@@ -1,114 +1,64 @@
 /**
- * TypeScript interface generation from MCP tool definitions.
+ * Tool input/output type generation.
  *
- * Generates strongly-typed interfaces for tool inputs and outputs
- * with proper JSDoc comments and property definitions.
+ * Emits type aliases (not interfaces) from the whole schema: roots may be unions or
+ * dictionaries, and only aliases are assignable to the SDK's Record<string, unknown>
+ * tool arguments.
  *
  * SPDX-FileCopyrightText: 2025-present Kriasoft
  * SPDX-License-Identifier: MIT
  */
 
 import type { Tool } from "@modelcontextprotocol/client";
-import type { InterfaceDeclaration, SourceFile } from "ts-morph";
+import type { SourceFile, TypeAliasDeclaration } from "ts-morph";
 import { jsonSchemaToTypeScript } from "./schema-to-typescript.js";
-import { pascalCase } from "./utils.js";
+import { commentText } from "./utils.js";
 
-/**
- * Generate TypeScript interface from a tool definition
- */
-export function generateToolInterface(
+/** Emit `export type {name} = …` for a tool's input schema. */
+export function generateToolInputType(
   sourceFile: SourceFile,
   tool: Tool,
-): InterfaceDeclaration {
-  const interfaceName = pascalCase(tool.name) + "Input";
-
-  // Parse the input schema to TypeScript
-  const typeString = jsonSchemaToTypeScript(tool.inputSchema);
-
-  // Create interface with parsed properties
-  const interfaceDecl = sourceFile.addInterface({
-    name: interfaceName,
+  name: string,
+): TypeAliasDeclaration {
+  const type = jsonSchemaToTypeScript(tool.inputSchema);
+  return sourceFile.addTypeAlias({
+    name,
     isExported: true,
+    // Tool arguments are always an object, even when the schema can't say which
+    type: type === "unknown" ? "Record<string, unknown>" : type,
+    docs: tool.description ? [commentText(tool.description)] : [],
   });
-
-  if (tool.description) {
-    interfaceDecl.addJsDoc({
-      description: tool.description,
-    });
-  }
-
-  // MCP spec guarantees inputSchema.type === "object"
-  if (tool.inputSchema?.properties) {
-    const required = new Set(tool.inputSchema.required || []);
-
-    for (const [key, propSchema] of Object.entries(
-      tool.inputSchema.properties,
-    )) {
-      const prop = interfaceDecl.addProperty({
-        name: key,
-        type: jsonSchemaToTypeScript(propSchema),
-        hasQuestionToken: !required.has(key),
-      });
-
-      // Add JSDoc if description exists
-      if ((propSchema as any).description) {
-        prop.addJsDoc({
-          description: (propSchema as any).description,
-        });
-      }
-    }
-  }
-
-  return interfaceDecl;
 }
 
-/**
- * Generate TypeScript interface from a tool's outputSchema (if present).
- * Returns undefined if the tool has no outputSchema.
- */
-export function generateToolOutputInterface(
+/** Emit `export type {name} = …` for a tool's output schema, if it declares one. */
+export function generateToolOutputType(
   sourceFile: SourceFile,
   tool: Tool,
-): InterfaceDeclaration | undefined {
-  const outputSchema = (tool as any).outputSchema;
-  if (!outputSchema) return undefined;
-
-  const interfaceName = pascalCase(tool.name) + "Output";
-
-  const interfaceDecl = sourceFile.addInterface({
-    name: interfaceName,
+  name: string,
+): TypeAliasDeclaration | undefined {
+  if (!hasOutputSchema(tool)) return undefined;
+  return sourceFile.addTypeAlias({
+    name,
     isExported: true,
+    type: jsonSchemaToTypeScript(tool.outputSchema),
+    docs: [commentText(`Structured result of the \`${tool.name}\` tool.`)],
   });
-
-  interfaceDecl.addJsDoc({
-    description: `Output type for ${tool.name}`,
-  });
-
-  // MCP spec: outputSchema follows same structure as inputSchema (object)
-  if (outputSchema.properties) {
-    const required = new Set(outputSchema.required || []);
-
-    for (const [key, propSchema] of Object.entries(outputSchema.properties)) {
-      const prop = interfaceDecl.addProperty({
-        name: key,
-        type: jsonSchemaToTypeScript(propSchema),
-        hasQuestionToken: !required.has(key),
-      });
-
-      if ((propSchema as any).description) {
-        prop.addJsDoc({
-          description: (propSchema as any).description,
-        });
-      }
-    }
-  }
-
-  return interfaceDecl;
 }
 
-/**
- * Check if a tool has an outputSchema defined.
- */
+/** Whether a tool declares an outputSchema (its result is typed structuredContent). */
 export function hasOutputSchema(tool: Tool): boolean {
-  return !!(tool as any).outputSchema;
+  return tool.outputSchema !== undefined;
+}
+
+/** Whether the tool can be called without arguments (no required input). */
+export function hasOptionalInput(tool: Tool): boolean {
+  const schema = tool.inputSchema as Record<string, unknown>;
+  const required = schema.required;
+  return (
+    !(Array.isArray(required) && required.length > 0) &&
+    !schema.anyOf &&
+    !schema.oneOf &&
+    !schema.allOf &&
+    !schema.$ref
+  );
 }

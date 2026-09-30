@@ -31,7 +31,199 @@ export function formatConfigWarning(warning: ConfigWarning): string {
       return `${file}: Skipped "${warning.name}" (missing url)`;
     case "unknown_type":
       return `${file}: Skipped "${warning.name}" (unknown type "${warning.type}")`;
+    case "unresolved_env":
+      return `${file}: Skipped "${warning.name}" (unset environment variable ${warning.variables.join(", ")})`;
   }
+}
+
+/**
+ * Parse JSON with comments and trailing commas (JSONC).
+ * VS Code and Cursor mcp.json files are JSONC; a small scanner avoids a
+ * dependency and Bun-only APIs (the CLI also runs on Node).
+ */
+export function parseJsonc(text: string): unknown {
+  if (text.startsWith("\uFEFF")) text = text.slice(1); // BOM, common on Windows
+  let out = "";
+  let comma = -1; // Index in `out` of a comma that may turn out to be trailing
+  let i = 0;
+  while (i < text.length) {
+    const ch = text[i]!;
+    const next = text[i + 1];
+    if (ch === '"') {
+      let j = i + 1;
+      while (j < text.length && text[j] !== '"') j += text[j] === "\\" ? 2 : 1;
+      out += text.slice(i, j + 1);
+      i = j + 1;
+      comma = -1;
+    } else if (ch === "/" && next === "/") {
+      while (i < text.length && text[i] !== "\n" && text[i] !== "\r") i++;
+    } else if (ch === "/" && next === "*") {
+      const end = text.indexOf("*/", i + 2);
+      // A truncated file must fail, not silently drop its tail
+      if (end === -1) throw new SyntaxError("Unterminated /* comment");
+      i = end + 2;
+      out += " ";
+    } else {
+      if ((ch === "}" || ch === "]") && comma !== -1) {
+        out = out.slice(0, comma) + out.slice(comma + 1);
+      }
+      if (ch === ",") comma = out.length;
+      else if (!/\s/.test(ch)) comma = -1;
+      out += ch;
+      i++;
+    }
+  }
+  return JSON.parse(out);
+}
+
+/**
+ * Text the CLI must never print: values substituted from the environment (or fallbacks),
+ * and the expanded config fields holding them. Labels, warnings and SDK errors embed
+ * expanded URLs and headers, serialized in ways a single form can't anticipate.
+ */
+const secrets = new Set<string>();
+
+/** Shorter forms (normalization can produce "", e.g. `a/..`) would mask unrelated text. */
+const MIN_SECRET_LENGTH = 4;
+
+/** Mask every registered secret; overlapping matches merge, so no fragment survives. */
+export function redactSecrets(text: string): string {
+  const ranges: [number, number][] = [];
+  for (const secret of secrets)
+    for (
+      let i = text.indexOf(secret);
+      i !== -1;
+      i = text.indexOf(secret, i + 1)
+    )
+      ranges.push([i, i + secret.length]);
+  if (ranges.length === 0) return text;
+
+  // Merge overlaps first: masking one match must not leave part of another visible
+  ranges.sort((a, b) => a[0] - b[0]);
+  const merged: [number, number][] = [];
+  for (const [start, end] of ranges) {
+    const last = merged.at(-1);
+    if (last && start <= last[1]) last[1] = Math.max(last[1], end);
+    else merged.push([start, end]);
+  }
+
+  let out = "";
+  let pos = 0;
+  for (const [start, end] of merged) {
+    out += text.slice(pos, start) + "***";
+    pos = end;
+  }
+  return out + text.slice(pos);
+}
+
+/**
+ * Register a secret as written, trimmed (header/URL normalization), URL-encoded, and as
+ * error bodies commonly echo it (HTML-escaped 404 pages, JSON). Best effort: a server
+ * may transform it in ways no list anticipates.
+ */
+function registerSecret(value: string): void {
+  for (const form of new Set([value, value.trim()])) {
+    if (form.length < MIN_SECRET_LENGTH) continue;
+    const url = new URL("http://host/");
+    url.pathname = form;
+    url.search = form;
+    const encoded = [
+      form,
+      form.toLowerCase(),
+      encodeURIComponent(form),
+      encodeURI(form),
+      url.pathname.slice(1),
+      url.search.slice(1),
+      new URLSearchParams([["k", form]]).toString().slice(2),
+    ];
+    for (const variant of encoded.flatMap((e) => [e, ...escapes(e)]))
+      if (variant.length >= MIN_SECRET_LENGTH) secrets.add(variant);
+  }
+}
+
+/** HTML (both apostrophe styles) and JSON string escapings (plain and Go's HTML-safe). */
+function escapes(text: string): string[] {
+  const html = text
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;");
+  const json = JSON.stringify(text).slice(1, -1);
+  return [
+    html.replaceAll("'", "&#39;"),
+    html.replaceAll("'", "&#x27;"),
+    json,
+    json
+      .replaceAll("&", "\\u0026")
+      .replaceAll("<", "\\u003c")
+      .replaceAll(">", "\\u003e"),
+  ];
+}
+
+/** Register an expanded config URL: any of its canonical pieces may carry the secret. */
+function registerSecretUrl(expanded: string): void {
+  registerSecret(expanded);
+  if (!URL.canParse(expanded)) return;
+  const url = new URL(expanded);
+  for (const piece of [
+    url.href,
+    url.host,
+    url.pathname + url.search,
+    url.pathname,
+    url.search.slice(1),
+    // Servers echo single credentials too (e.g. "Invalid API key: …")
+    ...url.searchParams.values(),
+    ...url.pathname
+      .split("/")
+      .map((segment) => decodeURIComponentSafe(segment)),
+    url.username,
+    url.password,
+  ])
+    registerSecret(piece);
+}
+
+function decodeURIComponentSafe(text: string): string {
+  try {
+    return decodeURIComponent(text);
+  } catch {
+    return text;
+  }
+}
+
+const ENV_PLACEHOLDER = /\$\{([^}]*)\}/g;
+const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+/**
+ * Expand `${env:NAME}` (VS Code/Cursor), `${NAME}` and `${NAME:-default}`
+ * (Claude Code) from process.env. Other placeholders, e.g. VS Code's
+ * `${input:id}`, can't be resolved here and are reported via `missing`.
+ */
+function expandEnv(value: string, missing: Set<string>): string {
+  const keep = (substituted: string) => (
+    registerSecret(substituted),
+    substituted
+  );
+  return value.replace(ENV_PLACEHOLDER, (match, expr: string) => {
+    const body = expr.startsWith("env:") ? expr.slice(4) : expr;
+    const sep = body.indexOf(":-");
+    const name = sep === -1 ? body : body.slice(0, sep);
+    // Report names only: a fallback may be a secret. Nested placeholders in a
+    // fallback aren't supported (the pattern ends at the first "}").
+    const fallback = sep === -1 ? undefined : body.slice(sep + 2);
+    if (!ENV_NAME.test(name) || fallback?.includes("${")) {
+      missing.add(name || "(empty)");
+      return match;
+    }
+    const envValue = process.env[name];
+    if (sep === -1) {
+      if (envValue !== undefined) return keep(envValue);
+      missing.add(name);
+      return match;
+    }
+    // Shell semantics: `:-` also replaces an empty value
+    // A fallback comes from the config file, but may be a secret all the same
+    return keep(envValue || fallback!);
+  });
 }
 
 export interface ResolveConfigOptions {
@@ -117,13 +309,21 @@ export function getMcpServers(paths: string[]): ParseServersResult {
   for (const path of paths) {
     let config: unknown;
     try {
-      const content = readFileSync(path, "utf8");
-      config = JSON.parse(content);
+      config = parseJsonc(readFileSync(path, "utf8"));
     } catch (error) {
       warnings.push({
         kind: "malformed_json",
         path,
         error: (error as Error).message,
+      });
+      continue;
+    }
+
+    if (!config || typeof config !== "object" || Array.isArray(config)) {
+      warnings.push({
+        kind: "malformed_json",
+        path,
+        error: "Expected an object at the root",
       });
       continue;
     }
@@ -138,12 +338,46 @@ export function getMcpServers(paths: string[]): ParseServersResult {
       for (const [name, serverConfig] of Object.entries(serverConfigs)) {
         if (typeof serverConfig === "object" && serverConfig !== null) {
           const server = serverConfig as any;
-          const trimmedUrl =
-            typeof server.url === "string" ? server.url.trim() : "";
 
           // Check for stdio servers (unsupported)
           if (server.type === "stdio" || server.command) {
             warnings.push({ kind: "skipped_stdio", path, name });
+            continue;
+          }
+
+          const missing = new Set<string>();
+          const trimmedUrl =
+            typeof server.url === "string"
+              ? expandEnv(server.url, missing).trim()
+              : "";
+          if (typeof server.url === "string" && server.url.includes("${"))
+            registerSecretUrl(trimmedUrl);
+          let headers: Record<string, string> | undefined;
+          if (
+            server.headers &&
+            typeof server.headers === "object" &&
+            !Array.isArray(server.headers)
+          ) {
+            headers = {};
+            for (const [key, value] of Object.entries(server.headers)) {
+              headers[key] =
+                typeof value === "string"
+                  ? expandEnv(value, missing)
+                  : String(value);
+              // The whole value: printed errors show headers as sent (trimmed, joined)
+              if (typeof value === "string" && value.includes("${"))
+                registerSecret(headers[key]!);
+            }
+          }
+
+          // Skip rather than send a literal placeholder as a URL or credential
+          if (missing.size > 0) {
+            warnings.push({
+              kind: "unresolved_env",
+              path,
+              name,
+              variables: [...missing],
+            });
             continue;
           }
 
@@ -182,14 +416,7 @@ export function getMcpServers(paths: string[]): ParseServersResult {
             name,
           };
 
-          // Extract headers if present
-          if (
-            server.headers &&
-            typeof server.headers === "object" &&
-            !Array.isArray(server.headers)
-          ) {
-            result.headers = server.headers as Record<string, string>;
-          }
+          if (headers) result.headers = headers;
 
           servers.push(result);
         }

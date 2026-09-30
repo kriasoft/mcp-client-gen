@@ -18,6 +18,7 @@ npx mcp-client-gen <url> <file>             # Shorthand
 # Config mode (uses .mcp.json, .cursor/, .vscode/)
 npx mcp-client-gen                          # Interactive
 npx mcp-client-gen -y                       # Quick defaults
+npx mcp-client-gen -o <file>                # Quick, custom output (implies -y)
 ```
 
 ## Test Commands
@@ -66,7 +67,7 @@ mcp-client-gen/
 │   │   ├── index.ts           # Codegen module exports
 │   │   ├── file-builder.ts    # Assembles complete TypeScript file
 │   │   ├── class-generator.ts # Client class with tool/resource methods
-│   │   ├── tool-input-generator.ts # Tool input interfaces
+│   │   ├── tool-input-generator.ts # Tool input/output types
 │   │   ├── schema-to-typescript.ts # JSON Schema → TypeScript types
 │   │   └── utils.ts           # camelCase, pascalCase helpers
 │   │
@@ -100,7 +101,7 @@ Keep module DAG clean: lower modules must not import from higher ones.
 
 - Runtime: Always use Bun (not Node.js/NPM). Bun auto-loads .env files
 - MCP SDK: `@modelcontextprotocol/client` 2.x (single entry point). The SDK owns OAuth; `oauth-callback/mcp` supplies the browser + loopback provider (ADR-002)
-- Generated Client: Must be tree-shakable for optimal bundle size
+- Generated Client: Type-only SDK imports, one class per server (unused servers tree-shake), valid under `strict` + `noUnusedLocals` (SPEC-generated-client)
 - Design Philosophy: Prioritize ideal design over backward compatibility
 
 ## Error Handling
@@ -109,6 +110,7 @@ Keep module DAG clean: lower modules must not import from higher ones.
 - **Discriminated unions** for per-item failures (introspection returns `{ ok: true, ... } | { ok: false, error }`)
 - **Console.warn** for non-fatal issues (single capability fetch failure)
 - Error messages: include context ("Tool 'search' error: ..."), never stack traces to users
+- CLI output: pass anything derived from config (URLs, headers, SDK error messages) through `redactSecrets()`: env placeholders expand to secrets. Masking covers common serializations (URL encodings, HTML/JSON escaping), so prefer names over config values in messages
 
 ## Naming Conventions
 
@@ -167,5 +169,5 @@ import {
 Not covered by semver — use for custom pipelines:
 
 - `introspectServer()`, `introspectServers()`
-- `generateClientFile()`, `generateClientClass()`, `generateToolInterface()`, `generateToolOutputInterface()`
+- `generateClientFile()`, `generateClientClass()`, `generateToolInputType()`, `generateToolOutputType()`
 - `jsonSchemaToTypeScript()`, `hasOutputSchema()`, `MCP_CONFIG_PATHS`, `extractServerName()`

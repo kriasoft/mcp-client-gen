@@ -1,0 +1,14 @@
+{
+  // Declarations only (bun build emits the JS): consumers get .d.ts, not src/*.ts,
+  // so their typecheck never reaches implementation-only imports
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "declaration": true,
+    "emitDeclarationOnly": true,
+    "rootDir": "src",
+    "outDir": "dist"
+  },
+  "include": ["src/index.ts", "src/internal.ts"],
+  "exclude": ["src/**/*.test.ts"]
+}

@@ -4,7 +4,7 @@
 /**
  * Interactive prompts - wizard for config/server selection and output path.
  *
- * Contract: runInteractiveSetup(cwd, useDefaults?) → PromptsResult
+ * Contract: runInteractiveSetup(cwd, options?) → PromptsResult
  * Owns: User interaction via @clack/prompts. Does not own: validation rules.
  */
 
@@ -23,6 +23,7 @@ import {
   findMcpConfigFiles,
   formatConfigWarning,
   getMcpServers,
+  redactSecrets,
   resolveConfigFiles,
 } from "./config.js";
 import type { GenerationResult } from "./pipeline.js";
@@ -70,6 +71,22 @@ export async function promptForConfigFiles(
 }
 
 /**
+ * Parse servers, printing every config warning to stderr, even when some
+ * servers remain: a silently skipped server is harder to debug than a missing one.
+ */
+function loadServers(configFiles: string[]): McpServerConfig[] {
+  const { servers, warnings } = getMcpServers(configFiles);
+  if (warnings.length > 0) {
+    console.error("\nConfig warnings:");
+    for (const warning of warnings) {
+      console.error(`  - ${formatConfigWarning(warning)}`);
+    }
+    console.error();
+  }
+  return servers;
+}
+
+/**
  * Select servers from parsed configs.
  * @param configFiles Paths to parse for servers
  * @returns Deduplicated server list
@@ -77,17 +94,7 @@ export async function promptForConfigFiles(
 export async function promptForServers(
   configFiles: string[],
 ): Promise<McpServerConfig[]> {
-  const { servers, warnings } = getMcpServers(configFiles);
-
-  // Show warnings in interactive mode
-  if (warnings.length > 0) {
-    console.log("\nConfig warnings:");
-    for (const warning of warnings) {
-      console.log(`  - ${formatConfigWarning(warning)}`);
-    }
-    console.log();
-  }
-
+  const servers = loadServers(configFiles);
   if (servers.length === 0) {
     throw new Error(
       "No valid MCP servers found in configuration files. Check your .mcp.json configuration.",
@@ -98,8 +105,9 @@ export async function promptForServers(
     message: "Select MCP servers to include:",
     options: servers.map((server) => ({
       value: server,
-      label: `${server.url}`,
-      hint: `Type: ${server.type}`,
+      // Config URLs may hold expanded secrets
+      label: server.name ?? redactSecrets(server.url),
+      hint: `${server.type} · ${redactSecrets(server.url)}`,
     })),
     initialValues: servers, // Select all by default
     required: true,
@@ -152,6 +160,8 @@ export interface SetupOptions {
   useDefaults?: boolean;
   /** Explicit config file path (skips config discovery/selection) */
   configPath?: string;
+  /** Output path for quick mode (default: src/mcp-client.ts or mcp-client.ts) */
+  outputFile?: string;
 }
 
 /**
@@ -167,26 +177,20 @@ export async function runInteractiveSetup(
   const { useDefaults = false, configPath } = options;
 
   if (useDefaults) {
-    // Quick mode: all servers, default output path
+    // Quick mode: all servers, given or default output path
     const configFiles = await resolveConfigFiles({ cwd, configPath });
-    const { servers, warnings } = getMcpServers(configFiles);
+    const servers = loadServers(configFiles);
 
     if (servers.length === 0) {
-      // Show warnings when no servers found to help debugging
-      if (warnings.length > 0) {
-        console.log("\nConfig warnings:");
-        for (const warning of warnings) {
-          console.log(`  - ${formatConfigWarning(warning)}`);
-        }
-      }
       throw new Error(
         "No valid MCP servers found in configuration files. Check your .mcp.json configuration.",
       );
     }
 
     // Auto-detect src/ directory for better project structure
-    const srcExists = existsSync(resolve(cwd, "src"));
-    const outputFile = srcExists ? "src/mcp-client.ts" : "mcp-client.ts";
+    const outputFile =
+      options.outputFile ??
+      (existsSync(resolve(cwd, "src")) ? "src/mcp-client.ts" : "mcp-client.ts");
 
     console.log(
       `🚀 Using defaults: ${servers.length} server${servers.length !== 1 ? "s" : ""} → ${outputFile}`,

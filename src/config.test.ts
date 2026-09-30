@@ -1,14 +1,24 @@
 /* SPDX-FileCopyrightText: 2025-present Kriasoft */
 /* SPDX-License-Identifier: MIT */
 
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  describe,
+  expect,
+  test,
+} from "bun:test";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { extractServerName } from "./pipeline.js";
 import {
   findMcpConfigFiles,
   formatConfigWarning,
   getMcpServers,
   MCP_CONFIG_PATHS,
+  parseJsonc,
+  redactSecrets,
   resolveConfigFiles,
 } from "./config";
 
@@ -64,6 +74,18 @@ describe("config", () => {
       });
       expect(msg).toBe(
         '.mcp.json: Skipped "custom-server" (unknown type "grpc")',
+      );
+    });
+
+    test("formats unresolved env warning", () => {
+      const msg = formatConfigWarning({
+        kind: "unresolved_env",
+        path: "/path/to/.mcp.json",
+        name: "api",
+        variables: ["API_KEY", "API_HOST"],
+      });
+      expect(msg).toBe(
+        '.mcp.json: Skipped "api" (unset environment variable API_KEY, API_HOST)',
       );
     });
   });
@@ -469,31 +491,241 @@ describe("config", () => {
       });
     });
 
-    test("supports Claude format with environment variables and headers", () => {
-      const configPath = resolve(TEST_DIR, "claude-format.json");
-      const config = {
-        mcpServers: {
-          "api-server": {
-            type: "sse",
-            url: "${API_BASE_URL:-https://api.example.com}/mcp",
-            headers: {
-              Authorization: "Bearer ${API_KEY}",
-            },
+    describe("environment variable expansion", () => {
+      const saved = { ...process.env };
+      afterEach(() => {
+        process.env = { ...saved };
+      });
+
+      function parse(server: object) {
+        const configPath = resolve(TEST_DIR, "env.json");
+        writeFileSync(
+          configPath,
+          JSON.stringify({ mcpServers: { api: server } }),
+        );
+        return getMcpServers([configPath]);
+      }
+
+      test("expands Claude-style ${NAME} and ${NAME:-default}", () => {
+        process.env.MCP_TEST_KEY = "secret";
+        delete process.env.MCP_TEST_BASE;
+        const { servers, warnings } = parse({
+          type: "sse",
+          url: "${MCP_TEST_BASE:-https://api.example.com}/mcp",
+          headers: { Authorization: "Bearer ${MCP_TEST_KEY}" },
+        });
+        expect(warnings).toEqual([]);
+        expect(servers[0]).toEqual({
+          type: "sse",
+          url: "https://api.example.com/mcp",
+          name: "api",
+          headers: { Authorization: "Bearer secret" },
+        });
+      });
+
+      test("expands VS Code-style ${env:NAME} in url and headers", () => {
+        process.env.MCP_TEST_HOST = "mcp.example.com";
+        process.env.MCP_TEST_KEY = "secret";
+        const { servers } = parse({
+          url: "https://${env:MCP_TEST_HOST}/mcp",
+          headers: { "X-Api-Key": "${env:MCP_TEST_KEY}" },
+        });
+        expect(servers[0]?.url).toBe("https://mcp.example.com/mcp");
+        expect(servers[0]?.headers).toEqual({ "X-Api-Key": "secret" });
+      });
+
+      test("uses the default when the variable is empty", () => {
+        process.env.MCP_TEST_BASE = "";
+        const { servers } = parse({ url: "${MCP_TEST_BASE:-https://a.dev}" });
+        expect(servers[0]?.url).toBe("https://a.dev");
+      });
+
+      test("never reports fallback values; rejects nested placeholders", () => {
+        process.env.MCP_TEST_KEY = "primary";
+        const { servers, warnings } = parse({
+          url: "https://a.dev/mcp",
+          headers: {
+            Authorization: "${API-KEY:-super-secret}",
+            "X-Nested": "${MCP_TEST_KEY:-${MCP_TEST_OTHER}}",
           },
-        },
-      };
-      writeFileSync(configPath, JSON.stringify(config, null, 2));
+        });
+        expect(servers).toEqual([]);
+        expect(JSON.stringify(warnings)).not.toContain("super-secret");
+        expect(warnings[0]).toMatchObject({
+          kind: "unresolved_env",
+          variables: ["API-KEY", "MCP_TEST_KEY"],
+        });
+      });
 
-      const { servers } = getMcpServers([configPath]);
+      test("redacts substituted values in every URL-serialized form", () => {
+        process.env.MCP_TEST_KEY = "my secret/Key";
+        delete process.env.MCP_TEST_MISSING;
+        parse({
+          url: "https://a.dev/${MCP_TEST_KEY}?k=${MCP_TEST_MISSING:-fallback-secret}",
+        });
+        for (const form of [
+          "my secret/Key", // raw
+          "my%20secret/Key", // path
+          "my+secret%2FKey", // query (form encoding)
+          "my%20secret%2FKey", // component
+          "my secret/key", // lowercased host
+          "fallback-secret", // fallback value
+        ])
+          expect(redactSecrets(`x ${form} y`)).toBe("x *** y");
+      });
 
-      expect(servers).toHaveLength(1);
-      expect(servers[0]).toEqual({
-        type: "sse",
-        url: "${API_BASE_URL:-https://api.example.com}/mcp", // Environment variables preserved
-        name: "api-server",
-        headers: { Authorization: "Bearer ${API_KEY}" },
+      test("masks trimmed values, canonical URLs and overlapping secrets", () => {
+        process.env.MCP_TEST_KEY = "  SuperSecretKey  ";
+        process.env.MCP_TEST_URL = "http://LOCALHOST:9/my secret/Key";
+        process.env.MCP_TEST_A = "abcdef";
+        process.env.MCP_TEST_B = "defghi";
+        parse({
+          url: "${MCP_TEST_URL}",
+          headers: {
+            "X-Key": "${MCP_TEST_KEY}",
+            "X-A": "${MCP_TEST_A}",
+            "X-B": "${MCP_TEST_B}",
+          },
+        });
+        expect(redactSecrets("KEY=SuperSecretKey")).toBe("KEY=***");
+        expect(
+          redactSecrets("GET http://localhost:9/my%20secret/Key: 404"),
+        ).toBe("GET ***: 404");
+        expect(redactSecrets("/abcdefghi/")).toBe("/***/");
+      });
+
+      test("masks escaped echoes and credentials inside substituted URLs", () => {
+        process.env.MCP_TEST_KEY = "Pass&word'123";
+        process.env.MCP_TEST_URL = "https://a.dev/mcp?api_key=TopSecret123";
+        parse({
+          url: "${MCP_TEST_URL}",
+          headers: { Authorization: 'Bearer "${MCP_TEST_KEY}"' },
+        });
+        expect(redactSecrets("Cannot GET /Pass&amp;word&#39;123")).toBe(
+          "Cannot GET /***",
+        );
+        const json = JSON.stringify({ auth: `Bearer "Pass&word'123"` });
+        expect(redactSecrets(json)).toBe('{"auth":"***"}');
+        // Go's encoding/json escapes & < > for HTML safety
+        expect(redactSecrets(String.raw`key: Pass\u0026word'123`)).toBe(
+          "key: ***",
+        );
+        expect(redactSecrets("Invalid API key: TopSecret123")).toBe(
+          "Invalid API key: ***",
+        );
+      });
+
+      test("ignores forms that URL normalization shrinks away", () => {
+        process.env.MCP_TEST_KEY = "a/..";
+        parse({ url: "https://a.dev/${MCP_TEST_KEY}" });
+        expect(redactSecrets("All servers failed")).toBe("All servers failed");
+      });
+
+      test("an empty config key doesn't derive a name from the URL", () => {
+        process.env.MCP_TEST_KEY = "s3cret";
+        const configPath = resolve(TEST_DIR, "env.json");
+        writeFileSync(
+          configPath,
+          JSON.stringify({
+            mcpServers: { "": { url: "https://${MCP_TEST_KEY}.dev" } },
+          }),
+        );
+        const [server] = getMcpServers([configPath]).servers;
+        expect(extractServerName(server!, 0)).toBe("server1");
+      });
+
+      test("skips a server with unset variables and names them", () => {
+        delete process.env.MCP_TEST_MISSING;
+        delete process.env.MCP_TEST_HOST;
+        const { servers, warnings } = parse({
+          url: "https://${env:MCP_TEST_HOST}/mcp",
+          headers: {
+            Authorization: "Bearer ${MCP_TEST_MISSING}",
+            "X-Input": "${input:token}",
+          },
+        });
+        expect(servers).toEqual([]);
+        expect(warnings).toEqual([
+          {
+            kind: "unresolved_env",
+            path: resolve(TEST_DIR, "env.json"),
+            name: "api",
+            variables: ["MCP_TEST_HOST", "MCP_TEST_MISSING", "input:token"],
+          },
+        ]);
       });
     });
+
+    describe("JSONC", () => {
+      test("parses VS Code mcp.json with comments and trailing commas", () => {
+        const configPath = resolve(TEST_DIR, ".vscode/mcp.json");
+        writeFileSync(
+          configPath,
+          `// VS Code MCP config
+{
+  /* servers
+     block */
+  "servers": {
+    "a": { "url": "https://a.dev/mcp", }, // trailing comma
+  },
+  "inputs": [1, 2,],
+}`,
+        );
+        const { servers, warnings } = getMcpServers([configPath]);
+        expect(warnings).toEqual([]);
+        expect(servers).toEqual([
+          { type: "http", url: "https://a.dev/mcp", name: "a" },
+        ]);
+      });
+
+      test("leaves string contents untouched", () => {
+        expect(
+          parseJsonc(
+            String.raw`{"a": "https://x.dev//p", "b": "/* no */", "c": "x,}", "d": "q\"//,]", "e": "\\"}`,
+          ),
+        ).toEqual({
+          a: "https://x.dev//p",
+          b: "/* no */",
+          c: "x,}",
+          d: 'q"//,]',
+          e: "\\",
+        });
+      });
+
+      test("ends line comments at CR; strips a BOM", () => {
+        expect(parseJsonc('\uFEFF// c\r{"a": 1}')).toEqual({ a: 1 });
+      });
+
+      test("still rejects invalid JSON and unterminated comments", () => {
+        expect(() => parseJsonc("{,,}")).toThrow();
+        expect(() => parseJsonc('{"a": 1} /* oops')).toThrow(
+          "Unterminated /* comment",
+        );
+        expect(() => parseJsonc('{"a": 1 "b": 2}')).toThrow();
+      });
+    });
+
+    test.each(["null", "[]", '"text"', "42"])(
+      "warns on non-object root %s and continues",
+      (root) => {
+        const badPath = resolve(TEST_DIR, "bad-root.json");
+        const goodPath = resolve(TEST_DIR, "good-root.json");
+        writeFileSync(badPath, root);
+        writeFileSync(
+          goodPath,
+          JSON.stringify({ mcpServers: { a: { url: "https://a.dev" } } }),
+        );
+        const { servers, warnings } = getMcpServers([badPath, goodPath]);
+        expect(warnings).toEqual([
+          {
+            kind: "malformed_json",
+            path: badPath,
+            error: "Expected an object at the root",
+          },
+        ]);
+        expect(servers).toHaveLength(1);
+      },
+    );
 
     test("skips stdio servers from VSCode format with warning", () => {
       const configPath = resolve(TEST_DIR, "vscode-stdio.json");
@@ -535,7 +767,7 @@ describe("config", () => {
               type: "http",
               url: "https://api.web-mcp.com/mcp",
               headers: {
-                "X-API-Key": "${env:WEB_API_KEY}",
+                "X-API-Key": "static-key",
               },
             },
           },
@@ -550,7 +782,7 @@ describe("config", () => {
         type: "http",
         url: "https://api.web-mcp.com/mcp",
         name: "web",
-        headers: { "X-API-Key": "${env:WEB_API_KEY}" },
+        headers: { "X-API-Key": "static-key" },
       });
     });
 

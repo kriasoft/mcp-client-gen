@@ -5,17 +5,13 @@
 /**
  * CLI entry - parses args, determines mode, delegates to core APIs.
  *
- * Modes: url (from URL), interactive (config + prompts), quick (config + defaults), direct (config + output)
+ * Modes: url (from URL), interactive (config + prompts), quick (config + defaults/output)
  * Owns: UX, defaults, exit codes. Does not own: generation logic.
  */
 
 import { resolve } from "node:path";
 import { parseArgs } from "node:util";
-import {
-  formatConfigWarning,
-  getMcpServers,
-  resolveConfigFiles,
-} from "./config.js";
+import { redactSecrets } from "./config.js";
 import { generateClient, writeGeneratedClient } from "./pipeline.js";
 import { runInteractiveSetup, showGenerationProgress } from "./prompts.js";
 import type { McpServerConfig } from "./types.js";
@@ -27,36 +23,38 @@ import type { McpServerConfig } from "./types.js";
  * 1. --help → help
  * 2. --url flag → URL mode
  * 3. First positional is URL (http/https) → URL mode
- * 4. Positional given (not URL) → direct mode (config-based, positional = output)
- * 5. -y flag → quick mode (config-based, defaults)
- * 6. No args → interactive mode (config-based, prompts)
+ * 4. -y flag or output (-o or positional) → quick mode (config-based, all servers)
+ * 5. Otherwise → interactive mode (config-based, prompts)
+ *
+ * An output path means "no prompts" in config mode, so `-o file` and a
+ * positional `file` behave the same, as they do in URL mode.
  */
 type CliMode =
   | { kind: "help" }
   | { kind: "url"; url: string; output?: string; name?: string }
   | { kind: "interactive"; configPath?: string }
-  | { kind: "quick"; configPath?: string }
-  | { kind: "direct"; output: string; configPath?: string };
+  | { kind: "quick"; output?: string; configPath?: string };
 
-function showHelp() {
-  console.log(`
+function showHelp(write: (text: string) => void = console.log) {
+  write(`
 mcp-client-gen - Generate type-safe MCP client SDK
 
 Usage:
   npx mcp-client-gen <url> [output]         # Generate from MCP server URL
   npx mcp-client-gen                        # Interactive mode (uses local configs)
-  npx mcp-client-gen -y                     # Quick mode (uses local configs)
+  npx mcp-client-gen -y [output]            # Quick mode (uses local configs)
 
 Arguments:
   <url>             MCP server URL (http:// or https://)
-  [output]          Output file path (default: stdout for URL mode)
+  [output]          Output file path (default: stdout for URL mode;
+                    in config mode, implies -y)
 
 Options:
   --url <url>       Explicit URL source (escape hatch for edge cases)
   --name <name>     Override server name (URL mode only)
-  -o, --output <file>  Output file path
+  -o, --output <file>  Output file path (same as [output])
   --config <file>   Path to MCP configuration file
-  -y, --yes         Accept defaults, skip prompts
+  -y, --yes         Accept defaults (all servers), skip prompts
   -h, --help        Show this help message
 
 Examples:
@@ -69,7 +67,8 @@ Examples:
   # Config mode (uses .mcp.json, .cursor/, .vscode/)
   npx mcp-client-gen                        # Interactive
   npx mcp-client-gen -y                     # Quick defaults
-  npx mcp-client-gen -y client.ts           # Quick + output file
+  npx mcp-client-gen -y -o client.ts        # Quick + output file
+  npx mcp-client-gen client.ts              # Same as above
 `);
 }
 
@@ -116,25 +115,16 @@ function parseArguments(): CliMode {
       return { kind: "url", url: positionals[0], output, name: values.name };
     }
 
-    // Positional given but not URL → direct mode (config-based, positional = output)
-    if (positionals[0]) {
-      return {
-        kind: "direct",
-        output: values.output ?? positionals[0],
-        configPath: values.config,
-      };
+    // Config mode: output path or -y → quick, otherwise interactive
+    const output = values.output ?? positionals[0];
+    if (output || values.yes) {
+      return { kind: "quick", output, configPath: values.config };
     }
-
-    // -y flag → quick mode
-    if (values.yes) {
-      return { kind: "quick", configPath: values.config };
-    }
-
-    // No args → interactive
     return { kind: "interactive", configPath: values.config };
   } catch (error) {
+    // stderr keeps stdout code-only for piped URL-mode output
     console.error("Error parsing arguments:", (error as Error).message);
-    showHelp();
+    showHelp(console.error);
     process.exit(1);
   }
 }
@@ -143,9 +133,14 @@ function parseArguments(): CliMode {
  * Print usage instructions after generation.
  * Uses export names from codegen result (source of truth).
  */
-function printUsage(outputFile: string, exports: string[]) {
+function printUsage(
+  outputFile: string,
+  exports: string[],
+  server: McpServerConfig | undefined,
+  fromConfig: boolean,
+) {
   const factoryName = exports[0];
-  if (!factoryName) return;
+  if (!factoryName || !server) return;
 
   // Ensure relative import path
   const importPath = outputFile.startsWith(".")
@@ -158,8 +153,16 @@ function printUsage(outputFile: string, exports: string[]) {
   console.log(`  import { createMcpConnection } from "mcp-client-gen";`);
   console.log(``);
   console.log(`  const connection = await createMcpConnection({`);
-  console.log(`    type: "http",`);
-  console.log(`    url: "https://your-mcp-server.com/mcp",`);
+  console.log(`    type: ${JSON.stringify(server.type)},`);
+  // Config URLs may embed expanded secrets anywhere (host, path, query): point to
+  // the entry instead. A command-line URL is the user's own input.
+  if (fromConfig) {
+    console.log(
+      `    url: "...", // "${server.name}" in your MCP config, plus its headers`,
+    );
+  } else {
+    console.log(`    url: ${JSON.stringify(server.url)},`);
+  }
   console.log(`  });`);
   console.log(`  const client = ${factoryName}(connection);`);
 }
@@ -167,12 +170,15 @@ function printUsage(outputFile: string, exports: string[]) {
 /**
  * Run generation with progress display.
  */
-async function runGeneration(servers: McpServerConfig[], outputFile: string) {
+async function runGeneration(
+  servers: McpServerConfig[],
+  outputFile: string,
+  fromConfig: boolean,
+) {
   const absoluteOutput = resolve(process.cwd(), outputFile);
 
   const result = await showGenerationProgress(servers, () =>
     generateClient(servers, {
-      treeShakable: true,
       outputPath: absoluteOutput,
     }),
   );
@@ -184,11 +190,13 @@ async function runGeneration(servers: McpServerConfig[], outputFile: string) {
   if (result.failures.size > 0) {
     console.log(`\nWarnings:`);
     for (const [name, failure] of result.failures) {
-      console.log(`  - ${name} (${failure.server.url}): ${failure.error}`);
+      console.log(`  - ${name}: ${redactSecrets(failure.error)}`);
     }
   }
 
-  printUsage(outputFile, result.exports);
+  // exports follow the servers map order: the first factory belongs to the first server
+  const [first] = result.servers.values();
+  printUsage(outputFile, result.exports, first?.server, fromConfig);
 }
 
 async function main() {
@@ -210,16 +218,14 @@ async function main() {
       try {
         if (mode.output) {
           // File output: show progress + usage instructions
-          await runGeneration([server], mode.output);
+          await runGeneration([server], mode.output, false);
         } else {
           // Stdout: just output the code
-          const result = await generateClient([server], {
-            treeShakable: true,
-          });
+          const result = await generateClient([server], {});
           process.stdout.write(result.code);
         }
       } catch (error) {
-        console.error("Error:", (error as Error).message);
+        console.error("Error:", redactSecrets((error as Error).message));
         process.exit(1);
       }
       return;
@@ -231,38 +237,11 @@ async function main() {
         const result = await runInteractiveSetup(process.cwd(), {
           useDefaults: mode.kind === "quick",
           configPath: mode.configPath,
+          outputFile: mode.kind === "quick" ? mode.output : undefined,
         });
-        await runGeneration(result.servers, result.outputFile);
+        await runGeneration(result.servers, result.outputFile, true);
       } catch (error) {
-        console.error("Error:", (error as Error).message);
-        process.exit(1);
-      }
-      return;
-    }
-
-    case "direct": {
-      try {
-        const configFiles = await resolveConfigFiles({
-          cwd: process.cwd(),
-          configPath: mode.configPath,
-        });
-
-        const { servers, warnings } = getMcpServers(configFiles);
-        if (servers.length === 0) {
-          // Show warnings when no servers found to help debugging
-          if (warnings.length > 0) {
-            console.error("\nConfig warnings:");
-            for (const warning of warnings) {
-              console.error(`  - ${formatConfigWarning(warning)}`);
-            }
-          }
-          console.error("No valid MCP servers found in configuration files.");
-          process.exit(1);
-        }
-
-        await runGeneration(servers, mode.output);
-      } catch (error) {
-        console.error("Error:", (error as Error).message);
+        console.error("Error:", redactSecrets((error as Error).message));
         process.exit(1);
       }
       return;

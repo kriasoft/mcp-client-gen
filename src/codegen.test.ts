@@ -3,20 +3,19 @@
 
 import type { Tool } from "@modelcontextprotocol/client";
 import { describe, expect, test } from "bun:test";
-import { resolve } from "node:path";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 import {
   ModuleKind,
   ModuleResolutionKind,
   Project,
   ScriptTarget,
+  ts,
 } from "ts-morph";
 import {
   camelCase,
-  generateClientClass,
   generateClientFile,
-  generateToolInterface,
-  generateToolOutputInterface,
-  hasOutputSchema,
   jsonSchemaToTypeScript,
   pascalCase,
 } from "./codegen/index.js";
@@ -60,6 +59,13 @@ describe("extractServerName", () => {
     ).toBe("notion");
   });
 
+  test("ignores IP and localhost hosts", () => {
+    const name = (url: string) => extractServerName({ type: "http", url }, 0);
+    expect(name("http://127.0.0.1:8080/mcp")).toBe("server1");
+    expect(name("http://localhost:3000/github")).toBe("github");
+    expect(name("http://[::1]:3000/mcp")).toBe("server1");
+  });
+
   test("falls back to index for unresolvable URLs", () => {
     expect(extractServerName({ type: "http", url: "https://api.com" }, 0)).toBe(
       "server1",
@@ -70,720 +76,420 @@ describe("extractServerName", () => {
   });
 });
 
-describe("pascalCase", () => {
-  test("converts hyphenated strings", () => {
-    expect(pascalCase("create-page")).toBe("CreatePage");
-    expect(pascalCase("my-api-client")).toBe("MyApiClient");
+describe("pascalCase / camelCase", () => {
+  test("convert separators and casing", () => {
+    expect(pascalCase("get-user_profile")).toBe("GetUserProfile");
+    expect(camelCase("notion-search")).toBe("notionSearch");
+    expect(camelCase("Get User")).toBe("getUser");
   });
 
-  test("converts underscored strings", () => {
-    expect(pascalCase("create_page")).toBe("CreatePage");
-  });
-
-  test("handles strings starting with digits", () => {
-    expect(pascalCase("123api")).toBe("_123api");
-    expect(pascalCase("42")).toBe("_42");
-  });
-
-  test("handles empty and whitespace strings", () => {
-    expect(pascalCase("")).toBe("Unknown");
-    expect(pascalCase("   ")).toBe("Unknown");
-    expect(pascalCase("---")).toBe("Unknown");
-  });
-
-  test("escapes reserved words", () => {
-    expect(pascalCase("delete")).toBe("_Delete");
-    expect(pascalCase("class")).toBe("_Class");
-    expect(pascalCase("default")).toBe("_Default");
-  });
-
-  test("strips non-alphanumeric characters", () => {
-    expect(pascalCase("hello@world")).toBe("HelloWorld");
-    expect(pascalCase("foo.bar.baz")).toBe("FooBarBaz");
-  });
-});
-
-describe("camelCase", () => {
-  test("converts hyphenated strings", () => {
-    expect(camelCase("create-page")).toBe("createPage");
-    expect(camelCase("my-api-client")).toBe("myApiClient");
-  });
-
-  test("handles strings starting with digits", () => {
-    expect(camelCase("123api")).toBe("_123api");
-  });
-
-  test("handles empty strings", () => {
+  test("keep results valid identifiers", () => {
+    expect(pascalCase("2fa")).toBe("_2fa");
+    expect(camelCase("123")).toBe("_123");
+    expect(pascalCase("!!!")).toBe("Unknown");
     expect(camelCase("")).toBe("unknown");
-  });
-
-  test("escapes reserved words", () => {
-    expect(camelCase("delete")).toBe("_delete");
-    expect(camelCase("class")).toBe("_class");
-    expect(camelCase("default")).toBe("_default");
+    // Reserved words are fine as member and type names
+    expect(camelCase("delete")).toBe("delete");
   });
 });
 
-describe("codegen", () => {
-  describe("jsonSchemaToTypeScript", () => {
-    test("converts primitive types", () => {
-      expect(jsonSchemaToTypeScript({ type: "string" })).toBe("string");
-      expect(jsonSchemaToTypeScript({ type: "number" })).toBe("number");
-      expect(jsonSchemaToTypeScript({ type: "integer" })).toBe("number");
-      expect(jsonSchemaToTypeScript({ type: "boolean" })).toBe("boolean");
-      expect(jsonSchemaToTypeScript({ type: "null" })).toBe("null");
+describe("jsonSchemaToTypeScript", () => {
+  const ts = jsonSchemaToTypeScript;
+
+  test("primitives and boolean schemas", () => {
+    expect(ts({ type: "string" })).toBe("string");
+    expect(ts({ type: "integer" })).toBe("number");
+    expect(ts({ type: "null" })).toBe("null");
+    expect(ts(true)).toBe("unknown");
+    expect(ts(false)).toBe("never");
+    expect(ts(undefined)).toBe("unknown");
+    expect(ts({})).toBe("unknown");
+  });
+
+  test("const and enum literals of any type, safely escaped", () => {
+    expect(ts({ const: 'say "hi"' })).toBe('"say \\"hi\\""');
+    expect(ts({ enum: [1, 2] })).toBe("1 | 2");
+    expect(ts({ type: "string", enum: ["a", null] })).toBe('"a" | null');
+  });
+
+  test("arrays group compound item types", () => {
+    expect(ts({ type: "array", items: { type: "string" } })).toBe("string[]");
+    expect(
+      ts({
+        type: "array",
+        items: { anyOf: [{ type: "string" }, { type: "number" }] },
+      }),
+    ).toBe("(string | number)[]");
+    expect(ts({ type: "array", items: [{ type: "string" }] })).toBe(
+      "unknown[]",
+    );
+  });
+
+  test("type arrays keep sibling keywords per branch", () => {
+    expect(ts({ type: ["array", "null"], items: { type: "string" } })).toBe(
+      "string[] | null",
+    );
+  });
+
+  test("objects: required, optional, quoted keys, docs", () => {
+    const type = ts({
+      type: "object",
+      properties: {
+        id: { type: "string", description: "The */ id" },
+        "user-id": { type: "number" },
+      },
+      required: ["id", "extra"],
     });
+    expect(type).toContain("/** The *\\/ id */\nid: string;");
+    expect(type).toContain('"user-id"?: number;');
+    expect(type).toContain("extra: unknown;");
+  });
 
-    test("converts string enums", () => {
-      const schema = {
-        type: "string",
-        enum: ["draft", "published", "archived"],
-      };
-      expect(jsonSchemaToTypeScript(schema)).toBe(
-        '"draft" | "published" | "archived"',
-      );
+  test("index signatures admit declared property types", () => {
+    const type = ts({
+      type: "object",
+      properties: { id: { type: "number" } },
+      additionalProperties: { type: "string" },
     });
+    expect(type).toContain("[key: string]: string | (number | undefined);");
+  });
 
-    test("converts arrays", () => {
-      expect(
-        jsonSchemaToTypeScript({
-          type: "array",
-          items: { type: "string" },
-        }),
-      ).toBe("string[]");
+  test("objects without declared properties", () => {
+    expect(ts({ type: "object" })).toBe("Record<string, unknown>");
+    expect(ts({ type: "object", additionalProperties: false })).toBe(
+      "Record<string, never>",
+    );
+    expect(
+      ts({ type: "object", additionalProperties: { type: "string" } }),
+    ).toBe("{\n[key: string]: string;\n}");
+  });
 
-      expect(
-        jsonSchemaToTypeScript({
-          type: "array",
-          items: { type: "number" },
-        }),
-      ).toBe("number[]");
-    });
-
-    test("converts simple objects", () => {
-      const schema = {
+  test("composition applies alongside type and groups operands", () => {
+    expect(
+      ts({
         type: "object",
-        properties: {
-          name: { type: "string" },
-          age: { type: "number" },
-        },
-        required: ["name"],
-      };
-
-      const result = jsonSchemaToTypeScript(schema);
-      expect(result).toContain("name: string;");
-      expect(result).toContain("age?: number;");
-    });
-
-    test("converts nested objects", () => {
-      const schema = {
-        type: "object",
-        properties: {
-          user: {
-            type: "object",
-            properties: {
-              id: { type: "string" },
-              profile: {
-                type: "object",
-                properties: {
-                  bio: { type: "string" },
-                },
-              },
-            },
-            required: ["id"],
-          },
-        },
-      };
-
-      const result = jsonSchemaToTypeScript(schema);
-      expect(result).toContain("user?:");
-      expect(result).toContain("id: string;");
-      expect(result).toContain("profile?:");
-    });
-
-    test("handles additional properties", () => {
-      const schema = {
-        type: "object",
-        properties: {
-          known: { type: "string" },
-        },
-        additionalProperties: { type: "number" },
-      };
-
-      const result = jsonSchemaToTypeScript(schema);
-      expect(result).toContain("known?: string;");
-      expect(result).toContain("[key: string]: number;");
-    });
-
-    test("converts union types", () => {
-      expect(jsonSchemaToTypeScript({ type: ["string", "number"] })).toBe(
-        "string | number",
-      );
-    });
-
-    test("converts anyOf schemas", () => {
-      const schema = {
-        anyOf: [{ type: "string" }, { type: "number" }],
-      };
-      expect(jsonSchemaToTypeScript(schema)).toBe("string | number");
-    });
-
-    test("converts allOf schemas", () => {
-      const schema = {
+        properties: { a: { type: "string" } },
+        anyOf: [{ required: ["a"] }, {}],
+      }),
+    ).toBe("{\na?: string;\n}");
+    expect(
+      ts({
         allOf: [
-          {
+          { anyOf: [{ type: "string" }, { type: "number" }] },
+          { type: "string" },
+        ],
+      }),
+    ).toBe("(string | number) & string");
+  });
+
+  test("resolves local refs and widens recursive ones", () => {
+    const schema = {
+      type: "object",
+      properties: { id: { $ref: "#/$defs/Id" }, next: { $ref: "#" } },
+      $defs: { Id: { type: "string" } },
+    };
+    const type = ts(schema);
+    expect(type).toContain("id?: string;");
+    expect(type).toContain("next?: {\nid?: string;\nnext?: unknown;\n};");
+    expect(ts({ $ref: "https://example.com/schema" })).toBe("unknown");
+  });
+
+  test("scopes refs to the nearest $id and decodes pointers first", () => {
+    const type = ts({
+      type: "object",
+      properties: {
+        child: {
+          $id: "child",
+          type: "object",
+          properties: { x: { $ref: "#/$defs/X" } },
+          $defs: { X: { type: "string" } },
+        },
+        y: { $ref: "#/$defs/a%2F$defs%2Fb" },
+      },
+      $defs: {
+        X: { type: "number" },
+        a: { $defs: { b: { type: "boolean" } } },
+      },
+    });
+    expect(type).toContain("x?: string;");
+    expect(type).toContain("y?: boolean;");
+  });
+
+  test("patternProperties widen the index signature", () => {
+    expect(
+      ts({
+        type: "object",
+        patternProperties: { "^x": { type: "string" } },
+        additionalProperties: false,
+      }),
+    ).toBe("{\n[key: string]: string;\n}");
+  });
+});
+
+/** Every naming and escaping hazard the generator must survive, on two servers. */
+const tool = (name: string, extra: Partial<Tool> = {}): Tool => ({
+  name,
+  inputSchema: { type: "object" },
+  ...extra,
+});
+const edgeCases = new Map<string, IntrospectionSuccess>([
+  [
+    "alpha",
+    {
+      ok: true,
+      server: { type: "http", url: "https://alpha.test/mcp" },
+      capabilities: { tools: {}, prompts: {}, resources: {} },
+      tools: [
+        tool("get-user", {
+          description: "Ends a comment */ early",
+          inputSchema: {
             type: "object",
-            properties: { a: { type: "string" } },
+            properties: { "user-id": { type: "string" } },
+            required: ["user-id"],
           },
-          {
+        }),
+        tool("get_user"),
+        tool("client"),
+        tool("constructor"),
+        tool("then"),
+        tool('say"hi\\n'),
+        tool("search", {
+          outputSchema: {
             type: "object",
-            properties: { b: { type: "number" } },
+            properties: { total: { type: "number" } },
+            required: ["total"],
           },
-        ],
-      };
-      const result = jsonSchemaToTypeScript(schema);
-      expect(result).toContain("&");
-    });
-
-    test("handles undefined schema", () => {
-      expect(jsonSchemaToTypeScript(undefined)).toBe("unknown");
-      expect(jsonSchemaToTypeScript(null)).toBe("unknown");
-    });
-
-    test("handles objects without properties", () => {
-      expect(jsonSchemaToTypeScript({ type: "object" })).toBe(
-        "Record<string, unknown>",
-      );
-    });
-
-    test("quotes property names with special characters", () => {
-      const schema = {
-        type: "object",
-        properties: {
-          "content-type": { type: "string" },
-          "x-api-key": { type: "string" },
+        }),
+      ],
+      resources: [],
+      prompts: [
+        {
+          name: "summarize",
+          arguments: [{ name: "page-id", required: true }, { name: "tone" }],
         },
-      };
+      ],
+    },
+  ],
+  [
+    "beta",
+    {
+      ok: true,
+      server: { type: "http", url: "https://beta.test/mcp" },
+      capabilities: { tools: {} },
+      tools: [
+        tool("search", {
+          inputSchema: {
+            type: "object",
+            properties: { limit: { type: "number" } },
+            required: ["limit"],
+          },
+        }),
+      ],
+      resources: [],
+      prompts: [],
+    },
+  ],
+]);
 
-      const result = jsonSchemaToTypeScript(schema);
-      expect(result).toContain('"content-type"?: string;');
-      expect(result).toContain('"x-api-key"?: string;');
-    });
+/** Strict typecheck of generated code against the real SDK types. */
+function typecheck(code: string): string[] {
+  const project = new Project({
+    compilerOptions: {
+      strict: true,
+      noUnusedLocals: true,
+      // Resolve to source: package exports point at dist, absent before a build
+      paths: { "mcp-client-gen": [resolve(import.meta.dir, "index.ts")] },
+      noEmit: true,
+      skipLibCheck: true,
+      target: ScriptTarget.ESNext,
+      module: ModuleKind.Preserve,
+      moduleResolution: ModuleResolutionKind.Bundler,
+    },
+  });
+  // In src/ so imports resolve from this package (incl. its "mcp-client-gen" self-reference)
+  const file = project.createSourceFile(
+    resolve(import.meta.dir, "__generated__.ts"),
+    code,
+  );
+  project.resolveSourceFileDependencies();
+  return file
+    .getPreEmitDiagnostics()
+    .map((d) => d.getMessageText())
+    .map((m) => (typeof m === "string" ? m : m.getMessageText()));
+}
+
+/** Import generated code as JS (type imports erased). */
+async function load(code: string): Promise<Record<string, any>> {
+  const js = ts.transpileModule(code, {
+    compilerOptions: {
+      module: ts.ModuleKind.ESNext,
+      target: ts.ScriptTarget.ESNext,
+    },
+  }).outputText;
+  const dir = await mkdtemp(join(tmpdir(), "mcg-"));
+  try {
+    await writeFile(join(dir, "client.mjs"), js);
+    return await import(join(dir, "client.mjs"));
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}
+
+describe("generateClientFile", () => {
+  const { code, exports } = generateClientFile(edgeCases);
+
+  test("output typechecks strictly despite hostile names", () => {
+    expect(typecheck(code)).toEqual([]);
   });
 
-  describe("generateToolInterface", () => {
-    test("generates interface for tool with object schema", () => {
-      const project = new Project({ useInMemoryFileSystem: true });
-      const sourceFile = project.createSourceFile("test.ts");
-
-      const tool: Tool = {
-        name: "create-page",
-        description: "Create a new page",
-        inputSchema: {
-          type: "object",
-          properties: {
-            title: { type: "string", description: "Page title" },
-            content: { type: "string" },
-            published: { type: "boolean" },
-          },
-          required: ["title"],
-        },
-      };
-
-      const interfaceDecl = generateToolInterface(sourceFile, tool);
-
-      expect(interfaceDecl.getName()).toBe("CreatePageInput");
-      expect(interfaceDecl.isExported()).toBe(true);
-
-      const properties = interfaceDecl.getProperties();
-      expect(properties).toHaveLength(3);
-
-      const titleProp = interfaceDecl.getProperty("title");
-      expect(titleProp?.hasQuestionToken()).toBe(false);
-      expect(titleProp?.getType().getText()).toContain("string");
-
-      const contentProp = interfaceDecl.getProperty("content");
-      expect(contentProp?.hasQuestionToken()).toBe(true);
-    });
-
-    test("generates interface for tool without schema", () => {
-      const project = new Project({ useInMemoryFileSystem: true });
-      const sourceFile = project.createSourceFile("test.ts");
-
-      const tool: Tool = {
-        name: "get-status",
-        description: "Get system status",
-        inputSchema: undefined as any,
-      };
-
-      const interfaceDecl = generateToolInterface(sourceFile, tool);
-      expect(interfaceDecl.getName()).toBe("GetStatusInput");
-    });
-
-    test("adds JSDoc comments", () => {
-      const project = new Project({ useInMemoryFileSystem: true });
-      const sourceFile = project.createSourceFile("test.ts");
-
-      const tool: Tool = {
-        name: "test-tool",
-        description: "This is a test tool",
-        inputSchema: {
-          type: "object",
-          properties: {
-            field: { type: "string", description: "Field description" },
-          },
-        },
-      };
-
-      const interfaceDecl = generateToolInterface(sourceFile, tool);
-      const jsDocs = interfaceDecl.getJsDocs();
-      expect(jsDocs).toHaveLength(1);
-      expect(jsDocs[0]?.getDescription()).toBe("This is a test tool");
-
-      const fieldProp = interfaceDecl.getProperty("field");
-      const fieldDocs = fieldProp?.getJsDocs();
-      expect(fieldDocs?.[0]?.getDescription()).toBe("Field description");
-    });
+  test("allocates collision-free member and type names", () => {
+    expect(code).toContain(
+      "async getUser(input: GetUserInput, options?: RequestOptions)",
+    );
+    expect(code).toContain(
+      "async getUser2(input: GetUser2Input = {}, options?: RequestOptions)",
+    );
+    expect(code).toContain("async client2(");
+    expect(code).toContain("async constructor2(");
+    expect(code).toContain("async then2(");
+    // Same tool on two servers: the second server's types get its prefix
+    expect(code).toContain("export type SearchInput =");
+    expect(code).toContain("export type BetaSearchInput =");
+    expect(exports).toEqual(["createAlphaClient", "createBetaClient"]);
   });
 
-  describe("generateToolOutputInterface", () => {
-    test("returns undefined when tool has no outputSchema", () => {
-      const project = new Project({ useInMemoryFileSystem: true });
-      const sourceFile = project.createSourceFile("test.ts");
-
-      const tool: Tool = {
-        name: "search",
-        inputSchema: {
-          type: "object",
-          properties: { query: { type: "string" } },
-        },
-      };
-
-      const result = generateToolOutputInterface(sourceFile, tool);
-      expect(result).toBeUndefined();
-    });
-
-    test("generates interface when tool has outputSchema", () => {
-      const project = new Project({ useInMemoryFileSystem: true });
-      const sourceFile = project.createSourceFile("test.ts");
-
-      const tool: Tool = {
-        name: "search",
-        inputSchema: {
-          type: "object",
-          properties: { query: { type: "string" } },
-        },
-      } as Tool;
-
-      // Add outputSchema (MCP spec optional field)
-      (tool as any).outputSchema = {
-        type: "object",
-        properties: {
-          results: { type: "array", items: { type: "string" } },
-          count: { type: "number", description: "Total results" },
-        },
-        required: ["results"],
-      };
-
-      const interfaceDecl = generateToolOutputInterface(sourceFile, tool);
-
-      expect(interfaceDecl).toBeDefined();
-      expect(interfaceDecl!.getName()).toBe("SearchOutput");
-      expect(interfaceDecl!.isExported()).toBe(true);
-
-      const resultsProp = interfaceDecl!.getProperty("results");
-      expect(resultsProp?.hasQuestionToken()).toBe(false);
-
-      const countProp = interfaceDecl!.getProperty("count");
-      expect(countProp?.hasQuestionToken()).toBe(true);
-      expect(countProp?.getJsDocs()[0]?.getDescription()).toBe("Total results");
-    });
+  test("escapes wire names, keys and comments", () => {
+    expect(code).toContain('name: "say\\"hi\\\\n"');
+    expect(code).toContain('"page-id": string');
+    expect(code).toContain("Ends a comment *\\/ early");
   });
 
-  describe("hasOutputSchema", () => {
-    test("returns false for tool without outputSchema", () => {
-      const tool: Tool = {
-        name: "test",
-        inputSchema: { type: "object" },
-      };
-      expect(hasOutputSchema(tool)).toBe(false);
-    });
-
-    test("returns true for tool with outputSchema", () => {
-      const tool: Tool = {
-        name: "test",
-        inputSchema: { type: "object" },
-      } as Tool;
-      (tool as any).outputSchema = { type: "object" };
-      expect(hasOutputSchema(tool)).toBe(true);
-    });
+  test("is deterministic", () => {
+    expect(generateClientFile(edgeCases).code).toBe(code);
   });
 
-  describe("generateClientClass", () => {
-    test("generates class with tools, resources, and prompts", () => {
-      const project = new Project({ useInMemoryFileSystem: true });
-      const sourceFile = project.createSourceFile("test.ts");
-
-      const result: IntrospectionSuccess = {
-        ok: true,
-        server: { type: "http", url: "http://example.com" },
-        capabilities: {},
-        tools: [
-          {
-            name: "create-item",
-            description: "Create an item",
-            inputSchema: {
-              type: "object",
-              properties: {
-                name: { type: "string" },
-              },
-              required: ["name"],
-            },
-          },
-          {
-            name: "delete-item",
-            inputSchema: {
-              type: "object",
-              properties: {
-                id: { type: "string" },
-              },
-            },
-          },
-        ],
-        resources: [
-          {
-            uri: "resource://items",
-            name: "items",
-            description: "List of items",
-          },
-        ],
-        prompts: [
-          {
-            name: "generate-summary",
-            description: "Generate a summary",
-            arguments: [
-              {
-                name: "text",
-                required: true,
-              },
-            ],
-          },
-        ],
-      };
-
-      const classDecl = generateClientClass(sourceFile, "test", result);
-
-      expect(classDecl.getName()).toBe("TestClient");
-      expect(classDecl.isExported()).toBe(true);
-
-      // Check constructor
-      const constructor = classDecl.getConstructors()[0];
-      expect(constructor).toBeDefined();
-      expect(constructor?.getParameters()).toHaveLength(1);
-
-      // Check tool methods
-      const createMethod = classDecl.getMethod("createItem");
-      expect(createMethod).toBeDefined();
-      expect(createMethod?.isAsync()).toBe(true);
-      expect(createMethod?.getParameters()).toHaveLength(1);
-
-      const deleteMethod = classDecl.getMethod("deleteItem");
-      expect(deleteMethod).toBeDefined();
-
-      // Check resource methods
-      const getResourceMethod = classDecl.getMethod("getResource");
-      expect(getResourceMethod).toBeDefined();
-
-      const getItemsMethod = classDecl.getMethod("getItems");
-      expect(getItemsMethod).toBeDefined();
-
-      // Check prompt methods
-      const promptMethod = classDecl.getMethod("generateSummaryPrompt");
-      expect(promptMethod).toBeDefined();
-    });
-
-    test("generates typed return types for resources and prompts", () => {
-      const project = new Project({ useInMemoryFileSystem: true });
-      const sourceFile = project.createSourceFile("test.ts");
-
-      const result: IntrospectionSuccess = {
-        ok: true,
-        server: { type: "http", url: "http://example.com" },
-        capabilities: {},
-        tools: [],
-        resources: [
-          {
-            uri: "resource://config",
-            name: "config",
-            description: "Configuration",
-          },
-        ],
-        prompts: [
-          {
-            name: "greeting",
-            description: "A greeting prompt",
-          },
-        ],
-      };
-
-      const classDecl = generateClientClass(sourceFile, "typed", result);
-
-      // Resource methods should return Promise<TextResourceContents | BlobResourceContents>
-      const getResourceMethod = classDecl.getMethod("getResource");
-      const resourceReturnType =
-        getResourceMethod?.getReturnTypeNode()?.getText() ?? "";
-      expect(resourceReturnType).toContain("TextResourceContents");
-      expect(resourceReturnType).toContain("BlobResourceContents");
-
-      const getConfigMethod = classDecl.getMethod("getConfig");
-      const configReturnType =
-        getConfigMethod?.getReturnTypeNode()?.getText() ?? "";
-      expect(configReturnType).toContain("TextResourceContents");
-
-      // Prompt methods should return Promise<PromptMessage[]>
-      const promptMethod = classDecl.getMethod("greetingPrompt");
-      const promptReturnType =
-        promptMethod?.getReturnTypeNode()?.getText() ?? "";
-      expect(promptReturnType).toContain("PromptMessage");
-    });
-
-    test("uses output type when tool has outputSchema", () => {
-      const project = new Project({ useInMemoryFileSystem: true });
-      const sourceFile = project.createSourceFile("test.ts");
-
-      const toolWithOutput: Tool = {
-        name: "search",
-        inputSchema: {
-          type: "object",
-          properties: { query: { type: "string" } },
-          required: ["query"],
-        },
-      } as Tool;
-      (toolWithOutput as any).outputSchema = {
-        type: "object",
-        properties: { results: { type: "array", items: { type: "string" } } },
-      };
-
-      const result: IntrospectionSuccess = {
-        ok: true,
-        server: { type: "http", url: "http://example.com" },
-        capabilities: {},
-        tools: [toolWithOutput],
-        resources: [],
-        prompts: [],
-      };
-
-      const classDecl = generateClientClass(sourceFile, "test", result);
-
-      const searchMethod = classDecl.getMethod("search");
-      expect(searchMethod).toBeDefined();
-
-      const returnType = searchMethod?.getReturnTypeNode()?.getText() ?? "";
-      expect(returnType).toBe("Promise<SearchOutput>");
-    });
-
-    test("handles empty tools, resources, and prompts", () => {
-      const project = new Project({ useInMemoryFileSystem: true });
-      const sourceFile = project.createSourceFile("test.ts");
-
-      const result: IntrospectionSuccess = {
-        ok: true,
-        server: { type: "http", url: "http://example.com" },
-        capabilities: {},
-        tools: [],
-        resources: [],
-        prompts: [],
-      };
-
-      const classDecl = generateClientClass(sourceFile, "empty", result);
-
-      expect(classDecl.getName()).toBe("EmptyClient");
-
-      // Should still have constructor and connection property
-      expect(classDecl.getConstructors()).toHaveLength(1);
-      expect(classDecl.getProperty("connection")).toBeDefined();
-
-      // Should have client getter for advanced operations
-      const clientGetter = classDecl.getGetAccessor("client");
-      expect(clientGetter).toBeDefined();
-      expect(clientGetter?.getReturnTypeNode()?.getText()).toBe("Client");
-
-      // No tool/resource/prompt methods
-      const methods = classDecl.getMethods();
-      expect(methods).toHaveLength(0);
-    });
+  test("rejects servers whose names map to the same class", () => {
+    const servers = new Map([
+      ["foo-bar", edgeCases.get("beta")!],
+      ["foo_bar", edgeCases.get("beta")!],
+    ]);
+    expect(() => generateClientFile(servers)).toThrow(
+      'Servers "foo-bar" and "foo_bar" both generate FooBarClient',
+    );
   });
 
-  describe("generateClientFile", () => {
-    test("generates complete client file for multiple servers", () => {
-      const servers = new Map<string, IntrospectionSuccess>([
-        [
-          "notion",
-          {
-            ok: true,
-            server: { type: "http", url: "http://notion.example.com" },
-            capabilities: {},
-            tools: [
-              {
-                name: "create-page",
-                description: "Create a page",
-                inputSchema: {
-                  type: "object",
-                  properties: {
-                    title: { type: "string" },
-                  },
-                  required: ["title"],
-                },
-              },
-            ],
-            resources: [],
-            prompts: [],
-          },
-        ],
-        [
-          "github",
-          {
-            ok: true,
-            server: { type: "http", url: "http://github.example.com" },
-            capabilities: {},
-            tools: [
-              {
-                name: "create-issue",
-                inputSchema: {
-                  type: "object",
-                  properties: {
-                    title: { type: "string" },
-                    body: { type: "string" },
-                  },
-                  required: ["title"],
-                },
-              },
-            ],
-            resources: [],
-            prompts: [],
-          },
-        ],
-      ]);
+  test("emits resource readers only for servers with resources", () => {
+    expect(code).toContain(
+      "async readResource(uri: string, options?: RequestOptions)",
+    );
+    const onlyBeta = generateClientFile(
+      new Map([["beta", edgeCases.get("beta")!]]),
+    ).code;
+    expect(onlyBeta).not.toContain("readResource");
+    expect(onlyBeta).not.toContain("ReadResourceResult");
+    expect(typecheck(onlyBeta)).toEqual([]);
+  });
+});
 
-      const result = generateClientFile(servers, { treeShakable: true });
-      const code = result.code;
+describe("generated client at runtime", () => {
+  /** Fake connection whose client returns canned results and records calls. */
+  const fakeConnection = (results: Record<string, unknown>) => {
+    const calls: unknown[] = [];
+    const respond =
+      (method: string) => async (params: unknown, options?: unknown) => {
+        calls.push(options ? { method, params, options } : { method, params });
+        return results[method];
+      };
+    const client = {
+      callTool: respond("callTool"),
+      readResource: respond("readResource"),
+      getPrompt: respond("getPrompt"),
+    };
+    return { connection: { client }, calls };
+  };
 
-      // Check imports
-      expect(code).toContain(
-        'import type { BlobResourceContents, Client, PromptMessage, TextResourceContents } from "@modelcontextprotocol/client"',
-      );
-      expect(code).toContain(
-        'import type { McpConnection } from "mcp-client-gen"',
-      );
+  test("typed tools return structuredContent; untyped return the whole result", async () => {
+    const mod = await load(generateClientFile(edgeCases).code);
+    const structured = {
+      content: [{ type: "text", text: "ignored" }],
+      structuredContent: { total: 3 },
+    };
+    const alpha = mod.createAlphaClient(
+      fakeConnection({ callTool: structured }).connection,
+    );
+    expect(await alpha.search()).toEqual({ total: 3 });
 
-      // Check interfaces
-      expect(code).toContain("export interface CreatePageInput");
-      expect(code).toContain("export interface CreateIssueInput");
+    const multi = {
+      content: [
+        { type: "text", text: "a" },
+        { type: "image", data: "AA==", mimeType: "image/png" },
+      ],
+    };
+    const { connection, calls } = fakeConnection({ callTool: multi });
+    const options = { timeout: 5 };
+    expect(
+      await mod
+        .createAlphaClient(connection)
+        .getUser({ "user-id": "1" }, options),
+    ).toEqual(multi);
+    expect(calls).toEqual([
+      {
+        method: "callTool",
+        params: { name: "get-user", arguments: { "user-id": "1" } },
+        options,
+      },
+    ]);
+  });
 
-      // Check classes
-      expect(code).toContain("export class NotionClient");
-      expect(code).toContain("export class GithubClient");
+  test("tool errors throw with their text; missing structured content throws", async () => {
+    const mod = await load(generateClientFile(edgeCases).code);
+    const failing = mod.createAlphaClient(
+      fakeConnection({
+        callTool: { isError: true, content: [{ type: "text", text: "boom" }] },
+      }).connection,
+    );
+    await expect(failing.getUser2()).rejects.toThrow(
+      "Tool 'get_user' failed: boom",
+    );
 
-      // Check methods
-      expect(code).toContain("async createPage(input: CreatePageInput)");
-      expect(code).toContain("async createIssue(input: CreateIssueInput)");
+    const empty = mod.createAlphaClient(
+      fakeConnection({ callTool: { content: [] } }).connection,
+    );
+    await expect(empty.search()).rejects.toThrow(
+      "Tool 'search' returned no structured content",
+    );
+    expect(await empty.getUser2()).toEqual({ content: [] });
+  });
 
-      // Check factory functions and exports metadata
-      expect(code).toContain("export function createNotionClient");
-      expect(code).toContain("export function createGithubClient");
-      expect(result.exports).toEqual([
-        "createNotionClient",
-        "createGithubClient",
-      ]);
-
-      // Check formatting
-      expect(code).toContain("/* Generated MCP Client SDK */");
-      expect(code.split("\n").length).toBeGreaterThan(50);
+  test("resources return every content entry; prompts pass arguments", async () => {
+    const mod = await load(generateClientFile(edgeCases).code);
+    const contents = [
+      { uri: "file:///a", text: "a" },
+      { uri: "file:///a", blob: "AA==" },
+    ];
+    const { connection, calls } = fakeConnection({
+      readResource: { contents },
+      getPrompt: {
+        messages: [{ role: "user", content: { type: "text", text: "hi" } }],
+      },
     });
-
-    test("generates non-tree-shakable exports", () => {
-      const servers = new Map<string, IntrospectionSuccess>([
-        [
-          "test",
-          {
-            ok: true,
-            server: { type: "http", url: "http://test.example.com" },
-            capabilities: {},
-            tools: [],
-            resources: [],
-            prompts: [],
-          },
-        ],
-      ]);
-
-      const result = generateClientFile(servers, { treeShakable: false });
-
-      expect(result.code).toContain("export class TestClient");
-      expect(result.code).not.toContain("export function createTestClient");
-      expect(result.exports).toEqual([]);
-    });
-
-    test("generates deterministic output (no timestamps)", () => {
-      const servers = new Map<string, IntrospectionSuccess>([
-        [
-          "test",
-          {
-            ok: true,
-            server: { type: "http", url: "http://test.example.com" },
-            capabilities: {},
-            tools: [
-              {
-                name: "ping",
-                inputSchema: { type: "object" },
-              },
-            ],
-            resources: [],
-            prompts: [],
-          },
-        ],
-      ]);
-
-      const result1 = generateClientFile(servers);
-      const result2 = generateClientFile(servers);
-
-      expect(result1.code).toBe(result2.code);
-      expect(result1.code).not.toContain("Generated at:");
-      expect(result1.code).not.toContain("@generated");
+    const alpha = mod.createAlphaClient(connection);
+    expect(await alpha.readResource("file:///a")).toEqual(contents);
+    expect(await alpha.summarizePrompt({ "page-id": "p1" })).toHaveLength(1);
+    expect(calls.at(-1)).toEqual({
+      method: "getPrompt",
+      params: { name: "summarize", arguments: { "page-id": "p1" } },
     });
   });
 });
 
-describe("generated client", () => {
+describe("generated Notion client", () => {
   // Real fixture + real SDK types: catches SDK type drift that string assertions can't
   test("typechecks against @modelcontextprotocol/client", async () => {
     const fixture = await Bun.file(
       resolve(import.meta.dir, "../test/fixtures/notion/introspection.json"),
     ).json();
-    const { code } = generateClientFile(new Map([["notion", fixture]]), {
-      treeShakable: true,
-    });
-
-    const project = new Project({
-      compilerOptions: {
-        strict: true,
-        noEmit: true,
-        skipLibCheck: true,
-        target: ScriptTarget.ESNext,
-        module: ModuleKind.Preserve,
-        moduleResolution: ModuleResolutionKind.Bundler,
-      },
-    });
-    // In src/ so imports resolve from this package (incl. its "mcp-client-gen" self-reference)
-    const file = project.createSourceFile(
-      resolve(import.meta.dir, "__generated__.ts"),
-      code,
-    );
-    project.resolveSourceFileDependencies();
-
-    const errors = file
-      .getPreEmitDiagnostics()
-      .map((d) => d.getMessageText())
-      .map((m) => (typeof m === "string" ? m : m.getMessageText()));
-    expect(errors).toEqual([]);
+    const { code } = generateClientFile(new Map([["notion", fixture]]));
+    expect(typecheck(code)).toEqual([]);
   });
 });

@@ -1,248 +1,251 @@
 /**
  * MCP client class generation.
  *
- * Generates TypeScript classes with methods for tools, resources, and prompts.
- * Handles method generation, parameter mapping, and return type definitions.
+ * One class per server: a method per tool, prompt and listed resource, plus a generic
+ * resource reader. Names are allocated before emitting so distinct server names never
+ * collide (e.g. `get-user` vs `get_user`, or a tool named `client`).
  *
  * SPDX-FileCopyrightText: 2025-present Kriasoft
  * SPDX-License-Identifier: MIT
  */
 
 import type { Prompt, Resource, Tool } from "@modelcontextprotocol/client";
-import {
-  type ClassDeclaration,
-  type MethodDeclaration,
-  Scope,
-  type SourceFile,
-} from "ts-morph";
+import type { ClassDeclaration, SourceFile } from "ts-morph";
 import type { IntrospectionSuccess } from "../introspection.js";
-import { hasOutputSchema } from "./tool-input-generator.js";
-import { camelCase, pascalCase } from "./utils.js";
-
-// Return type names from MCP SDK (imported by file-builder.ts)
-const RESOURCE_CONTENT_TYPE = "TextResourceContents | BlobResourceContents";
-const PROMPT_MESSAGE_TYPE = "PromptMessage[]";
+import {
+  generateToolInputType,
+  generateToolOutputType,
+  hasOptionalInput,
+  hasOutputSchema,
+} from "./tool-input-generator.js";
+import {
+  camelCase,
+  commentText,
+  pascalCase,
+  propertyKey,
+  uniqueName,
+} from "./utils.js";
 
 /**
- * Generate client class for an MCP server
+ * Names tools/prompts/resources can't take: members every class defines, and `then`,
+ * which would make the client a thenable (`await`-ing it would call that tool).
+ */
+const RESERVED_MEMBERS = ["constructor", "client", "readResource", "then"];
+
+/** Trailing parameter of every generated method: per-call timeout, signal, progress. */
+const OPTIONS_PARAM = {
+  name: "options",
+  type: "RequestOptions",
+  hasQuestionToken: true,
+};
+
+/**
+ * Generate the client class (and its tool types) for one server.
+ * @param typeNames Exported names already taken in the file; allocated names join it.
  */
 export function generateClientClass(
   sourceFile: SourceFile,
   serverName: string,
   result: IntrospectionSuccess,
+  typeNames: Set<string>,
 ): ClassDeclaration {
-  const className = pascalCase(serverName) + "Client";
+  const className = clientClassName(serverName);
+  const members = new Set(RESERVED_MEMBERS);
+
+  // Allocate names and emit tool types first, so they precede the class
+  const tools = result.tools.map((tool) => {
+    const methodName = uniqueName(camelCase(tool.name), members);
+    return {
+      tool,
+      methodName,
+      ...addToolTypes(sourceFile, tool, methodName, serverName, typeNames),
+    };
+  });
 
   const classDecl = sourceFile.addClass({
     name: className,
     isExported: true,
+    docs: [commentText(`MCP client for the \`${serverName}\` server.`)],
   });
 
-  // Add JSDoc
-  classDecl.addJsDoc({
-    description: `MCP client for ${serverName} server`,
-  });
-
-  // Add private connection property
   classDecl.addProperty({
-    name: "connection",
+    name: "#connection",
     type: "McpConnection",
-    scope: Scope.Private,
+    isReadonly: true,
   });
 
-  // Add constructor
   classDecl.addConstructor({
-    parameters: [
-      {
-        name: "connection",
-        type: "McpConnection",
-      },
-    ],
-    statements: ["this.connection = connection;"],
+    parameters: [{ name: "connection", type: "McpConnection" }],
+    statements: ["this.#connection = connection;"],
   });
 
-  // Add client getter for advanced operations (streaming, etc.)
-  const clientGetter = classDecl.addGetAccessor({
+  classDecl.addGetAccessor({
     name: "client",
     returnType: "Client",
+    docs: ["Underlying MCP client, for requests this class doesn't wrap."],
+    statements: ["return this.#connection.client;"],
   });
-  clientGetter.addJsDoc({
-    description:
-      "Access underlying MCP client for advanced operations (streaming, raw requests)",
-  });
-  clientGetter.addStatements(["return this.connection.client;"]);
 
-  // Generate methods for each tool
-  for (const tool of result.tools) {
-    generateToolMethod(classDecl, tool);
+  // Tools were named first: they get the plainest names
+  for (const entry of tools) addToolMethod(classDecl, entry);
+  for (const prompt of result.prompts) {
+    const methodName = uniqueName(camelCase(prompt.name) + "Prompt", members);
+    addPromptMethod(classDecl, prompt, methodName);
   }
-
-  // Generate methods for resources
-  if (result.resources.length > 0) {
-    generateResourceMethods(classDecl, result.resources);
-  }
-
-  // Generate methods for prompts
-  if (result.prompts.length > 0) {
-    generatePromptMethods(classDecl, result.prompts);
+  // Servers may serve resources through templates without listing any
+  if (result.capabilities.resources || result.resources.length > 0) {
+    addReadResourceMethod(classDecl);
+    for (const resource of result.resources) {
+      const methodName = uniqueName(
+        "read" + pascalCase(resource.name),
+        members,
+      );
+      addResourceMethod(classDecl, resource, methodName);
+    }
   }
 
   return classDecl;
 }
 
-/**
- * Generate a method for a tool
- */
-function generateToolMethod(
-  classDecl: ClassDeclaration,
-  tool: Tool,
-): MethodDeclaration {
-  const methodName = camelCase(tool.name);
-  const inputType = tool.inputSchema ? pascalCase(tool.name) + "Input" : "void";
-  const outputType = hasOutputSchema(tool)
-    ? pascalCase(tool.name) + "Output"
-    : "any";
-
-  const method = classDecl.addMethod({
-    name: methodName,
-    isAsync: true,
-    parameters:
-      inputType !== "void"
-        ? [
-            {
-              name: "input",
-              type: inputType,
-            },
-          ]
-        : [],
-    returnType: `Promise<${outputType}>`,
-  });
-
-  // Add JSDoc
-  if (tool.description) {
-    method.addJsDoc({
-      description: tool.description,
-    });
-  }
-
-  // Add implementation using helper function. Spread: an interface isn't assignable to the
-  // SDK's Record<string, unknown> arguments, but an object literal type is.
-  const callArgs = inputType !== "void" ? "{ ...input }" : "{}";
-  method.addStatements([
-    `const result = await this.connection.client.callTool({`,
-    `  name: "${tool.name}",`,
-    `  arguments: ${callArgs},`,
-    `});`,
-    `return handleToolResult(result, "${tool.name}");`,
-  ]);
-
-  return method;
+/** Class name for a server; the pipeline rejects servers whose names map to the same one. */
+export function clientClassName(serverName: string): string {
+  return pascalCase(serverName) + "Client";
 }
 
-/**
- * Generate methods for resources
- */
-function generateResourceMethods(
+/** Emit a tool's input (and output) types; returns their names. */
+function addToolTypes(
+  sourceFile: SourceFile,
+  tool: Tool,
+  methodName: string,
+  serverName: string,
+  typeNames: Set<string>,
+): { inputType: string; outputType?: string } {
+  const typeBase = allocateTypeBase(
+    pascalCase(methodName),
+    pascalCase(serverName),
+    typeNames,
+  );
+  const inputType = `${typeBase}Input`;
+  generateToolInputType(sourceFile, tool, inputType);
+  if (!hasOutputSchema(tool)) return { inputType };
+  const outputType = `${typeBase}Output`;
+  generateToolOutputType(sourceFile, tool, outputType);
+  return { inputType, outputType };
+}
+
+function addToolMethod(
   classDecl: ClassDeclaration,
-  resources: Resource[],
+  {
+    tool,
+    methodName,
+    inputType,
+    outputType,
+  }: { tool: Tool; methodName: string; inputType: string; outputType?: string },
 ): void {
-  // Add a generic getResource method
-  const method = classDecl.addMethod({
-    name: "getResource",
+  const wireName = JSON.stringify(tool.name);
+  classDecl.addMethod({
+    name: methodName,
     isAsync: true,
     parameters: [
       {
-        name: "uri",
-        type: "string",
+        name: "input",
+        type: inputType,
+        ...(hasOptionalInput(tool) && { initializer: "{}" }),
       },
+      OPTIONS_PARAM,
     ],
-    returnType: `Promise<${RESOURCE_CONTENT_TYPE}>`,
-  });
-
-  method.addJsDoc({
-    description: "Fetch a resource by URI",
-    tags: [
-      {
-        tagName: "param",
-        text: "uri - Resource URI",
-      },
+    returnType: `Promise<${outputType ?? "CallToolResult"}>`,
+    docs: tool.description ? [commentText(tool.description)] : [],
+    statements: [
+      `const result = await this.#connection.client.callTool({ name: ${wireName}, arguments: input }, options);`,
+      outputType
+        ? `return structuredResult<${outputType}>(result, ${wireName});`
+        : `return toolResult(result, ${wireName});`,
     ],
   });
+}
 
-  method.addStatements([
-    `const result = await this.connection.client.readResource({ uri });`,
-    `return handleResourceResult(result, uri);`,
-  ]);
+function addPromptMethod(
+  classDecl: ClassDeclaration,
+  prompt: Prompt,
+  methodName: string,
+): void {
+  const args = prompt.arguments ?? [];
+  const argsType = `{ ${args
+    .map((arg) => `${propertyKey(arg.name)}${arg.required ? "" : "?"}: string`)
+    .join("; ")} }`;
+  const optional = !args.some((arg) => arg.required);
 
-  // Add specific methods for known resources
-  for (const resource of resources) {
-    if (resource.name) {
-      const resourceMethod = classDecl.addMethod({
-        name: "get" + pascalCase(resource.name),
-        isAsync: true,
-        returnType: `Promise<${RESOURCE_CONTENT_TYPE}>`,
-      });
+  classDecl.addMethod({
+    name: methodName,
+    isAsync: true,
+    parameters: [
+      ...(args.length
+        ? [
+            {
+              name: "args",
+              type: argsType,
+              ...(optional && { initializer: "{}" }),
+            },
+          ]
+        : []),
+      OPTIONS_PARAM,
+    ],
+    returnType: "Promise<PromptMessage[]>",
+    docs: prompt.description ? [commentText(prompt.description)] : [],
+    statements: [
+      `const result = await this.#connection.client.getPrompt({ name: ${JSON.stringify(prompt.name)}${args.length ? ", arguments: args" : ""} }, options);`,
+      "return result.messages;",
+    ],
+  });
+}
 
-      if (resource.description) {
-        resourceMethod.addJsDoc({
-          description: resource.description,
-        });
-      }
+function addReadResourceMethod(classDecl: ClassDeclaration): void {
+  classDecl.addMethod({
+    name: "readResource",
+    isAsync: true,
+    parameters: [{ name: "uri", type: "string" }, OPTIONS_PARAM],
+    returnType: `Promise<ReadResourceResult["contents"]>`,
+    docs: ["Read a resource by URI (listed or from a resource template)."],
+    statements: [
+      "const result = await this.#connection.client.readResource({ uri }, options);",
+      "return result.contents;",
+    ],
+  });
+}
 
-      resourceMethod.addStatements([
-        `return this.getResource("${resource.uri}");`,
-      ]);
-    }
-  }
+function addResourceMethod(
+  classDecl: ClassDeclaration,
+  resource: Resource,
+  methodName: string,
+): void {
+  const docs = [resource.description, `URI: ${resource.uri}`]
+    .filter(Boolean)
+    .join("\n\n");
+  classDecl.addMethod({
+    name: methodName,
+    parameters: [OPTIONS_PARAM],
+    returnType: `Promise<ReadResourceResult["contents"]>`,
+    docs: [commentText(docs)],
+    statements: [
+      `return this.readResource(${JSON.stringify(resource.uri)}, options);`,
+    ],
+  });
 }
 
 /**
- * Generate methods for prompts
+ * Type name stem for a tool: `{Method}` if free, else `{Server}{Method}` (the same tool
+ * name on another server), else numbered. Reserves both its Input and Output names.
  */
-function generatePromptMethods(
-  classDecl: ClassDeclaration,
-  prompts: Prompt[],
-): void {
-  for (const prompt of prompts) {
-    const methodName = camelCase(prompt.name) + "Prompt";
-
-    // Build parameter type
-    const params: string[] = [];
-    if (prompt.arguments) {
-      for (const arg of prompt.arguments) {
-        const optional = arg.required ? "" : "?";
-        params.push(`${arg.name}${optional}: string`);
-      }
-    }
-
-    const method = classDecl.addMethod({
-      name: methodName,
-      isAsync: true,
-      parameters:
-        params.length > 0
-          ? [
-              {
-                name: "args",
-                type: `{ ${params.join("; ")} }`,
-              },
-            ]
-          : [],
-      returnType: `Promise<${PROMPT_MESSAGE_TYPE}>`,
-    });
-
-    if (prompt.description) {
-      method.addJsDoc({
-        description: prompt.description,
-      });
-    }
-
-    const argsParam = params.length > 0 ? "args" : "{}";
-    method.addStatements([
-      `const result = await this.connection.client.getPrompt({`,
-      `  name: "${prompt.name}",`,
-      `  arguments: ${argsParam},`,
-      `});`,
-      `return result.messages;`,
-    ]);
-  }
+function allocateTypeBase(
+  base: string,
+  serverPrefix: string,
+  typeNames: Set<string>,
+): string {
+  const free = (stem: string) =>
+    !typeNames.has(`${stem}Input`) && !typeNames.has(`${stem}Output`);
+  let stem = free(base) ? base : `${serverPrefix}${base}`;
+  for (let n = 2; !free(stem); n++) stem = `${serverPrefix}${base}${n}`;
+  typeNames.add(`${stem}Input`).add(`${stem}Output`);
+  return stem;
 }

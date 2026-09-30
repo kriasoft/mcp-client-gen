@@ -130,7 +130,7 @@ describe("createMcpConnection", () => {
       );
 
       expect(connection.tools.map((t) => t.name)).toEqual(["echo"]);
-      // The header timeout bounds only the wait for headers: the stream outlives it
+      // The request timeout stops at an event stream's headers: the stream outlives it
       await Bun.sleep(300);
       expect((await connection.client.listTools()).tools).toHaveLength(1);
       const get = sse.requests.filter((r) => r.method === "GET");
@@ -188,6 +188,30 @@ describe("createMcpConnection", () => {
     await Bun.sleep(3500);
     expect(calls).toBe(callsAtFailure);
   }, 10_000);
+
+  test("times out an SSE request whose finite body stalls", async () => {
+    // Headers arrive, the JSON body never ends (e.g. a stalled token endpoint); like real
+    // fetch, aborting the request errors the body
+    const fetch = (async (_url: URL | string, init?: RequestInit) => {
+      const body = new ReadableStream({
+        start(controller) {
+          init?.signal?.addEventListener("abort", () =>
+            controller.error(init.signal?.reason),
+          );
+        },
+      });
+      return new Response(body, {
+        headers: { "Content-Type": "application/json" },
+      });
+    }) as typeof globalThis.fetch;
+
+    const error = await createMcpConnection(
+      { type: "sse", url: fixture.url },
+      { fetch, timeout: 50 },
+    ).catch((e: unknown) => e);
+
+    expect(String(error)).toContain("Request timed out");
+  });
 
   test("authorize() resolves at once without OAuth", async () => {
     const fetch = ((url: URL | string, init?: RequestInit) =>
