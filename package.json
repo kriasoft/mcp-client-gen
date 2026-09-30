@@ -61,7 +61,7 @@
   },
   "peerDependencies": {
     "@modelcontextprotocol/sdk": "^1.25.3",
-    "typescript": ">=5.9.3"
+    "typescript": "^5.9.3"
   },
   "devDependencies": {
     "@modelcontextprotocol/sdk": "^1.31.0",
@@ -69,7 +69,7 @@
     "dotenv": "^18.0.5",
     "prettier": "^3.9.9",
     "srcpack": "^1.0.0",
-    "typescript": "^7.0.2"
+    "typescript": "^5.9.3"
   },
   "prettier": {
     "trailingComma": "all",
