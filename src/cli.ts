@@ -136,6 +136,7 @@ function printUsage(
   outputFile: string,
   exports: string[],
   server: McpServerConfig | undefined,
+  fromConfig: boolean,
 ) {
   const factoryName = exports[0];
   if (!factoryName || !server) return;
@@ -151,12 +152,16 @@ function printUsage(
   console.log(`  import { createMcpConnection } from "mcp-client-gen";`);
   console.log(``);
   console.log(`  const connection = await createMcpConnection({`);
-  // Never echo credentials: config URLs and headers may hold expanded secrets
-  const url = new URL(server.url);
   console.log(`    type: ${JSON.stringify(server.type)},`);
-  console.log(`    url: ${JSON.stringify(url.origin + url.pathname)},`);
-  if (server.headers || url.search || url.username)
-    console.log(`    // plus the headers/credentials from your MCP config`);
+  // Config URLs may embed expanded secrets anywhere (host, path, query): point to
+  // the entry instead. A command-line URL is the user's own input.
+  if (fromConfig) {
+    console.log(
+      `    url: "...", // "${server.name}" in your MCP config, plus its headers`,
+    );
+  } else {
+    console.log(`    url: ${JSON.stringify(server.url)},`);
+  }
   console.log(`  });`);
   console.log(`  const client = ${factoryName}(connection);`);
 }
@@ -164,7 +169,11 @@ function printUsage(
 /**
  * Run generation with progress display.
  */
-async function runGeneration(servers: McpServerConfig[], outputFile: string) {
+async function runGeneration(
+  servers: McpServerConfig[],
+  outputFile: string,
+  fromConfig: boolean,
+) {
   const absoluteOutput = resolve(process.cwd(), outputFile);
 
   const result = await showGenerationProgress(servers, () =>
@@ -180,13 +189,13 @@ async function runGeneration(servers: McpServerConfig[], outputFile: string) {
   if (result.failures.size > 0) {
     console.log(`\nWarnings:`);
     for (const [name, failure] of result.failures) {
-      console.log(`  - ${name} (${failure.server.url}): ${failure.error}`);
+      console.log(`  - ${name}: ${failure.error}`);
     }
   }
 
   // exports follow the servers map order: the first factory belongs to the first server
   const [first] = result.servers.values();
-  printUsage(outputFile, result.exports, first?.server);
+  printUsage(outputFile, result.exports, first?.server, fromConfig);
 }
 
 async function main() {
@@ -208,7 +217,7 @@ async function main() {
       try {
         if (mode.output) {
           // File output: show progress + usage instructions
-          await runGeneration([server], mode.output);
+          await runGeneration([server], mode.output, false);
         } else {
           // Stdout: just output the code
           const result = await generateClient([server], {});
@@ -229,7 +238,7 @@ async function main() {
           configPath: mode.configPath,
           outputFile: mode.kind === "quick" ? mode.output : undefined,
         });
-        await runGeneration(result.servers, result.outputFile);
+        await runGeneration(result.servers, result.outputFile, true);
       } catch (error) {
         console.error("Error:", (error as Error).message);
         process.exit(1);

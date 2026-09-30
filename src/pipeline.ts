@@ -79,6 +79,14 @@ export function extractServerName(
 }
 
 /**
+ * Server label for messages. Config servers show only their name: their URLs may
+ * embed expanded secrets. A name derived from the URL comes with the URL itself.
+ */
+function describeServer(name: string, server: McpServerConfig): string {
+  return server.name ? `"${name}"` : `"${name}" (${server.url})`;
+}
+
+/**
  * Format TypeScript code with Prettier.
  * @param code Source code to format
  * @param filePath File path for Prettier config resolution (searches up from this path)
@@ -124,7 +132,9 @@ export async function generateClient(
   if (collisions.length > 0) {
     const details = collisions
       .map((ids) =>
-        ids.map((i) => `  - "${names[i]}" (${servers[i]!.url})`).join("\n"),
+        ids
+          .map((i) => `  - ${describeServer(names[i]!, servers[i]!)}`)
+          .join("\n"),
       )
       .join("\n\n");
     throw new Error(
@@ -151,8 +161,8 @@ export async function generateClient(
 
   // Require at least one successful server
   if (successes.size === 0) {
-    const errorDetails = Array.from(failures.values())
-      .map((f) => `  - ${f.server.url}: ${f.error}`)
+    const errorDetails = Array.from(failures)
+      .map(([name, f]) => `  - ${describeServer(name, f.server)}: ${f.error}`)
       .join("\n");
     throw new Error(`All servers failed to introspect:\n${errorDetails}`);
   }

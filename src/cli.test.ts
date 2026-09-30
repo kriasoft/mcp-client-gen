@@ -90,7 +90,7 @@ describe("cli", () => {
   });
 
   describe("after generating", () => {
-    test("prints usage without echoing URL credentials", async () => {
+    test("never echoes config URLs, which may hold expanded secrets", async () => {
       const mcp = createMcpHandler(() => {
         const server = new McpServer({ name: "demo", version: "1.0.0" });
         server.registerTool("ping", {}, async () => ({ content: [] }));
@@ -101,19 +101,32 @@ describe("cli", () => {
         port: 0,
         fetch: (request) => mcp.fetch(request),
       });
+      const dir = mkdtempSync(join(tmpdir(), "mcp-cli-"));
+      writeFileSync(
+        join(dir, ".mcp.json"),
+        JSON.stringify({
+          mcpServers: {
+            // The secret sits in the path as well as the query
+            demo: { url: `${server.url}\${TOKEN}?key=\${TOKEN}` },
+          },
+        }),
+      );
       try {
         // Async spawn: a sync one would block this process's server
-        const proc = Bun.spawn(
-          ["bun", CLI, `${server.url}mcp?api_key=SECRET_123`, "-o", "out.ts"],
-          { cwd, stdout: "pipe", stderr: "pipe" },
-        );
+        const proc = Bun.spawn(["bun", CLI, "-y", "-o", "out.ts"], {
+          cwd: dir,
+          env: { ...process.env, TOKEN: "SECRET_123" },
+          stdout: "pipe",
+          stderr: "pipe",
+        });
         const stdout = await new Response(proc.stdout).text();
-        expect(await proc.exited).toBe(0);
-        expect(stdout).toContain(`url: "${server.url}mcp"`);
-        expect(stdout).toContain("headers/credentials from your MCP config");
-        expect(stdout).not.toContain("SECRET_123");
+        const stderr = await new Response(proc.stderr).text();
+        await proc.exited;
+        expect(stdout + stderr).not.toContain("SECRET_123");
+        expect(stdout).toContain('"demo" in your MCP config');
       } finally {
         await server.stop(true);
+        rmSync(dir, { recursive: true, force: true });
       }
     });
   });
