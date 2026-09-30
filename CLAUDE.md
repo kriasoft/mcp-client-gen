@@ -18,6 +18,7 @@ npx mcp-client-gen <url> <file>             # Shorthand
 # Config mode (uses .mcp.json, .cursor/, .vscode/)
 npx mcp-client-gen                          # Interactive
 npx mcp-client-gen -y                       # Quick defaults
+npx mcp-client-gen -o <file>                # Quick, custom output (implies -y)
 ```
 
 ## Test Commands

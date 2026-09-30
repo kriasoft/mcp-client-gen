@@ -1,111 +1,90 @@
 /* SPDX-FileCopyrightText: 2025-present Kriasoft */
 /* SPDX-License-Identifier: MIT */
 
-import { describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 
 /**
- * Tests for CLI argument parsing logic.
- * Note: We test the detection logic directly since parseArguments() calls process.exit on error.
+ * Runs the real CLI in a subprocess: cli.ts calls main() on import and exits
+ * the process, so observable behavior (streams, exit codes) is the contract.
+ * Servers point at a closed port, so generation fails fast after mode selection.
  */
 
-/** Check if string looks like a URL */
-function isUrl(value: string): boolean {
-  return value.startsWith("http://") || value.startsWith("https://");
+const CLI = resolve(import.meta.dir, "cli.ts");
+let cwd: string;
+
+function run(...args: string[]) {
+  const proc = Bun.spawnSync(["bun", CLI, ...args], {
+    cwd,
+    stdin: "ignore",
+    timeout: 10_000,
+  });
+  return {
+    exitCode: proc.exitCode,
+    stdout: proc.stdout.toString(),
+    stderr: proc.stderr.toString(),
+  };
 }
 
-describe("isUrl", () => {
-  test("detects https URLs", () => {
-    expect(isUrl("https://api.notion.com/mcp")).toBe(true);
-    expect(isUrl("https://example.com")).toBe(true);
-  });
-
-  test("detects http URLs", () => {
-    expect(isUrl("http://localhost:3000")).toBe(true);
-    expect(isUrl("http://example.com/path")).toBe(true);
-  });
-
-  test("rejects file paths", () => {
-    expect(isUrl("./src/client.ts")).toBe(false);
-    expect(isUrl("client.ts")).toBe(false);
-    expect(isUrl("/absolute/path.ts")).toBe(false);
-  });
-
-  test("rejects edge cases that look like URLs but aren't", () => {
-    // This is the edge case we document - files starting with http
-    expect(isUrl("http-client.ts")).toBe(false);
-    expect(isUrl("https-client.ts")).toBe(false);
-  });
+beforeAll(() => {
+  cwd = mkdtempSync(join(tmpdir(), "mcp-cli-"));
+  writeFileSync(
+    join(cwd, ".mcp.json"),
+    JSON.stringify({
+      mcpServers: {
+        remote: { url: "http://127.0.0.1:1/mcp" },
+        local: { command: "node", args: ["server.js"] },
+      },
+    }),
+  );
 });
 
-describe("CLI mode detection", () => {
-  /**
-   * Simulates parseArguments() mode detection logic.
-   * Returns the detected mode kind based on inputs.
-   */
-  function detectMode(opts: {
-    urlFlag?: string;
-    positionals?: string[];
-    yesFlag?: boolean;
-  }): string {
-    const { urlFlag, positionals = [], yesFlag } = opts;
+afterAll(() => {
+  rmSync(cwd, { recursive: true, force: true });
+});
 
-    // Priority 1: --url flag
-    if (urlFlag) return "url";
+describe("cli", () => {
+  describe("config mode output", () => {
+    test("-y honors --output", () => {
+      const { stdout } = run("-y", "-o", "chosen.ts");
+      expect(stdout).toContain("→ chosen.ts");
+      expect(stdout).not.toContain("mcp-client.ts");
+    });
 
-    // Priority 2: First positional is URL
-    if (positionals[0] && isUrl(positionals[0])) return "url";
-
-    // Priority 3: Positional given but not URL → direct mode
-    if (positionals[0]) return "direct";
-
-    // Priority 4: -y flag
-    if (yesFlag) return "quick";
-
-    // Priority 5: No args
-    return "interactive";
-  }
-
-  test("--url flag triggers URL mode", () => {
-    expect(detectMode({ urlFlag: "https://api.notion.com/mcp" })).toBe("url");
+    test("--output without -y skips prompts, like a positional output", () => {
+      expect(run("-o", "chosen.ts").stdout).toContain("→ chosen.ts");
+      expect(run("chosen.ts").stdout).toContain("→ chosen.ts");
+    });
   });
 
-  test("URL positional triggers URL mode", () => {
-    expect(detectMode({ positionals: ["https://api.notion.com/mcp"] })).toBe(
-      "url",
-    );
-    expect(detectMode({ positionals: ["http://localhost:3000"] })).toBe("url");
+  test("prints config warnings to stderr even when servers remain", () => {
+    const { stdout, stderr } = run("-y");
+    expect(stderr).toContain('Skipped "local" (stdio servers not supported)');
+    expect(stdout).not.toContain("Skipped");
   });
 
-  test("URL with output file still triggers URL mode", () => {
-    expect(
-      detectMode({ positionals: ["https://api.notion.com/mcp", "client.ts"] }),
-    ).toBe("url");
-  });
+  describe("argument errors", () => {
+    test("unknown flag prints error and help to stderr, exits 1", () => {
+      const { exitCode, stdout, stderr } = run("https://a.example/mcp", "--x");
+      expect(exitCode).toBe(1);
+      expect(stdout).toBe("");
+      expect(stderr).toContain("Error parsing arguments");
+      expect(stderr).toContain("Usage:");
+    });
 
-  test("non-URL positional triggers direct mode", () => {
-    expect(detectMode({ positionals: ["client.ts"] })).toBe("direct");
-    expect(detectMode({ positionals: ["./src/mcp-client.ts"] })).toBe("direct");
-  });
+    test("missing option value exits 1 with empty stdout", () => {
+      const { exitCode, stdout } = run("https://a.example/mcp", "-o");
+      expect(exitCode).toBe(1);
+      expect(stdout).toBe("");
+    });
 
-  test("-y flag triggers quick mode", () => {
-    expect(detectMode({ yesFlag: true })).toBe("quick");
-  });
-
-  test("no args triggers interactive mode", () => {
-    expect(detectMode({})).toBe("interactive");
-  });
-
-  test("--url flag takes priority over positional URL", () => {
-    expect(
-      detectMode({
-        urlFlag: "https://a.com",
-        positionals: ["https://b.com"],
-      }),
-    ).toBe("url");
-  });
-
-  test("edge case: http-client.ts is treated as file, not URL", () => {
-    expect(detectMode({ positionals: ["http-client.ts"] })).toBe("direct");
-    expect(detectMode({ positionals: ["https-utils.ts"] })).toBe("direct");
+    test("--help prints to stdout and exits 0", () => {
+      const { exitCode, stdout, stderr } = run("--help");
+      expect(exitCode).toBe(0);
+      expect(stdout).toContain("Usage:");
+      expect(stderr).toBe("");
+    });
   });
 });
