@@ -4,6 +4,7 @@
 import { describe, expect, test, beforeEach, afterEach } from "bun:test";
 import { browserAuth, inMemoryStore } from "oauth-callback/mcp";
 import { MockOAuthServer } from "../test/utils/mock-oauth-server";
+import { createMcpConnection } from "./mcp-client.js";
 import type {
   OAuthClientInformationFull,
   OAuthTokens,
@@ -318,5 +319,31 @@ describe("OAuth Authentication", () => {
       const error = await tokenRes.json();
       expect((error as any).error).toBe("invalid_client");
     });
+  });
+});
+
+describe("createMcpConnection", () => {
+  test("forwards oauth options to browserAuth (storeKey)", async () => {
+    const store = inMemoryStore();
+    await store.set("custom-key", { accessToken: "custom-token" });
+
+    // Capture the first request, then abort the connection attempt
+    const requests: Headers[] = [];
+    const fetch = (async (
+      _url: URL | string,
+      init?: RequestInit,
+    ): Promise<Response> => {
+      requests.push(new Headers(init?.headers));
+      throw new Error("stop");
+    }) as typeof globalThis.fetch;
+
+    await expect(
+      createMcpConnection(
+        { name: "test", type: "http", url: "http://localhost:1/mcp" },
+        { fetch, oauth: { store, storeKey: "custom-key" } },
+      ),
+    ).rejects.toThrow("stop");
+
+    expect(requests[0]?.get("authorization")).toBe("Bearer custom-token");
   });
 });

@@ -20,11 +20,7 @@ import type {
   ServerCapabilities,
   Tool,
 } from "@modelcontextprotocol/sdk/types.js";
-import {
-  browserAuth,
-  type BrowserAuthOptions,
-  inMemoryStore,
-} from "oauth-callback/mcp";
+import { browserAuth, type BrowserAuthOptions } from "oauth-callback/mcp";
 import type { McpServerConfig } from "./types.js";
 
 export interface McpClientConfig {
@@ -33,7 +29,7 @@ export interface McpClientConfig {
   /** Client version for compatibility checks */
   version?: string;
   /** OAuth 2.1 auth settings */
-  oauth?: Partial<BrowserAuthOptions>;
+  oauth?: BrowserAuthOptions;
   /** Custom fetch for proxies/interceptors */
   fetch?: typeof fetch;
   /** Request timeout in ms (applies to HTTP transport) */
@@ -84,19 +80,8 @@ export async function createMcpConnection(
   // OAuth required for http/sse transports
   let authProvider: any | undefined;
   if (server.type === "http" || server.type === "sse") {
-    const port = config.oauth?.port || 3000;
-
-    authProvider = browserAuth({
-      port,
-      hostname: config.oauth?.hostname || "localhost",
-      callbackPath: config.oauth?.callbackPath || "/callback",
-      store: config.oauth?.store || inMemoryStore(),
-      scope: config.oauth?.scope,
-      clientId: config.oauth?.clientId,
-      clientSecret: config.oauth?.clientSecret,
-      launch: config.oauth?.launch,
-      authTimeout: config.oauth?.authTimeout || 300000,
-    });
+    // Forward options as-is; browserAuth() owns the defaults (port, store, ...).
+    authProvider = browserAuth(config.oauth);
   }
 
   // Transport factory - creates fresh transport for OAuth retry

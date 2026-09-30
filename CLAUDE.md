@@ -130,6 +130,8 @@ Keep module DAG clean: lower modules must not import from higher ones.
 - File system for config discovery
 - OAuth flows (use in-memory store)
 
+**Isolation:** test scripts pass `--isolate` because `mock.module()` is process-global; without it a mocked module leaks into other files.
+
 **Test file naming:**
 
 - Unit tests: `{module}.test.ts` in same directory

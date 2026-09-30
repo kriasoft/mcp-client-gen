@@ -81,9 +81,9 @@
   "scripts": {
     "build": "bun build src/cli.ts src/index.ts src/internal.ts --outdir dist --target node --sourcemap",
     "clean": "rm -rf dist",
-    "test": "bun test src",
-    "test:e2e": "bun test test/e2e",
-    "test:all": "bun test",
+    "test": "bun test --isolate src",
+    "test:e2e": "bun test --isolate test/e2e",
+    "test:all": "bun test --isolate",
     "typecheck": "bun tsc -p tsconfig.json --noEmit",
     "format": "bun prettier --write .",
     "format:check": "bun prettier --check .",
