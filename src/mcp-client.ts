@@ -57,6 +57,8 @@ export interface McpClientConfig {
   fetch?: typeof fetch;
   /** Timeout in ms for each request while connecting and listing (SDK default: 60s) */
   timeout?: number;
+  /** Aborts connecting and listing, including a pending browser authorization */
+  signal?: AbortSignal;
 }
 
 export interface McpConnection {
@@ -88,12 +90,30 @@ function createFetchWithHeaders(
 }
 
 /**
+ * End every request when `signal` aborts: the SDK doesn't pass its request signal to
+ * all handshake traffic (e.g. `notifications/initialized`).
+ */
+function createFetchWithSignal(
+  baseFetch: typeof fetch | undefined,
+  signal: AbortSignal,
+): typeof fetch {
+  const originalFetch = baseFetch || globalThis.fetch;
+  return ((url: URL | string, init?: RequestInit) =>
+    originalFetch(url, {
+      ...init,
+      signal: init?.signal ? AbortSignal.any([init.signal, signal]) : signal,
+    })) as typeof fetch;
+}
+
+/**
  * Bound each request, except an event stream's body: a stalled token exchange (headers
- * or body) fails, while an SSE stream stays open once its headers arrive.
+ * or body) fails, while an SSE stream stays open once its headers arrive. `abort` also
+ * ends any request.
  */
 function createFetchWithTimeout(
   baseFetch: typeof fetch | undefined,
   ms: number,
+  abort: AbortSignal | undefined,
 ): typeof fetch {
   const originalFetch = baseFetch || globalThis.fetch;
   return (async (url: URL | string, init?: RequestInit) => {
@@ -103,9 +123,9 @@ function createFetchWithTimeout(
         timeout.abort(new DOMException("Request timed out", "TimeoutError")),
       ms,
     );
-    const signal = init?.signal
-      ? AbortSignal.any([init.signal, timeout.signal])
-      : timeout.signal;
+    const signal = AbortSignal.any(
+      [init?.signal, abort, timeout.signal].filter((s) => s != null),
+    );
     try {
       const response = await originalFetch(url, { ...init, signal });
       if (response.headers.get("content-type")?.startsWith("text/event-stream"))
@@ -157,9 +177,10 @@ export async function createMcpConnection(
         })
       : undefined;
 
-  const requestOptions: RequestOptions = config.timeout
-    ? { timeout: config.timeout }
-    : {};
+  const requestOptions: RequestOptions = {
+    ...(config.timeout && { timeout: config.timeout }),
+    ...(config.signal && { signal: config.signal }),
+  };
 
   // Server advertises its capabilities during the handshake
   const client = new Client(clientInfo, { capabilities: {} });
@@ -168,7 +189,9 @@ export async function createMcpConnection(
   let completeAuthorization: (() => Promise<void>) | undefined;
   if (type === "http") {
     const transportOptions = {
-      fetch: config.fetch,
+      fetch: config.signal
+        ? createFetchWithSignal(config.fetch, config.signal)
+        : config.fetch,
       ...(server.headers && { requestInit: { headers: server.headers } }),
     };
     if (auth) {
@@ -194,7 +217,8 @@ export async function createMcpConnection(
       requestOptions,
     );
     if (auth)
-      completeAuthorization = () => auth.completeAuthorization(transport);
+      completeAuthorization = () =>
+        auth.completeAuthorization(transport, { signal: config.signal });
   }
 
   // Every UnauthorizedError leaves a browser flow pending, and oauth-callback can't cancel
@@ -293,6 +317,7 @@ async function connectSse(
   const fetch = createFetchWithTimeout(
     baseFetch,
     config.timeout ?? DEFAULT_REQUEST_TIMEOUT_MSEC,
+    config.signal,
   );
   const createTransport = () =>
     new SSEClientTransport(url, { authProvider: auth, fetch });
@@ -304,7 +329,7 @@ async function connectSse(
   } catch (error) {
     try {
       if (!auth || !(error instanceof UnauthorizedError)) throw error;
-      await auth.completeAuthorization(transport);
+      await auth.completeAuthorization(transport, { signal: config.signal });
     } finally {
       await closeQuietly(transport);
     }

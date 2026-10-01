@@ -92,7 +92,7 @@ Config files may contain comments and trailing commas. `${NAME}`, `${NAME:-defau
 
 ## Authentication
 
-During generation, OAuth-protected servers trigger browser authentication (discovery, Dynamic Client Registration, PKCE) via [oauth-callback](https://github.com/kriasoft/oauth-callback), using the loopback redirect `http://127.0.0.1:3000/callback`. Credentials live in memory for that run.
+During generation, OAuth-protected servers trigger browser authentication via the MCP SDK and [oauth-callback](https://github.com/kriasoft/oauth-callback): discovery, PKCE, and Dynamic Client Registration unless you pass a pre-registered `clientInformation`. The loopback redirect is `http://127.0.0.1:3000/callback` (`oauth.redirectUri` changes it). Credentials live in memory for that run.
 
 In your app, auth belongs to the `Client` you connect. With `browserAuth()`, pass a `store` to persist credentials (one file per server), and if a server later demands more scopes (step-up), the request fails with `UnauthorizedError`; call `auth.connect(client)` again to finish the browser flow, then retry:
 
@@ -123,7 +123,7 @@ try {
 import { generateClient } from "mcp-client-gen";
 
 const code = await generateClient("https://mcp.notion.com/mcp");
-// or: generateClient({ url, name: "notion", headers: { ... } }, { oauth, fetch, timeout })
+// or: generateClient({ url, name: "notion", headers: { ... } }, { oauth, fetch, timeout, signal })
 ```
 
 `generateClient()` returns the formatted module source; it writes nothing.

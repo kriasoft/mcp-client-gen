@@ -244,6 +244,34 @@ describe("createMcpConnection", () => {
     expect(String(error)).toContain("Request timed out");
   });
 
+  test("an abort ends every handshake request, not only those the SDK signals", async () => {
+    const abort = new AbortController();
+    // Stall `notifications/initialized`, which the SDK sends without the request signal
+    const fetch = ((url: URL | string, init?: RequestInit) => {
+      if (String(init?.body).includes('"notifications/initialized"')) {
+        // Never answers; settles only if the request's signal aborts
+        const stalled = new Promise<Response>((_, reject) => {
+          const signal = init?.signal;
+          signal?.addEventListener("abort", () => reject(signal.reason));
+        });
+        abort.abort(new Error("gave up"));
+        return stalled;
+      }
+      return globalThis.fetch(
+        String(url).replace("http://mcp.internal", fixture.server.url.origin),
+        init,
+      );
+    }) as typeof globalThis.fetch;
+
+    const connecting = createMcpConnection(
+      { type: "http", url: "http://mcp.internal/mcp" }, // plain http: no OAuth
+      { fetch, signal: abort.signal },
+    );
+    // A regression hangs: fail fast instead
+    const hung = Bun.sleep(2000).then(() => Promise.reject(new Error("hung")));
+    await expect(Promise.race([connecting, hung])).rejects.toThrow("gave up");
+  });
+
   test("rejects unsupported server types", async () => {
     await expect(
       createMcpConnection({ type: "stdio", url: "" } as never),
@@ -296,6 +324,25 @@ describe("createMcpConnection OAuth", () => {
     expect(oauth.authorizeRequests).toHaveLength(2);
     expect(oauth.authorizeRequests.at(-1)?.searchParams.get("scope")).toContain(
       "admin",
+    );
+  });
+
+  test("an abort ends a pending browser authorization and its listener", async () => {
+    const abort = new AbortController();
+    const config = await oauthConfig();
+    // The "user" never approves; the caller gives up instead
+    config.oauth.launch = () => void abort.abort(new Error("gave up"));
+
+    await expect(
+      createMcpConnection(
+        { type: "http", url: oauth.mcpUrl },
+        { ...config, signal: abort.signal },
+      ),
+    ).rejects.toThrow("gave up");
+
+    const port = Number(new URL(config.oauth.redirectUri).port);
+    Bun.listen({ hostname: "127.0.0.1", port, socket: { data() {} } }).stop(
+      true,
     );
   });
 
