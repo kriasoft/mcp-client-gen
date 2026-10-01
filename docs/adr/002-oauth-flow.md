@@ -20,7 +20,7 @@
   - `store` is a `CredentialStore`, bound to the one server being generated. Default: memory.
 - Streamable HTTP connects via `auth.connect(client)`, which also handles step-up re-authorization. SSE (deprecated in MCP) connects on its own transport; on `UnauthorizedError` it calls `auth.completeAuthorization(transport)` and reconnects on a fresh transport. That transport's fetch bounds the wait for response headers (the provider can't interrupt its token exchange), and listings run sequentially so OAuth refreshes on it never overlap.
 - `GenerateClientOptions.signal` aborts connecting (including a pending browser flow, which `connect()` / `completeAuthorization()` end) and listing. Every transport request honors it, since the SDK doesn't pass its signal to all handshake traffic.
-- An authorization demanded after connecting (`UnauthorizedError`: a 403 `insufficient_scope` step-up over Streamable HTTP, or a 401 over SSE, whose transport doesn't turn 403s into authorizations) is completed on the live connection: `auth.connect(client)` for Streamable HTTP, `auth.completeAuthorization(transport)` for SSE. oauth-callback can't cancel a pending flow short of signing out, so capability listing completes every one it triggers (up to three), and no browser flow outlives the connection.
+- An authorization demanded after connecting (`UnauthorizedError`: a 403 `insufficient_scope` step-up over Streamable HTTP, or a 401 over SSE, whose transport doesn't turn 403s into authorizations) is completed on the live connection: `auth.connect(client)` for Streamable HTTP, `auth.completeAuthorization(transport)` for SSE. A pending flow ends only by completing, by an abort signal, or by a sign-out that would clear the store, so capability listing completes every one it triggers (up to three), and no browser flow outlives the connection.
 - Generated clients take the SDK `Client` and import SDK types only (ADR-003); auth stays with whoever connected that client, typically `browserAuth().connect(client)`, which also completes step-ups at runtime.
 
 ```typescript
@@ -43,6 +43,7 @@ const code = await generateClient("https://mcp.notion.com/mcp", {
 
 ## Links
 
-- Code: `src/mcp-client.ts`
+- Code/Docs: `src/mcp-client.ts`, SPEC-introspection
+- Related ADRs: ADR-001, ADR-003
 - Related: [oauth-callback](https://github.com/kriasoft/oauth-callback) (its ADR-006: MCP SDK owns OAuth)
 - Specs: [RFC 7591](https://datatracker.ietf.org/doc/html/rfc7591), [RFC 7636](https://datatracker.ietf.org/doc/html/rfc7636), [RFC 8252](https://datatracker.ietf.org/doc/html/rfc8252)

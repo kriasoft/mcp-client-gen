@@ -1,7 +1,7 @@
 # ADR-001 Generator Pipeline Architecture
 
-**Status:** Accepted
-**Date:** 2025-01-25 (revised 2026-10-01: one module per server, all or nothing)
+**Status:** Accepted  
+**Date:** 2025-01-25 (revised 2026-10-01: one module per server, all or nothing)  
 **Tags:** codegen, pipeline, architecture
 
 ## Problem
@@ -29,5 +29,5 @@
 
 ## Links
 
-- Code: `src/pipeline.ts`, `src/cli.ts`
-- Related ADRs: ADR-003 (generated client contract)
+- Code/Docs: `src/pipeline.ts`, `src/cli.ts`, SPEC-cli
+- Related ADRs: ADR-002 (OAuth), ADR-003 (generator, not runtime)

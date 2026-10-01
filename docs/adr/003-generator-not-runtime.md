@@ -37,4 +37,4 @@
 ## Links
 
 - Code/Docs: `src/codegen/`, SPEC-generated-client
-- Related ADRs: ADR-001 (pipeline), ADR-002 (OAuth)
+- Related ADRs: ADR-001 (pipeline), ADR-002 (OAuth), ADR-004 (schema typing)
