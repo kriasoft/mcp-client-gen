@@ -86,7 +86,7 @@ export function hasOptionalInput(tool: Tool): boolean {
   return (
     !(Array.isArray(required) && required.length > 0) &&
     !(typeof minProperties === "number" && minProperties > 0) &&
-    !REJECTS_EMPTY.some((keyword) => keyword in schema)
+    !REJECTS_EMPTY.some((keyword) => Object.hasOwn(schema, keyword))
   );
 }
 

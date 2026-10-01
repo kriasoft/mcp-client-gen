@@ -30,6 +30,8 @@ interface Context {
   aliases: TypeAlias[];
   /** Alias name for a recursive target; absent: widen recursion to `unknown` */
   nameRef?: (ref: string, target: object) => string;
+  /** `$schema` a nested resource without its own inherits from its parent */
+  inherited: WeakMap<object, unknown>;
 }
 
 /** Convert a JSON Schema to a TypeScript type expression; recursion widens to `unknown`. */
@@ -38,6 +40,7 @@ export function jsonSchemaToTypeScript(schema: Schema): string {
     expanding: new Set(),
     named: new Map(),
     aliases: [],
+    inherited: new WeakMap(),
   });
 }
 
@@ -59,6 +62,7 @@ export function schemaTypeAliases(
       target === schema
         ? name
         : uniqueName(name + pascalCase(ref.split("/").at(-1)!), taken),
+    inherited: new WeakMap(),
   };
   const aliases = [
     { name, type: convert(schema, schema, ctx) },
@@ -106,12 +110,13 @@ function convert(schema: Schema, root: Schema, ctx: Context): string {
   if (schema === false) return "never";
   if (typeof schema !== "object") return "unknown";
   // A nested $id starts a new resource: its `#/...` refs resolve within it
-  if (typeof schema.$id === "string" && schema !== root) root = schema;
+  if (typeof schema.$id === "string" && schema !== root)
+    root = enterResource(schema, root, ctx);
   // Its keywords may mean anything else (draft-02 has no `const`): constrain nothing
-  if (dialect(root) === "unsupported") return "unknown";
+  if (dialect(root, ctx) === "unsupported") return "unknown";
 
   if (typeof schema.$ref === "string") {
-    const { target, resource } = resolveRef(root, schema.$ref);
+    const { target, resource } = resolveRef(root, schema.$ref, ctx);
     if (!isObject(target)) return convert(target, resource, ctx); // incl. unresolvable
     const known = ctx.named.get(target);
     if (known) return known;
@@ -130,7 +135,7 @@ function convert(schema: Schema, root: Schema, ctx: Context): string {
     return name;
   }
 
-  if ("const" in schema) return literal(schema.const);
+  if (Object.hasOwn(schema, "const")) return literal(schema.const);
   if (Array.isArray(schema.enum))
     return union(schema.enum.map((value: unknown) => literal(value)));
 
@@ -201,7 +206,7 @@ function arrayType(
   // Tuples: `prefixItems` + rest `items` (2020-12), or `items: [...]` + `additionalItems`
   // (draft-07 and earlier, 2019-09). A declared dialect ignores the other's keyword, so
   // the type is never stricter than that dialect's schema.
-  const declared = dialect(root);
+  const declared = dialect(root, ctx);
   const prefix =
     declared === "2020-12"
       ? schema.prefixItems
@@ -226,8 +231,13 @@ function arrayType(
  */
 function dialect(
   root: Schema,
+  ctx: Context,
 ): "2020-12" | "pre-2020" | "undeclared" | "unsupported" {
-  const uri = isObject(root) ? root.$schema : undefined;
+  const uri = !isObject(root)
+    ? undefined
+    : Object.hasOwn(root, "$schema")
+      ? root.$schema
+      : ctx.inherited.get(root);
   if (typeof uri !== "string") return "undeclared";
   const match =
     /^https?:\/\/json-schema\.org\/(draft\/2020-12|draft\/2019-09|draft-0[67])\/schema#?$/.exec(
@@ -259,8 +269,15 @@ function objectType(
   root: Schema,
   ctx: Context,
 ): string {
-  const properties: Record<string, Schema> = schema.properties ?? {};
-  const required = new Set<string>(schema.required ?? []);
+  // Malformed keywords constrain nothing (looser, never stricter)
+  const properties: Record<string, Schema> = isObject(schema.properties)
+    ? schema.properties
+    : {};
+  const required = new Set<string>(
+    Array.isArray(schema.required)
+      ? schema.required.filter((key: unknown) => typeof key === "string")
+      : [],
+  );
   const lines: string[] = [];
   const valueTypes: string[] = [];
 
@@ -269,14 +286,14 @@ function objectType(
     const optional = !required.has(key);
     valueTypes.push(optional ? `${type} | undefined` : type);
     const doc =
-      typeof propSchema === "object" && propSchema?.description
+      isObject(propSchema) && typeof propSchema.description === "string"
         ? docComment(propSchema.description) + "\n"
         : "";
     lines.push(`${doc}${propertyKey(key)}${optional ? "?" : ""}: ${type};`);
   }
   // Required names without a property schema still must be present
   for (const key of required) {
-    if (key in properties) continue;
+    if (Object.hasOwn(properties, key)) continue;
     valueTypes.push("unknown");
     lines.push(`${propertyKey(key)}: unknown;`);
   }
@@ -308,10 +325,33 @@ function objectType(
   return `{\n${lines.join("\n")}\n}`;
 }
 
-/** Local JSON Pointer (`#`, `#/$defs/Id`) into `root`, and the resource that owns it. */
+/**
+ * Enter a nested `$id` resource: without its own `$schema`, it keeps its parent's dialect.
+ * @returns The resource, the new root for its refs
+ */
+function enterResource(
+  resource: Record<string, any>,
+  parent: Schema,
+  ctx: Context,
+): Record<string, any> {
+  if (!Object.hasOwn(resource, "$schema") && isObject(parent))
+    ctx.inherited.set(
+      resource,
+      Object.hasOwn(parent, "$schema")
+        ? parent.$schema
+        : ctx.inherited.get(parent),
+    );
+  return resource;
+}
+
+/**
+ * Local JSON Pointer (`#`, `#/$defs/Id`) into `root`, and the resource that owns it. Only
+ * own members: a pointer addresses JSON, never the prototype (`constructor`).
+ */
 function resolveRef(
   root: Schema,
   ref: string,
+  ctx: Context,
 ): { target: Schema; resource: Schema } {
   const unresolved = { target: undefined, resource: root };
   if (ref === "#") return { target: root, resource: root };
@@ -328,9 +368,9 @@ function resolveRef(
   let resource = root;
   for (const raw of pointer.split("/")) {
     const key = raw.replace(/~1/g, "/").replace(/~0/g, "~");
-    if (node === null || typeof node !== "object" || !(key in node))
-      return unresolved;
-    if (node !== root && typeof node.$id === "string") resource = node;
+    if (!isObject(node) || !Object.hasOwn(node, key)) return unresolved;
+    if (node !== root && typeof node.$id === "string")
+      resource = enterResource(node, resource, ctx);
     node = node[key];
   }
   return { target: node, resource };

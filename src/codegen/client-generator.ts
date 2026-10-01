@@ -131,7 +131,7 @@ export function generateServerClient(
         [
           method(
             "Read a resource by URI (listed or from a resource template).",
-            "read(uri: string, options?: RequestOptions): Promise<ReadResourceResult>",
+            "read(uri: string, options?: CacheableRequestOptions): Promise<ReadResourceResult>",
             "return client.readResource({ uri }, options);",
           ),
           ...[...resourceNames].map(([resource, name]) =>
@@ -330,7 +330,7 @@ function resourceMethod(resource: Resource, name: string): string {
     .join("\n\n");
   return method(
     docs,
-    `${name}(options?: RequestOptions): Promise<ReadResourceResult>`,
+    `${name}(options?: CacheableRequestOptions): Promise<ReadResourceResult>`,
     `return client.readResource({ uri: ${JSON.stringify(resource.uri)} }, options);`,
   );
 }
@@ -348,7 +348,7 @@ function templateMethod(
     : "";
   return method(
     docs,
-    `${name}(${params}options?: RequestOptions): Promise<ReadResourceResult>`,
+    `${name}(${params}options?: CacheableRequestOptions): Promise<ReadResourceResult>`,
     `return client.readResource({ uri: ${literal} }, options);`,
   );
 }

@@ -41,11 +41,12 @@ export function generateClientFile(
   sourceFile.addImportDeclaration({
     moduleSpecifier: "@modelcontextprotocol/client",
     namedImports: [
+      ...(usesResources ? ["CacheableRequestOptions"] : []),
       ...(usesTools ? ["CallToolRequestOptions", "CallToolResult"] : []),
       "Client",
       ...(usesPrompts ? ["GetPromptResult"] : []),
       ...(usesResources ? ["ReadResourceResult"] : []),
-      ...(usesPrompts || usesResources ? ["RequestOptions"] : []),
+      ...(usesPrompts ? ["RequestOptions"] : []),
     ],
     isTypeOnly: true,
   });

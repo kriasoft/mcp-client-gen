@@ -153,6 +153,41 @@ describe("jsonSchemaToTypeScript", () => {
     expect(ts({ $schema: v2020, type: "array", items: pair })).toBe(
       "unknown[]",
     );
+    // A nested resource without $schema keeps its parent's dialect, inline or by ref
+    const child = { $id: "child", type: "array", prefixItems: pair };
+    expect(
+      ts({ $schema: draft07, type: "object", properties: { child } }),
+    ).toBe("{\nchild?: unknown[];\n}");
+    expect(
+      ts({
+        $schema: draft07,
+        $ref: "#/definitions/child",
+        definitions: { child },
+      }),
+    ).toBe("unknown[]");
+  });
+
+  test("hostile schemas widen instead of resolving the prototype or crashing", () => {
+    // Pointers address own members only
+    expect(ts({ $ref: "#/constructor" })).toBe("unknown");
+    expect(ts({ $ref: "#/properties/toString", properties: {} })).toBe(
+      "unknown",
+    );
+    // As a server sends it: JSON.parse makes `__proto__` an own member
+    const schema = JSON.parse(`{
+      "type": "object",
+      "properties": {
+        "constructor": { "type": "string", "description": 42 },
+        "__proto__": { "type": "number" }
+      },
+      "required": ["constructor", "toString", 7]
+    }`);
+    expect(ts(schema)).toBe(
+      "{\nconstructor: string;\n__proto__?: number;\ntoString: unknown;\n}",
+    );
+    expect(ts({ type: "object", properties: "x", required: "abc" })).toBe(
+      "Record<string, unknown>",
+    );
   });
 
   test("tuples: positions past minItems are optional, rest from items", () => {
@@ -547,6 +582,17 @@ export async function use(alpha: AlphaClient) {
     expect(typecheck(code + usage)).toEqual([]);
   });
 
+  test("each method takes its SDK call's options type", () => {
+    const usage = `
+export async function use(alpha: AlphaClient) {
+  await alpha.resources.read("file:///a", { cacheMode: "refresh" });
+  await alpha.resources.issue({ owner: "o", repo: "r", number: "1", "1st": "x" }, { cacheMode: "bypass" });
+  // @ts-expect-error prompts aren't cached
+  await alpha.prompts.summarize({ "page-id": "p" }, { cacheMode: "refresh" });
+}`;
+    expect(typecheck(code + usage)).toEqual([]);
+  });
+
   test("imports only SDK types", () => {
     expect(code).not.toContain('mcp-client-gen"');
     expect(code).toMatch(
@@ -722,7 +768,7 @@ export async function use(alpha: AlphaClient) {
 
   test("reads simple resource templates with typed parameters", () => {
     expect(code).toContain(
-      'issue(params: { owner: string; repo: string; number: string; "1st": string; }, options?: RequestOptions)',
+      'issue(params: { owner: string; repo: string; number: string; "1st": string; }, options?: CacheableRequestOptions)',
     );
     expect(code).toContain(
       'user(params: { "user.name": string; "%69d": string; }',
@@ -734,7 +780,7 @@ export async function use(alpha: AlphaClient) {
     expect(code).toContain("prompts: {");
     expect(code).toContain("resources: {");
     expect(code).toContain(
-      "read(uri: string, options?: RequestOptions): Promise<ReadResourceResult>",
+      "read(uri: string, options?: CacheableRequestOptions): Promise<ReadResourceResult>",
     );
     const onlyBeta = generateClientFile("beta", beta);
     for (const unused of [
@@ -744,6 +790,7 @@ export async function use(alpha: AlphaClient) {
       "ReadResourceResult",
       "GetPromptResult",
       /\bRequestOptions\b/,
+      "CacheableRequestOptions",
       "ToolResult<",
     ])
       expect(onlyBeta).not.toMatch(unused);
