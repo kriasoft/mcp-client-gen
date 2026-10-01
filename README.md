@@ -73,7 +73,7 @@ npx mcp-client-gen -y                 # All servers → src/mcp/ (or mcp/)
 npx mcp-client-gen -o <dir>           # All servers → <dir> (implies -y)
 ```
 
-Config mode writes all modules or none: if any server fails, it lists the errors and leaves your files untouched.
+Config mode writes only after every server succeeds: if any server fails, it lists the errors and leaves your files untouched.
 
 ### Config File Format
 

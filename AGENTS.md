@@ -17,7 +17,7 @@ Start with `docs/architecture.md`: pipeline, module boundaries, invariants, and 
 npx mcp-client-gen <url>                    # Generate to stdout
 npx mcp-client-gen <url> -o <file>          # Generate to file
 
-# Config mode (uses .mcp.json, .cursor/, .vscode/): one module per server, all or nothing
+# Config mode (uses .mcp.json, .cursor/, .vscode/): one module per server, written only after every server succeeds
 npx mcp-client-gen                          # Interactive
 npx mcp-client-gen -y                       # Quick defaults (src/mcp/ or mcp/)
 npx mcp-client-gen -o <dir>                 # Quick, custom output directory (implies -y)
@@ -109,7 +109,7 @@ Keep module DAG clean: lower modules must not import from higher ones.
 
 - **Throw errors** for failures; let SDK errors propagate unchanged (types and causes intact) and label them where they are reported (the CLI prefixes the server name)
 - **Structured warnings** for skippable config entries (`ConfigWarning`)
-- Config mode is all or nothing: one failing server fails the run and writes no files (ADR-001)
+- Config mode writes only after every server succeeds: one failing server fails the run before any file changes (ADR-001)
 - Error messages: include context ("Tool 'search' error: ..."), never stack traces to users
 - CLI output: pass anything derived from config (URLs, headers, SDK error messages) through `redactSecrets()`: env placeholders expand to secrets. Masking covers common serializations (URL encodings, HTML/JSON escaping), so prefer names over config values in messages
 

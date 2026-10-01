@@ -54,15 +54,12 @@
   },
   "dependencies": {
     "@clack/prompts": "^1.8.1",
+    "@modelcontextprotocol/client": "^2.2.0",
     "oauth-callback": "^3.0.0",
     "prettier": "^3.9.9",
     "ts-morph": "^28.0.0"
   },
-  "peerDependencies": {
-    "@modelcontextprotocol/client": "^2.2.0"
-  },
   "devDependencies": {
-    "@modelcontextprotocol/client": "^2.2.0",
     "@modelcontextprotocol/server": "^2.2.0",
     "@types/bun": "1.4.2",
     "dotenv": "^18.0.5",
@@ -89,6 +86,6 @@
     "capture:notion": "bun run test/manual/capture-notion.ts",
     "smoke:notion": "bun run test/manual/smoke-notion.ts",
     "e2e:notion": "bun run test/manual/e2e-notion.ts",
-    "prepublishOnly": "bun run build"
+    "prepublishOnly": "bun run validate && bun run build"
   }
 }

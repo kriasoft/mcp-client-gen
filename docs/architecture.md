@@ -31,7 +31,7 @@ One server flows through four steps:
 1. **Introspect:** connect (with OAuth when demanded), list capabilities, close → `Introspection` snapshot (SPEC-introspection, ADR-002).
 2. **Generate:** snapshot → one TypeScript module via the ts-morph AST (SPEC-generated-client, ADR-004).
 3. **Format:** Prettier.
-4. **Output:** the library returns the code. The CLI writes files: one per server in config mode, all or nothing (SPEC-cli, ADR-001).
+4. **Output:** the library returns the code. The CLI writes files: one per server in config mode, only after every server succeeds (SPEC-cli, ADR-001).
 
 The library and the CLI compose the same internals. The CLI calls them directly, because it also needs the snapshot's `authorized` flag (for the usage snippet) and formats with the destination's Prettier config. The library uses Prettier defaults.
 
@@ -71,7 +71,7 @@ Changes must keep these true; each links to where it's defined and tested.
 | Generated types are never stricter than the schema, except the two documented cases                                                                                            | ADR-004                        |
 | Output is deterministic: an unchanged server regenerates byte-identical code (library output also ignores cwd)                                                                 | SPEC-generated-client          |
 | The public API is `generateClient` and its option types; no other entry points                                                                                                 | ADR-003                        |
-| Config mode writes all modules or none; servers are introspected one at a time                                                                                                 | ADR-001, SPEC-cli              |
+| Config mode changes no file unless every server succeeds; writes are staged; servers are introspected one at a time                                                            | ADR-001, SPEC-cli              |
 | OAuth tokens are only sent to `https:` or loopback servers; no browser flow outlives generation, except a step-up that `signal` aborts mid-listing (ADR-002 Impact)            | ADR-002                        |
 | Expanded config secrets never reach CLI output: config-derived values and SDK errors pass through `redactSecrets()`; errors and the usage snippet name entries instead of URLs | ADR-005, SPEC-config           |
 | Errors propagate unchanged (types and causes); the CLI labels them with server names                                                                                           | SPEC-introspection             |
@@ -79,20 +79,20 @@ Changes must keep these true; each links to where it's defined and tested.
 
 ## Dependencies
 
-| Package                             | Kind         | Why                                                                                                  |
-| ----------------------------------- | ------------ | ---------------------------------------------------------------------------------------------------- |
-| `@modelcontextprotocol/client` ^2.2 | peer (+ dev) | Generation-time client; generated modules import its types, so apps and the generator share one copy |
-| `oauth-callback` ^3                 | dependency   | Browser OAuth provider during generation (same maintainer); apps add it themselves if they use it    |
-| `ts-morph` ^28                      | dependency   | AST code generation and the in-memory circularity check; bundles TypeScript                          |
-| `prettier` ^3                       | dependency   | Formatting generated modules                                                                         |
-| `@clack/prompts` ^1                 | dependency   | Interactive CLI                                                                                      |
+| Package                             | Kind       | Why                                                                                                                                               |
+| ----------------------------------- | ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `@modelcontextprotocol/client` ^2.2 | dependency | Generation-time client. No SDK object crosses into apps: generated modules import the app's own SDK types, so the generator's copy is independent |
+| `oauth-callback` ^3                 | dependency | Browser OAuth provider during generation (same maintainer); apps add it themselves if they use it                                                 |
+| `ts-morph` ^28                      | dependency | AST code generation and the in-memory circularity check; bundles TypeScript                                                                       |
+| `prettier` ^3                       | dependency | Formatting generated modules                                                                                                                      |
+| `@clack/prompts` ^1                 | dependency | Interactive CLI                                                                                                                                   |
 
 ## Packaging
 
 - **JavaScript:** `bun build --packages external` emits `dist/cli.js` and `dist/index.js`.
 - **Types:** `tsc -p tsconfig.build.json` emits `.d.ts` files reachable from `src/index.ts`.
 - **Exports:** `package.json` exports only `"."` and the `mcp-client-gen` bin. ESM only; Node.js 22+.
-- **Releases:** publishing a GitHub release triggers the npm publish workflow, gated by the `release` environment approval.
+- **Releases:** publishing a GitHub release triggers the npm publish workflow, gated by the `release` environment approval; `prepublishOnly` runs `validate` (format, typecheck, all tests) before `build`.
 
 ## Tests
 
@@ -101,7 +101,7 @@ Changes must keep these true; each links to where it's defined and tested.
 | Codegen    | Hostile-name fixture compiled under `strict` against real SDK types; consumer-side typechecks (`@ts-expect-error`); output transpiled and run against a fake `Client`; compiler-backed recursion cases | `src/codegen.test.ts`                   |
 | Connection | Real in-process servers: `@modelcontextprotocol/server` (Streamable HTTP), a legacy SSE fixture, oauth-callback's mock OAuth server (step-up, abort)                                                   | `src/mcp-client.test.ts`, `test/utils/` |
 | Config     | Temp config files: formats, precedence, env expansion, redaction                                                                                                                                       | `src/config.test.ts`                    |
-| CLI        | The real CLI in a subprocess: streams, exit codes, all-or-nothing writes, secret non-disclosure                                                                                                        | `src/cli.test.ts`                       |
+| CLI        | The real CLI in a subprocess: streams, exit codes, staged writes after every server succeeds, secret non-disclosure                                                                                    | `src/cli.test.ts`                       |
 | Manual     | Real Notion server: fixture capture, example regeneration, smoke and E2E scripts                                                                                                                       | `test/manual/`, `test/e2e/`             |
 
 - **Isolation:** tests run with `--isolate`, because `mock.module()` is process-global.
@@ -116,7 +116,7 @@ Changes must keep these true; each links to where it's defined and tested.
 | SPEC-introspection                         | changing connection, listing, OAuth wiring or generation options        |
 | SPEC-cli                                   | changing modes, arguments, file writes, usage output or exit codes      |
 | SPEC-config                                | changing config discovery, formats, env expansion or redaction          |
-| ADR-001 Generator pipeline                 | why one module per server, all or nothing, sequential                   |
+| ADR-001 Generator pipeline                 | why one module per server, written after all succeed, sequential        |
 | ADR-002 OAuth flow                         | why the SDK + oauth-callback own OAuth; deferred CIMD, fixed port       |
 | ADR-003 Generator, not runtime             | why generated code wraps the SDK `Client` and the API is one function   |
 | ADR-004 JSON Schema typing policy          | why types are looser-not-stricter and how recursion is typed            |

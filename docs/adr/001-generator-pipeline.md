@@ -1,7 +1,7 @@
 # ADR-001 Generator Pipeline Architecture
 
 **Status:** Accepted  
-**Date:** 2025-01-25 (revised 2026-10-01: one module per server, all or nothing)  
+**Date:** 2025-01-25 (revised 2026-10-01: one module per server, written after every server succeeds)  
 **Tags:** codegen, pipeline, architecture
 
 ## Problem
@@ -13,7 +13,7 @@
 
 - `pipeline.ts` is a thin orchestrator for one server: introspect → generate AST → format. `generateClient(server)` returns the code; it writes nothing.
 - Server names: explicit name > URL hostname > URL path segment > `server`.
-- The CLI owns files. URL mode writes one file (or stdout). Config mode writes one module per server into a directory, all or nothing: every server is introspected first, and a single failure writes nothing and exits 1. Servers whose names map to the same file are rejected before connecting.
+- The CLI owns files. URL mode writes one file (or stdout). Config mode writes one module per server into a directory, only after every server succeeds: every server is introspected first, and a single failure changes no file and exits 1. Writes are staged as temp files and renamed into place; a failing rename (e.g. an immutable file) can still leave earlier modules replaced, which isn't worth a rollback mechanism. Servers whose names map to the same file are rejected before connecting.
 - Config servers are introspected one at a time: each may run a browser flow on the same loopback redirect port.
 
 ## Alternatives (brief)

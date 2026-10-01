@@ -138,7 +138,7 @@ async function generate(
 }
 
 /**
- * Write every module or none: stage each as a temp file beside its destination, then
+ * Stage every module as a temp file beside its destination, then
  * rename into place. A failed write (e.g. a read-only directory) leaves no file changed;
  * only a failing rename (e.g. an immutable destination) can leave earlier ones replaced.
  */
@@ -252,7 +252,7 @@ async function runUrlMode(mode: Extract<CliMode, { kind: "url" }>) {
 }
 
 /**
- * Config mode: one module per server, all or nothing. A failing server (e.g. an auth
+ * Config mode: one module per server, written only after every server succeeds. A failing server (e.g. an auth
  * outage) must not silently drop its client from the project, so nothing is written
  * unless every server succeeds. Servers are introspected one at a time: each may run a
  * browser flow on the same loopback port.

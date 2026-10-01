@@ -44,7 +44,7 @@ npx mcp-client-gen https://mcp.example.com/mcp --name notion -o notion.ts
 
 ## Config Modes
 
-Config modes generate one module per selected server into an output directory, all or nothing (ADR-001):
+Config modes generate one module per selected server into an output directory, only after every server succeeds (ADR-001):
 
 1. **Module path:** `{dir}/{file}.ts`, where `{file}` is the kebab-case client name (`notion` → `notion.ts`, `GitHub` → `git-hub.ts`).
 2. **Collisions:** servers whose names map to the same file are rejected before connecting.

@@ -11,7 +11,10 @@ export type McpServerConfig = {
   url: string;
   /** Transport: Streamable HTTP (default) or legacy SSE */
   type?: "http" | "sse";
-  /** Client name, e.g. `notion` → `createNotionClient` (default: derived from the URL) */
+  /**
+   * Name of the generated client, e.g. `notion` → `createNotionClient` (default: derived
+   * from the URL). Unrelated to the OAuth `clientName` the server sees.
+   */
   name?: string;
   /** Headers sent with every request, e.g. a static `Authorization` */
   headers?: Record<string, string>;
