@@ -44,6 +44,15 @@ describe("config", () => {
       expect(printable("key ctrl\x1bsecret")).toBe("key ***");
       expect(printable("\x1b[2Jclear\x07")).toBe("[2Jclear");
       expect(printable(new Error("boom\r"))).toBe("boom");
+      // One line: an untrusted value can't fake output lines or reorder text
+      expect(printable("bad\nError: fake\tline\u2028x")).toBe(
+        "bad Error: fake line x",
+      );
+      // Linear: a huge server error can't stall error reporting
+      const start = performance.now();
+      printable("x" + " \n".repeat(200_000) + "y");
+      expect(performance.now() - start).toBeLessThan(1000);
+      expect(printable("name\u202Egnp.exe\u2066")).toBe("namegnp.exe");
       expect(printable({ toString: () => "thrown object" })).toBe(
         "thrown object",
       );
@@ -51,54 +60,83 @@ describe("config", () => {
   });
 
   describe("formatConfigWarning", () => {
-    test("formats malformed JSON warning", () => {
-      const msg = formatConfigWarning({
-        kind: "malformed_json",
-        path: "/path/to/.mcp.json",
-        error: "Unexpected token",
-      });
-      expect(msg).toBe(".mcp.json: Invalid JSON - Unexpected token");
+    test("formats invalid file warning", () => {
+      const msg = formatConfigWarning(
+        {
+          kind: "invalid_file",
+          path: "/path/to/.mcp.json",
+          reason: "invalid JSON",
+        },
+        "/path/to",
+      );
+      expect(msg).toBe(".mcp.json: Skipped the file (invalid JSON)");
+    });
+
+    test("shows the path relative to cwd, telling apart same-named files", () => {
+      const warning = (path: string) =>
+        formatConfigWarning(
+          { kind: "missing_url", path, name: "a" },
+          "/project",
+        );
+      expect(warning("/project/.cursor/mcp.json")).toBe(
+        '.cursor/mcp.json: Skipped "a" (missing url)',
+      );
+      expect(warning("/project/.vscode/mcp.json")).toBe(
+        '.vscode/mcp.json: Skipped "a" (missing url)',
+      );
     });
 
     test("formats skipped stdio warning", () => {
-      const msg = formatConfigWarning({
-        kind: "skipped_stdio",
-        path: "/path/to/.mcp.json",
-        name: "local-server",
-      });
+      const msg = formatConfigWarning(
+        {
+          kind: "skipped_stdio",
+          path: "/path/to/.mcp.json",
+          name: "local-server",
+        },
+        "/path/to",
+      );
       expect(msg).toBe(
         '.mcp.json: Skipped "local-server" (stdio servers not supported)',
       );
     });
 
     test("formats missing URL warning", () => {
-      const msg = formatConfigWarning({
-        kind: "missing_url",
-        path: "/path/to/.mcp.json",
-        name: "broken-server",
-      });
+      const msg = formatConfigWarning(
+        {
+          kind: "missing_url",
+          path: "/path/to/.mcp.json",
+          name: "broken-server",
+        },
+        "/path/to",
+      );
       expect(msg).toBe('.mcp.json: Skipped "broken-server" (missing url)');
     });
 
     test("formats unknown type warning", () => {
-      const msg = formatConfigWarning({
-        kind: "unknown_type",
-        path: "/path/to/.mcp.json",
-        name: "custom-server",
-        type: "grpc",
-      });
+      const msg = formatConfigWarning(
+        {
+          kind: "unknown_type",
+          path: "/path/to/.mcp.json",
+          name: "custom-server",
+          type: "grpc",
+        },
+        "/path/to",
+      );
       expect(msg).toBe(
         '.mcp.json: Skipped "custom-server" (unknown type "grpc")',
       );
     });
 
     test("formats unresolved env warning", () => {
-      const msg = formatConfigWarning({
-        kind: "unresolved_placeholder",
-        path: "/path/to/.mcp.json",
-        name: "api",
-        placeholders: ["API_KEY", "API_HOST"],
-      });
+      const msg = formatConfigWarning(
+        {
+          kind: "unresolved_placeholder",
+          path: "/path/to/.mcp.json",
+          name: "api",
+          placeholders: ["API_KEY", "API_HOST"],
+        },
+        "/path/to",
+      );
       expect(msg).toBe(
         '.mcp.json: Skipped "api" (unresolved placeholder API_KEY, API_HOST)',
       );
@@ -246,8 +284,57 @@ describe("config", () => {
 
       expect(servers).toEqual([]);
       expect(warnings).toHaveLength(1);
-      expect(warnings[0]?.kind).toBe("malformed_json");
-      expect(warnings[0]?.path).toBe(configPath);
+      // Not the parser's message: it may quote the file, secrets included
+      expect(warnings).toEqual([
+        { kind: "invalid_file", path: configPath, reason: "invalid JSON" },
+      ]);
+    });
+
+    test("skips malformed server maps, entries and headers with warnings", () => {
+      const listPath = resolve(TEST_DIR, "array-map.json");
+      const entriesPath = resolve(TEST_DIR, "bad-entries.json");
+      writeFileSync(listPath, JSON.stringify({ mcpServers: [] }));
+      writeFileSync(
+        entriesPath,
+        JSON.stringify({
+          servers: {
+            list: ["https://a.dev"],
+            object: { url: "https://b.dev", headers: { "X-Key": { a: 1 } } },
+            array: { url: "https://c.dev", headers: ["X-Key: 1"] },
+            ok: { url: "https://d.dev", headers: { "X-Key": "abcd" } },
+          },
+        }),
+      );
+
+      const { servers, warnings } = getMcpServers([listPath, entriesPath]);
+
+      expect(servers.map((s) => s.name)).toEqual(["ok"]);
+      const headersReason = "headers must be an object of strings";
+      expect(warnings).toEqual([
+        {
+          kind: "invalid_file",
+          path: listPath,
+          reason: "expected the server map to be an object",
+        },
+        {
+          kind: "invalid_server",
+          path: entriesPath,
+          name: "list",
+          reason: "not an object",
+        },
+        {
+          kind: "invalid_server",
+          path: entriesPath,
+          name: "object",
+          reason: headersReason,
+        },
+        {
+          kind: "invalid_server",
+          path: entriesPath,
+          name: "array",
+          reason: headersReason,
+        },
+      ]);
     });
 
     test("handles missing mcpServers property", () => {
@@ -819,9 +906,9 @@ describe("config", () => {
         const { servers, warnings } = getMcpServers([badPath, goodPath]);
         expect(warnings).toEqual([
           {
-            kind: "malformed_json",
+            kind: "invalid_file",
             path: badPath,
-            error: "Expected an object at the root",
+            reason: "expected an object at the root",
           },
         ]);
         expect(servers).toHaveLength(1);

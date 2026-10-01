@@ -22,7 +22,11 @@ import {
   registerUrlCredentials,
   type ConfiguredServer,
 } from "./config.js";
-import type { ConnectOptions, McpEndpoint } from "./connect.js";
+import {
+  oauthRedirectUri,
+  type ConnectOptions,
+  type McpEndpoint,
+} from "./connect.js";
 import { introspectServer, type ServerSnapshot } from "./introspection.js";
 import { extractServerName, formatTypeScript } from "./pipeline.js";
 import { runInteractiveSetup, withSpinner } from "./prompts.js";
@@ -31,30 +35,28 @@ import { runInteractiveSetup, withSpinner } from "./prompts.js";
  * CLI execution modes. The grammar is small on purpose, and anything outside it is an
  * error rather than silently ignored:
  *
- *   mcp-client-gen <url> [-o file] [--name name] [--no-oauth]   URL mode (stdout without -o)
- *   mcp-client-gen [--config file] [-y] [-o dir] [--no-oauth]   config mode
+ *   mcp-client-gen <url> [-o file] [--name name] [auth]     URL mode (stdout without -o)
+ *   mcp-client-gen [--config file] [-y] [-o dir] [auth]     config mode
+ *   auth: --no-oauth | --oauth-port <port>
  *
  * Config mode prompts unless `-y` or `-o` is given.
  */
 type CliMode =
   | { kind: "help" }
-  | {
-      kind: "url";
-      url: string;
-      output?: string;
-      name?: string;
-      noOAuth: boolean;
-    }
-  | { kind: "interactive"; configPath?: string; noOAuth: boolean }
-  | { kind: "quick"; output?: string; configPath?: string; noOAuth: boolean };
+  | ({ kind: "url"; url: string; output?: string; name?: string } & AuthMode)
+  | ({ kind: "interactive"; configPath?: string } & AuthMode)
+  | ({ kind: "quick"; output?: string; configPath?: string } & AuthMode);
+
+/** `--no-oauth` never opens a browser; `--oauth-port` moves its loopback redirect. */
+type AuthMode = { noOAuth: boolean; oauthPort?: number };
 
 function showHelp(write: (text: string) => void = console.log) {
   write(`
 mcp-client-gen - Generate type-safe MCP client SDK
 
 Usage:
-  npx mcp-client-gen <url> [-o file] [--name name] [--no-oauth]   # From an MCP server URL
-  npx mcp-client-gen [--config file] [-y] [-o dir] [--no-oauth]   # From local MCP configs
+  npx mcp-client-gen <url> [-o file] [--name name]   # From an MCP server URL
+  npx mcp-client-gen [--config file] [-y] [-o dir]   # From local MCP configs
 
 URL mode:
   <url>                 MCP server URL (http:// or https://)
@@ -67,6 +69,7 @@ Config mode (.mcp.json, .cursor/, .vscode/; one module per server):
   -o, --output <dir>    Output directory (implies -y; default: src/mcp or mcp)
 
   --no-oauth            Never open a browser: a server demanding OAuth fails (e.g. in CI)
+  --oauth-port <port>   OAuth redirect port on 127.0.0.1 (default: 3000)
   -h, --help            Show this help message
 
 Examples:
@@ -95,6 +98,7 @@ function parseArguments(args: string[]): CliMode {
       help: { type: "boolean", short: "h" },
       yes: { type: "boolean", short: "y" },
       "no-oauth": { type: "boolean" },
+      "oauth-port": { type: "string" },
     },
     allowPositionals: true,
   });
@@ -105,7 +109,17 @@ function parseArguments(args: string[]): CliMode {
   if (positionals.length > 1)
     throw new Error(`Unexpected argument: ${positionals[1]}`);
 
-  const noOAuth = values["no-oauth"] === true;
+  const auth: AuthMode = { noOAuth: values["no-oauth"] === true };
+  const port = values["oauth-port"];
+  if (port !== undefined) {
+    if (!/^\d{1,5}$/.test(port) || +port < 1 || +port > 65535)
+      throw new Error(
+        `--oauth-port needs a port from 1 to 65535, got: ${port}`,
+      );
+    if (auth.noOAuth)
+      throw new Error("--oauth-port has no effect with --no-oauth");
+    auth.oauthPort = +port;
+  }
   const [url] = positionals;
   if (url !== undefined) {
     if (!isHttpUrl(url))
@@ -117,7 +131,7 @@ function parseArguments(args: string[]): CliMode {
       url,
       output: values.output,
       name: values.name,
-      noOAuth,
+      ...auth,
     };
   }
 
@@ -130,9 +144,29 @@ function parseArguments(args: string[]): CliMode {
       kind: "quick",
       output: values.output,
       configPath: values.config,
-      noOAuth,
+      ...auth,
     };
-  return { kind: "interactive", configPath: values.config, noOAuth };
+  return { kind: "interactive", configPath: values.config, ...auth };
+}
+
+/**
+ * An error with a list of already printable items, one per line: `printable()` keeps
+ * each value on one line, so the layout is the CLI's own.
+ */
+class ListedError extends Error {
+  constructor(
+    message: string,
+    readonly items: string[],
+  ) {
+    super(message);
+  }
+}
+
+/** Print an error (and its items) to stderr, made safe for the terminal. */
+function printError(error: unknown) {
+  console.error(`Error: ${printable(error)}`);
+  if (error instanceof ListedError)
+    for (const item of error.items) console.error(`  - ${item}`);
 }
 
 /** A server to generate, with its derived name and destination. */
@@ -188,75 +222,50 @@ async function writeModules(files: Array<{ file: string; code: string }>) {
   }
 }
 
-/**
- * Print how to use a generated client. URL mode shows the whole connection: the SDK
- * client, plus oauth-callback when the server used OAuth during generation. Config mode
- * shows only the factory: connecting is the app's business, and config URLs and headers
- * may hold expanded secrets.
- */
-function printUsage(
-  target: Target,
-  { authorized, tools }: ServerSnapshot,
-  fromConfig: boolean,
-) {
-  const { endpoint, name, file } = target;
-  const factory = `create${clientTypeName(name)}`;
-  // `{name}Client`: never a reserved word, `client` or `auth`
-  const variable = camelCase(name) + "Client";
-  const rel = relative(process.cwd(), resolve(file!))
+/** `import { createXClient } from "./x.js";` for a module written to `file`. */
+function importLine(factory: string, file: string): string {
+  const rel = relative(process.cwd(), resolve(file))
     .split(sep)
     .join("/")
     .replace(/\.ts$/, ".js");
-  const importLine = `import { ${factory} } from ${JSON.stringify(rel.startsWith(".") ? rel : `./${rel}`)};`;
+  return `import { ${factory} } from ${JSON.stringify(rel.startsWith(".") ? rel : `./${rel}`)};`;
+}
 
-  if (fromConfig) {
-    console.log(`\nUsage for ${JSON.stringify(printable(name))}:\n`);
-    for (const line of [
-      importLine,
-      ``,
-      `// client: an @modelcontextprotocol/client Client connected to this server (see the factory's docs)`,
-      `const ${variable} = ${factory}(client);`,
-    ])
-      console.log(line ? `  ${line}` : "");
-    return;
-  }
-
-  const sse = endpoint.transport === "sse";
-  const transport = sse
-    ? "SSEClientTransport"
-    : "StreamableHTTPClientTransport";
+/**
+ * Print the whole connection for a URL-mode client (always Streamable HTTP): the SDK
+ * client, plus oauth-callback when the server used OAuth during generation.
+ */
+function printUrlUsage(
+  { endpoint, name, file }: Target,
+  { authorized, tools }: ServerSnapshot,
+  oauthPort: number | undefined,
+) {
+  const factory = `create${clientTypeName(name)}`;
+  // `{name}Client`: never a reserved word, `client` or `auth`
+  const variable = camelCase(name) + "Client";
   // The user's own input, but credentials in it (userinfo, query) are masked
   const url = printable(JSON.stringify(String(endpoint.url)));
-  // browserAuth().connect() speaks Streamable HTTP; SSE takes the provider directly
-  const oauth = authorized && !sse;
 
   const lines = [
-    `import { Client${oauth ? "" : `, ${transport}`} } from "@modelcontextprotocol/client";`,
-    ...(oauth ? [`import { browserAuth } from "oauth-callback/mcp";`] : []),
-    importLine,
+    `import { Client${authorized ? "" : ", StreamableHTTPClientTransport"} } from "@modelcontextprotocol/client";`,
+    ...(authorized
+      ? [`import { browserAuth } from "oauth-callback/mcp";`]
+      : []),
+    importLine(factory, file!),
     ``,
-    // Streamable HTTP negotiates the newest protocol era, as generation did
-    sse
-      ? `const client = new Client({ name: "my-app", version: "1.0.0" });`
-      : `const client = new Client({ name: "my-app", version: "1.0.0" }, { versionNegotiation: { mode: "auto" } });`,
-    ...(oauth
+    // Negotiate the newest protocol era, as generation did
+    `const client = new Client({ name: "my-app", version: "1.0.0" }, { versionNegotiation: { mode: "auto" } });`,
+    ...(authorized
       ? [
           `const auth = browserAuth({`,
           `  serverUrl: ${url},`,
-          `  redirectUri: "http://127.0.0.1:3000/callback",`,
+          `  redirectUri: ${JSON.stringify(oauthRedirectUri(oauthPort))},`,
           `  clientName: "my-app",`,
           `});`,
           `await auth.connect(client); // opens the browser when needed`,
         ]
       : [
-          `await client.connect(new ${transport}(new URL(${url})));`,
-          ...(authorized
-            ? [
-                `// This legacy SSE server uses OAuth: give the transport { authProvider: browserAuth(...) }`,
-                `// from oauth-callback/mcp, and on UnauthorizedError call auth.completeAuthorization(transport),`,
-                `// then reconnect on a new transport (see the oauth-callback docs).`,
-              ]
-            : []),
+          `await client.connect(new StreamableHTTPClientTransport(new URL(${url})));`,
         ]),
     // Tool definitions let the SDK validate typed results and mirror x-mcp-header
     // arguments (ADR-003)
@@ -269,10 +278,26 @@ function printUsage(
   for (const line of lines) console.log(line ? `  ${line}` : "");
 }
 
+/**
+ * Print only the factory for a config-mode client: connecting is the app's business
+ * (including legacy SSE), and config URLs and headers may hold expanded secrets.
+ */
+function printConfigUsage({ name, file }: Target) {
+  const factory = `create${clientTypeName(name)}`;
+  console.log(`\nUsage for ${JSON.stringify(printable(name))}:\n`);
+  for (const line of [
+    importLine(factory, file!),
+    ``,
+    `// client: an @modelcontextprotocol/client Client connected to this server (see the factory's docs)`,
+    `const ${camelCase(name)}Client = ${factory}(client);`,
+  ])
+    console.log(line ? `  ${line}` : "");
+}
+
 async function runUrlMode(mode: Extract<CliMode, { kind: "url" }>) {
   // Kept out of errors and the usage snippet, though the user typed them
   registerUrlCredentials(mode.url);
-  const options = oauthOptions(mode);
+  const options = connectOptions(mode);
   const target: Target = {
     endpoint: { url: mode.url },
     name: extractServerName(mode),
@@ -289,7 +314,7 @@ async function runUrlMode(mode: Extract<CliMode, { kind: "url" }>) {
   );
   await writeModules([{ file: target.file!, code }]);
   console.log(`\nGenerated ${target.file}`);
-  printUsage(target, snapshot, false);
+  printUrlUsage(target, snapshot, mode.oauthPort);
 }
 
 /**
@@ -320,13 +345,12 @@ async function runConfigMode(
   const byFile = Map.groupBy(targets, (t) => t.file!);
   const clashes = [...byFile].filter(([, group]) => group.length > 1);
   if (clashes.length > 0)
-    throw new Error(
-      `Server names collide in generated files. Rename them in your MCP config:\n${clashes
-        .map(
-          ([file, group]) =>
-            `  - ${group.map((t) => `"${t.name}"`).join(", ")} → ${file}`,
-        )
-        .join("\n")}`,
+    throw new ListedError(
+      "Server names collide in generated files. Rename them in your MCP config:",
+      clashes.map(
+        ([file, group]) =>
+          `${group.map((t) => `"${printable(t.name)}"`).join(", ")} → ${printable(file)}`,
+      ),
     );
 
   const results: Array<{ code: string; snapshot: ServerSnapshot }> = [];
@@ -339,12 +363,13 @@ async function runConfigMode(
         ),
       );
     } catch (error) {
-      failures.push(`  - "${printable(target.name)}": ${printable(error)}`);
+      failures.push(`"${printable(target.name)}": ${printable(error)}`);
     }
   }
   if (failures.length > 0)
-    throw new Error(
-      `${failures.length} of ${targets.length} server${targets.length === 1 ? "" : "s"} failed; no files written:\n${failures.join("\n")}`,
+    throw new ListedError(
+      `${failures.length} of ${targets.length} server${targets.length === 1 ? "" : "s"} failed; no files written:`,
+      failures,
     );
 
   await writeModules(
@@ -354,12 +379,13 @@ async function runConfigMode(
     })),
   );
   console.log(`\nGenerated ${targets.map((t) => t.file).join(", ")}`);
-  printUsage(targets[0]!, results[0]!.snapshot, true);
+  printConfigUsage(targets[0]!);
 }
 
-/** `--no-oauth`: the server's own headers only, never a browser. */
-function oauthOptions(mode: { noOAuth: boolean }): ConnectOptions {
-  return mode.noOAuth ? { oauth: false } : {};
+function connectOptions({ noOAuth, oauthPort }: AuthMode): ConnectOptions {
+  return {
+    oauth: noOAuth ? false : { redirectUri: oauthRedirectUri(oauthPort) },
+  };
 }
 
 async function main() {
@@ -388,12 +414,16 @@ async function main() {
           configPath: mode.configPath,
           outputDir: mode.kind === "quick" ? mode.output : undefined,
         });
-        await runConfigMode(setup.servers, setup.outputDir, oauthOptions(mode));
+        await runConfigMode(
+          setup.servers,
+          setup.outputDir,
+          connectOptions(mode),
+        );
         return;
       }
     }
   } catch (error) {
-    console.error(`Error: ${printable(error)}`);
+    printError(error);
     process.exit(1);
   }
 }

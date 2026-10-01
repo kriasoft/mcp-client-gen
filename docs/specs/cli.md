@@ -5,8 +5,9 @@ Modes, arguments, output and exit codes of `mcp-client-gen`. Code: `src/cli.ts`,
 ## Grammar
 
 ```
-npx mcp-client-gen <url> [-o file] [--name name] [--no-oauth]   # URL mode
-npx mcp-client-gen [--config file] [-y] [-o dir] [--no-oauth]   # config mode
+npx mcp-client-gen <url> [-o file] [--name name] [auth]   # URL mode
+npx mcp-client-gen [--config file] [-y] [-o dir] [auth]   # config mode
+# auth: --no-oauth | --oauth-port <port>
 npx mcp-client-gen --help
 ```
 
@@ -18,6 +19,7 @@ npx mcp-client-gen --help
 | `--config <file>`     | config | Config file to read instead of discovery                             |
 | `-y, --yes`           | config | All servers, default directory, no prompts                           |
 | `--no-oauth`          | both   | Never open a browser: a server demanding OAuth fails (e.g. in CI)    |
+| `--oauth-port <port>` | both   | OAuth redirect `http://127.0.0.1:<port>/callback` (default 3000)     |
 | `-h, --help`          | —      | Help on stdout, exit 0                                               |
 
 Anything outside the grammar is an error (stderr, help, exit 1), never ignored:
@@ -26,7 +28,8 @@ Anything outside the grammar is an error (stderr, help, exit 1), never ignored:
 - a second positional;
 - a positional that isn't an http(s) URL;
 - `--config` or `-y` with a URL;
-- `--name` in config mode.
+- `--name` in config mode;
+- `--oauth-port` outside 1–65535, or with `--no-oauth`.
 
 The single positional decides the mode: a URL selects URL mode, none selects config mode. Config mode prompts unless `-y` or `-o` is given (quick mode).
 
@@ -111,7 +114,7 @@ Usage (npm install @modelcontextprotocol/client oauth-callback):
   import { createNotionClient } from "./src/mcp/notion.js";
 
   const client = new Client({ name: "my-app", version: "1.0.0" }, { versionNegotiation: { mode: "auto" } });
-  const auth = browserAuth({ serverUrl: …, redirectUri: "http://127.0.0.1:3000/callback", clientName: "my-app" });
+  const auth = browserAuth({ serverUrl: …, redirectUri: "http://127.0.0.1:3000/callback", clientName: "my-app" }); // --oauth-port's
   await auth.connect(client); // opens the browser when needed
   await client.listTools();
   const notionClient = createNotionClient(client);
@@ -121,11 +124,11 @@ Config mode prints only the first module's import and factory call, labeled with
 
 - **Connection code:**
   - `browserAuth(…).connect(client)` (and `oauth-callback` in the install line) only when requests carried OAuth tokens during generation;
-  - otherwise `client.connect(new StreamableHTTPClientTransport(new URL(…)))`;
-  - `SSEClientTransport` for legacy SSE servers, plus a note on how to use OAuth with SSE when needed.
+  - otherwise `client.connect(new StreamableHTTPClientTransport(new URL(…)))`.
+  - URL mode is always Streamable HTTP; legacy SSE servers come from config, whose snippet shows no connection code.
 - **Tools:** when the module has tools, the snippet calls `client.listTools()` once, so the SDK validates `structuredContent` and sends `x-mcp-header` arguments as headers (ADR-003).
 - **URL:** the URL given on the command line, with its userinfo and query values masked (`?token=***`); they are registered as secrets, so errors mask them too.
-- **Protocol:** Streamable HTTP snippets opt into version negotiation (`versionNegotiation: { mode: "auto" }`), matching generation; the SDK's default is the legacy 2025 era.
+- **Protocol:** snippets opt into version negotiation (`versionNegotiation: { mode: "auto" }`), matching generation; the SDK's default is the legacy 2025 era.
 - **Import path:** relative to the working directory, `/`-separated, `.ts` → `.js`, JSON-quoted.
 - **Variable:** `{camelCase(name)}Client`, so it is never a reserved word, `client` or `auth`.
 
@@ -133,7 +136,7 @@ Config mode prints only the first module's import and factory call, labeled with
 
 - **Stdout:** generated code (URL mode without a file), progress, usage and help.
 - **Stderr:** errors, config warnings, and help printed after an argument error.
-- **Printing:** errors (any thrown value), warnings and config entry names pass through `printable()`: control characters are stripped (a server's error page or a config key may carry terminal escapes), then secrets masked (SPEC-config).
+- **Printing:** errors (any thrown value), warnings and config entry names pass through `printable()`, which keeps a value on one line: line breaks and tabs become spaces (a server's error can't fake output lines), other control and bidi characters are stripped (terminal escapes, reordered text), then secrets are masked (SPEC-config). Multi-line errors (failed servers, colliding names) are the CLI's layout around such values.
 
 | Code | Meaning                                                                                    |
 | ---- | ------------------------------------------------------------------------------------------ |

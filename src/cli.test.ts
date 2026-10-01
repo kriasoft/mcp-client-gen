@@ -117,6 +117,16 @@ describe("cli", () => {
       [["--url", "https://a.example/mcp"], "Unknown option"],
       [["https://a.example/mcp", "--config="], "--config needs a value"],
       [["--output="], "--output needs a value"],
+      [
+        ["-y", "--oauth-port", "0"],
+        "--oauth-port needs a port from 1 to 65535",
+      ],
+      [["-y", "--oauth-port", "3000x"], "--oauth-port needs a port"],
+      [["-y", "--oauth-port", "65536"], "--oauth-port needs a port"],
+      [
+        ["-y", "--no-oauth", "--oauth-port", "8080"],
+        "no effect with --no-oauth",
+      ],
     ])("rejects %p", (args, message) => {
       const { exitCode, stdout, stderr } = run(...args);
       expect(exitCode).toBe(1);

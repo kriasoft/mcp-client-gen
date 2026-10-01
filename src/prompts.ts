@@ -18,7 +18,7 @@ import {
   text,
 } from "@clack/prompts";
 import { existsSync } from "node:fs";
-import { resolve } from "node:path";
+import { relative, resolve } from "node:path";
 import {
   findMcpConfigFiles,
   formatConfigWarning,
@@ -60,7 +60,7 @@ export async function promptForConfigFiles(
     message: "Select MCP configuration files to use:",
     options: availableFiles.map((file) => ({
       value: file,
-      label: file.replace(cwd + "/", ""),
+      label: relative(cwd, file),
       hint: `Found at ${file}`,
     })),
     initialValues: availableFiles, // Select all by default

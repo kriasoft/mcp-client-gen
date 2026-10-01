@@ -22,6 +22,7 @@ npx mcp-client-gen                          # Interactive
 npx mcp-client-gen -y                       # Quick defaults (src/mcp/ or mcp/)
 npx mcp-client-gen -o <dir>                 # Quick, custom output directory (implies -y)
 npx mcp-client-gen ... --no-oauth           # Either mode: fail instead of opening a browser
+npx mcp-client-gen ... --oauth-port 8080    # Either mode: OAuth redirect on another loopback port
 ```
 
 ## Test Commands
@@ -34,6 +35,7 @@ bun typecheck                   # TypeScript check
 bun format                      # Format code with Prettier
 bun format:check                # Check code formatting
 bun validate                    # Full validation (format, typecheck, tests)
+bun run build && bun smoke:package  # Packed tarball under Node: CLI, library, generated code (release gate)
 ```
 
 ## Manual Test Scripts
@@ -81,6 +83,7 @@ mcp-client-gen/
 │
 ├── test/
 │   ├── e2e/               # End-to-end tests (.spec.ts)
+│   ├── package-smoke.ts   # Release gate: packed tarball under Node
 │   ├── fixtures/          # Test fixtures
 │   │   ├── notion/        # Real Notion server data
 │   │   └── synthetic/     # Minimal/edge-case schemas
@@ -111,7 +114,7 @@ Keep module DAG clean: lower modules must not import from higher ones.
 - **Structured warnings** for skippable config entries (`ConfigWarning`)
 - Config mode writes only after every server succeeds: one failing server fails the run before any file changes (ADR-001)
 - Error messages: include context ("Tool 'search' error: ..."), never stack traces to users
-- CLI output: pass errors and anything derived from config (URLs, headers, names) through `printable()` (strips control characters, then `redactSecrets()`): env placeholders expand to secrets. Masking covers common serializations (URL encodings, HTML/JSON escaping), so prefer names over config values in messages
+- CLI output: pass errors and anything derived from config (URLs, headers, names) through `printable()` (one line per value, control/bidi characters stripped, then `redactSecrets()`): env placeholders expand to secrets. Multi-line layout is the CLI's own, around printable values. Masking covers common serializations (URL encodings, HTML/JSON escaping), so prefer names over config values in messages
 
 ## Naming Conventions
 

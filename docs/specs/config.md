@@ -36,7 +36,7 @@ Every file is parsed as **JSONC**:
 
 The scanner avoids Bun-only APIs because the CLI runs on Node.
 
-The servers object is the first present of:
+The servers object is the first present of (sections aren't merged, so an empty one wins):
 
 - `mcpServers` (Claude Code, Cursor);
 - `servers` (VS Code);
@@ -93,7 +93,7 @@ Upstream references: [Claude Code](https://docs.anthropic.com/en/docs/claude-cod
 | unresolvable placeholder in `url`/`headers` | skipped: `unresolved_placeholder` |
 
 - **Server name:** the config key. An empty key becomes `server`; a name is never derived from a URL, which may hold an expanded secret.
-- **Header values:** non-string values are stringified.
+- **Headers:** an object of string values; anything else skips the server (`invalid_server`) rather than sending a coerced credential such as `[object Object]`.
 
 ## Environment Placeholders
 
@@ -118,14 +118,17 @@ A literal placeholder is never sent as a URL or credential.
 
 `getMcpServers()` returns `{ servers, warnings }`. Warnings are structured (`ConfigWarning`) and printed to stderr by the CLI, even when other servers remain:
 
-| Kind                     | Fields                                   |
-| ------------------------ | ---------------------------------------- |
-| `malformed_json`         | `path`, `error` (also a non-object root) |
-| `skipped_stdio`          | `path`, `name`                           |
-| `missing_url`            | `path`, `name`                           |
-| `invalid_url`            | `path`, `name`                           |
-| `unknown_type`           | `path`, `name`, `type`                   |
-| `unresolved_placeholder` | `path`, `name`, `placeholders`           |
+| Kind                     | Fields                         |
+| ------------------------ | ------------------------------ |
+| `invalid_file`           | `path`, `reason`               |
+| `invalid_server`         | `path`, `name`, `reason`       |
+| `skipped_stdio`          | `path`, `name`                 |
+| `missing_url`            | `path`, `name`                 |
+| `invalid_url`            | `path`, `name`                 |
+| `unknown_type`           | `path`, `name`, `type`         |
+| `unresolved_placeholder` | `path`, `name`, `placeholders` |
+
+`invalid_file`: invalid JSON, a non-object root, or a non-object servers section. `invalid_server`: an entry that isn't an object, or malformed `headers`. Reasons are the generator's own words, never a parser's message, which may quote the file. Displayed paths are relative to the working directory, so `.cursor/mcp.json` and `.vscode/mcp.json` stay distinct.
 
 One malformed file doesn't stop the others from loading.
 
@@ -140,5 +143,5 @@ Expanded values (including fallbacks) and literal credentials (every header valu
   - for a URL containing a placeholder, its href, host, path, query, query values, userinfo and every path segment (a `/` inside a secret splits it across segments).
 - **Precision:** overlapping matches merge before masking; forms shorter than 4 characters are ignored, so unrelated text isn't mangled.
 - **Names over URLs:** failures and the usage snippet name the entry instead of printing its URL. Interactive mode shows each server's URL only as a redacted hint.
-- **Warnings** carry file names, entry names, placeholder names and parse errors of the raw file, which can't contain expanded values; like all CLI output they are printed through `printable()`, which also strips control characters.
+- **Warnings** carry file paths, entry names, placeholder names and fixed reasons, never values; like all CLI output they are printed through `printable()` (SPEC-cli).
 - **Limits:** masking is best effort for common serializations; a server that transforms a secret (e.g. base64) bypasses it.

@@ -33,7 +33,7 @@ const code = await generateClientModule("https://mcp.notion.com/mcp", {
 ## Alternatives (brief)
 
 - **Embedded OAuth implementation** — rejected; duplicates the SDK's flow logic.
-- **Ephemeral redirect port** — rejected for now; DCR records the redirect URI, and RFC 8252's "any loopback port" rule isn't honored by every authorization server, so oauth-callback requires a fixed port. `oauth.redirectUri` picks another one.
+- **Ephemeral redirect port** — rejected for now; DCR records the redirect URI, and RFC 8252's "any loopback port" rule isn't honored by every authorization server, so oauth-callback requires a fixed port. `oauth.redirectUri` picks another one, and the CLI's `--oauth-port` (port 3000 is a common dev-server port).
 - **Client ID Metadata Documents (CIMD) now** — deferred. MCP 2026-07-28 prefers CIMD over DCR, and the SDK uses a provider's `clientMetadataUrl` when the server supports it, but oauth-callback 3.0 doesn't expose one and CIMD needs a hosted HTTPS metadata document. Pass-through belongs in oauth-callback first; `clientInformation` covers pre-registered clients meanwhile.
 - **Refusing static endpoint `headers` on plain `http:`** — rejected; OAuth is limited to secure origins because the tokens are obtained automatically, while configured headers are the user's explicit choice (as in other MCP clients).
 

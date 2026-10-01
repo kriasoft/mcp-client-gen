@@ -101,6 +101,7 @@ npx mcp-client-gen -o <dir>                  # all of them → <dir>
 npx mcp-client-gen --config <file>           # read this config file instead
 
 npx mcp-client-gen ... --no-oauth            # never open a browser; fail instead (e.g. in CI)
+npx mcp-client-gen ... --oauth-port 8080     # OAuth redirect port, if 3000 is taken
 ```
 
 Without a URL, the CLI reads `.mcp.json`, `.cursor/mcp.json` and `.vscode/mcp.json` (a `.local.json` beside each takes precedence; [details](docs/specs/config.md)), skips local stdio servers, and writes one module per server. Files are written only if every server succeeds.
@@ -161,7 +162,7 @@ It returns the module's source and writes nothing. Pass `{ url, transport, heade
 
 ## Requirements
 
-Node.js 22+ (or Bun) to generate. Generated modules need `@modelcontextprotocol/client` ^2.2.
+Node.js 22+ (or Bun) to generate. Generated modules need `@modelcontextprotocol/client` ^2.2; with TypeScript 6+, add `"types": ["node"]` to your `tsconfig.json` (the SDK's types use Node's `Buffer`).
 
 ## License
 

@@ -9,8 +9,7 @@
  */
 
 import { existsSync, readFileSync } from "node:fs";
-import { basename } from "node:path";
-import { resolve } from "node:path";
+import { relative, resolve } from "node:path";
 
 /** A usable config entry: its key names the client. Header values are strings, as in JSON. */
 export interface ConfiguredServer {
@@ -20,9 +19,13 @@ export interface ConfiguredServer {
   headers?: Record<string, string>;
 }
 
-/** Why a config entry was skipped; names placeholders, never values. */
+/**
+ * Why a config file or entry was skipped; names placeholders, never values. Reasons are
+ * the generator's own words: parser messages may quote the file, secrets included.
+ */
 export type ConfigWarning =
-  | { kind: "malformed_json"; path: string; error: string }
+  | { kind: "invalid_file"; path: string; reason: string }
+  | { kind: "invalid_server"; path: string; name: string; reason: string }
   | { kind: "skipped_stdio"; path: string; name: string }
   | { kind: "missing_url"; path: string; name: string }
   | { kind: "invalid_url"; path: string; name: string }
@@ -36,13 +39,19 @@ export type ConfigWarning =
     };
 
 /**
- * Format a config warning for display.
+ * Format a config warning for display, its file relative to `cwd`: `.cursor/mcp.json`
+ * and `.vscode/mcp.json` share a base name.
  */
-export function formatConfigWarning(warning: ConfigWarning): string {
-  const file = basename(warning.path);
+export function formatConfigWarning(
+  warning: ConfigWarning,
+  cwd: string = process.cwd(),
+): string {
+  const file = relative(cwd, warning.path);
   switch (warning.kind) {
-    case "malformed_json":
-      return `${file}: Invalid JSON - ${warning.error}`;
+    case "invalid_file":
+      return `${file}: Skipped the file (${warning.reason})`;
+    case "invalid_server":
+      return `${file}: Skipped "${warning.name}" (${warning.reason})`;
     case "skipped_stdio":
       return `${file}: Skipped "${warning.name}" (stdio servers not supported)`;
     case "missing_url":
@@ -139,14 +148,22 @@ export function redactSecrets(text: string): string {
 }
 
 /**
- * An error's message, or any text, made safe for the terminal: control characters
- * stripped (a server's error page or a config key may carry escape sequences), secrets
- * masked before and after, since a secret may contain them or be split by them.
+ * An error's message, or any text, made safe for the terminal as one line: line breaks
+ * and tabs become spaces (a server's error can't fake output lines), other control and
+ * bidi characters are stripped (escape sequences, reordered text), and secrets are
+ * masked before and after, since a secret may contain them or be split by them. Callers
+ * compose multi-line output around printable values.
  */
 export function printable(value: unknown): string {
   const text = value instanceof Error ? value.message : String(value);
   return redactSecrets(
-    redactSecrets(text).replace(/[\x00-\x08\x0b-\x1f\x7f-\x9f]/g, ""),
+    redactSecrets(text)
+      .replace(/[\t\n\v\f\r\u2028\u2029]/g, " ")
+      .replace(
+        /[\x00-\x1f\x7f-\x9f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/g,
+        "",
+      )
+      .trim(),
   );
 }
 
@@ -236,6 +253,10 @@ export function registerUrlCredentials(url: string): void {
     ...searchParams.values(),
   ])
     registerSecret(piece);
+}
+
+function isPlainObject(value: unknown): value is Record<string, any> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function isHttpUrl(url: string): boolean {
@@ -378,132 +399,150 @@ export function getMcpServers(paths: string[]): {
   const seenConnections = new Set<string>();
 
   for (const path of paths) {
-    let config: unknown;
+    let config: any;
     try {
       config = parseJsonc(readFileSync(path, "utf8"));
-    } catch (error) {
+    } catch {
+      warnings.push({ kind: "invalid_file", path, reason: "invalid JSON" });
+      continue;
+    }
+
+    if (!isPlainObject(config)) {
       warnings.push({
-        kind: "malformed_json",
+        kind: "invalid_file",
         path,
-        error: (error as Error).message,
+        reason: "expected an object at the root",
       });
       continue;
     }
 
-    if (!config || typeof config !== "object" || Array.isArray(config)) {
-      warnings.push({
-        kind: "malformed_json",
-        path,
-        error: "Expected an object at the root",
-      });
-      continue;
-    }
-
-    // Claude/Cursor: mcpServers, VSCode: servers or mcp.servers
+    // Claude/Cursor: mcpServers, VSCode: servers or mcp.servers. The first present one
+    // is the file's server map, even if empty: sections aren't merged.
     const serverConfigs =
-      (config as any).mcpServers ||
-      (config as any).servers ||
-      (config as any).mcp?.servers;
+      config.mcpServers ??
+      config.servers ??
+      (isPlainObject(config.mcp) ? config.mcp.servers : undefined);
+    if (serverConfigs === undefined) continue;
+    if (!isPlainObject(serverConfigs)) {
+      warnings.push({
+        kind: "invalid_file",
+        path,
+        reason: "expected the server map to be an object",
+      });
+      continue;
+    }
 
-    if (serverConfigs && typeof serverConfigs === "object") {
-      for (const [name, serverConfig] of Object.entries(serverConfigs)) {
-        if (typeof serverConfig === "object" && serverConfig !== null) {
-          const server = serverConfig as any;
+    for (const [name, server] of Object.entries(serverConfigs)) {
+      if (!isPlainObject(server)) {
+        warnings.push({
+          kind: "invalid_server",
+          path,
+          name,
+          reason: "not an object",
+        });
+        continue;
+      }
+      // Check for stdio servers (unsupported)
+      if (server.type === "stdio" || server.command) {
+        warnings.push({ kind: "skipped_stdio", path, name });
+        continue;
+      }
 
-          // Check for stdio servers (unsupported)
-          if (server.type === "stdio" || server.command) {
-            warnings.push({ kind: "skipped_stdio", path, name });
-            continue;
-          }
-
-          const missing = new Set<string>();
-          const trimmedUrl =
-            typeof server.url === "string"
-              ? expandEnv(server.url, missing).trim()
-              : "";
-          if (typeof server.url === "string" && server.url.includes("${"))
-            registerSecretUrl(trimmedUrl);
-          else registerUrlCredentials(trimmedUrl);
-          let headers: Record<string, string> | undefined;
-          if (
-            server.headers &&
-            typeof server.headers === "object" &&
-            !Array.isArray(server.headers)
-          ) {
-            headers = {};
-            for (const [key, value] of Object.entries(server.headers)) {
-              headers[key] =
-                typeof value === "string"
-                  ? expandEnv(value, missing)
-                  : String(value);
-              // Any header value may be a credential, written literally or not; the
-              // whole value, since printed errors show headers as sent (trimmed, joined)
-              registerSecret(headers[key]!);
-            }
-          }
-
-          // Skip rather than send a literal placeholder as a URL or credential
-          if (missing.size > 0) {
-            warnings.push({
-              kind: "unresolved_placeholder",
-              path,
-              name,
-              placeholders: [...missing],
-            });
-            continue;
-          }
-
-          // Check for missing URL
-          if (!trimmedUrl) {
-            warnings.push({ kind: "missing_url", path, name });
-            continue;
-          }
-
-          if (!isHttpUrl(trimmedUrl)) {
-            warnings.push({ kind: "invalid_url", path, name });
-            continue;
-          }
-
-          // Determine server type
-          let serverType: "http" | "sse";
-          if (server.type === "http" || server.type === "sse") {
-            serverType = server.type;
-          } else if (!server.type) {
-            // Missing type defaults to http for URL-based servers
-            serverType = "http";
-          } else {
-            warnings.push({
-              kind: "unknown_type",
-              path,
-              name,
-              type: String(server.type),
-            });
-            continue;
-          }
-
-          // Overridden or listed twice (see above): skip silently
-          const connection = JSON.stringify([
-            serverType,
-            // As fetch sends it: a default port or host case isn't another server
-            new URL(trimmedUrl).href,
-            // Header names are case-insensitive (not `new Headers()`: it throws on
-            // values fetch would reject, which must fail that server, not parsing)
-            Object.entries(headers ?? {})
-              .map(([key, value]) => [key.toLowerCase(), value] as const)
-              .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)),
-          ]);
-          if (seenNames.has(name) || seenConnections.has(connection)) continue;
-
-          seenNames.add(name);
-          seenConnections.add(connection);
-          servers.push({
-            name,
-            url: trimmedUrl,
-            transport: serverType,
-            ...(headers && { headers }),
-          });
+      const missing = new Set<string>();
+      const trimmedUrl =
+        typeof server.url === "string"
+          ? expandEnv(server.url, missing).trim()
+          : "";
+      if (typeof server.url === "string" && server.url.includes("${"))
+        registerSecretUrl(trimmedUrl);
+      else registerUrlCredentials(trimmedUrl);
+      // Coercing a malformed value (`[object Object]`) would send a broken credential
+      if (
+        server.headers !== undefined &&
+        !(
+          isPlainObject(server.headers) &&
+          Object.values(server.headers).every((v) => typeof v === "string")
+        )
+      ) {
+        warnings.push({
+          kind: "invalid_server",
+          path,
+          name,
+          reason: "headers must be an object of strings",
+        });
+        continue;
+      }
+      let headers: Record<string, string> | undefined;
+      if (server.headers) {
+        headers = {};
+        for (const [key, value] of Object.entries<string>(server.headers)) {
+          headers[key] = expandEnv(value, missing);
+          // Any header value may be a credential, written literally or not; the
+          // whole value, since printed errors show headers as sent (trimmed, joined)
+          registerSecret(headers[key]!);
         }
       }
+
+      // Skip rather than send a literal placeholder as a URL or credential
+      if (missing.size > 0) {
+        warnings.push({
+          kind: "unresolved_placeholder",
+          path,
+          name,
+          placeholders: [...missing],
+        });
+        continue;
+      }
+
+      // Check for missing URL
+      if (!trimmedUrl) {
+        warnings.push({ kind: "missing_url", path, name });
+        continue;
+      }
+
+      if (!isHttpUrl(trimmedUrl)) {
+        warnings.push({ kind: "invalid_url", path, name });
+        continue;
+      }
+
+      // Determine server type
+      let serverType: "http" | "sse";
+      if (server.type === "http" || server.type === "sse") {
+        serverType = server.type;
+      } else if (!server.type) {
+        // Missing type defaults to http for URL-based servers
+        serverType = "http";
+      } else {
+        warnings.push({
+          kind: "unknown_type",
+          path,
+          name,
+          type: String(server.type),
+        });
+        continue;
+      }
+
+      // Overridden or listed twice (see above): skip silently
+      const connection = JSON.stringify([
+        serverType,
+        // As fetch sends it: a default port or host case isn't another server
+        new URL(trimmedUrl).href,
+        // Header names are case-insensitive (not `new Headers()`: it throws on
+        // values fetch would reject, which must fail that server, not parsing)
+        Object.entries(headers ?? {})
+          .map(([key, value]) => [key.toLowerCase(), value] as const)
+          .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)),
+      ]);
+      if (seenNames.has(name) || seenConnections.has(connection)) continue;
+
+      seenNames.add(name);
+      seenConnections.add(connection);
+      servers.push({
+        name,
+        url: trimmedUrl,
+        transport: serverType,
+        ...(headers && { headers }),
+      });
     }
   }
 
