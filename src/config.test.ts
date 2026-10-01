@@ -326,6 +326,45 @@ describe("config", () => {
       });
     });
 
+    test("an earlier entry overrides a later one with the same name", () => {
+      const localPath = resolve(TEST_DIR, "override.local.json");
+      const sharedPath = resolve(TEST_DIR, "override.json");
+      writeFileSync(
+        localPath,
+        JSON.stringify({
+          mcpServers: {
+            api: { url: "http://127.0.0.1:3000/mcp" },
+            docs: { url: "${UNSET_OVERRIDE_URL}" },
+          },
+        }),
+      );
+      writeFileSync(
+        sharedPath,
+        JSON.stringify({
+          mcpServers: {
+            api: { url: "https://prod.example.com/mcp" },
+            docs: { url: "https://docs.example.com/mcp" },
+          },
+        }),
+      );
+
+      const { servers, warnings } = getMcpServers([localPath, sharedPath]);
+
+      expect(servers).toEqual([
+        { type: "http", url: "http://127.0.0.1:3000/mcp", name: "api" },
+        // A skipped override claims nothing: the shared entry is used
+        { type: "http", url: "https://docs.example.com/mcp", name: "docs" },
+      ]);
+      expect(warnings).toEqual([
+        {
+          kind: "unresolved_env",
+          path: localPath,
+          name: "docs",
+          variables: ["UNSET_OVERRIDE_URL"],
+        },
+      ]);
+    });
+
     test("handles URLs with whitespace", () => {
       const configPath = resolve(TEST_DIR, "whitespace-urls.json");
       const config = {

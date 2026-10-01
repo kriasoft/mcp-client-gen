@@ -5,7 +5,7 @@
  * Config discovery & parsing - finds and normalizes MCP server definitions.
  *
  * Contract: getMcpServers(paths) → McpServerConfig[]
- * Invariant: Only returns http/sse servers; first URL occurrence wins (dedup).
+ * Invariant: Only returns http/sse servers; the first usable entry claims its name and URL.
  */
 
 import { existsSync, readFileSync } from "node:fs";
@@ -296,6 +296,11 @@ export async function findMcpConfigFiles(
 
 /**
  * Parse MCP configs and extract unique server definitions.
+ *
+ * The first usable entry (in `paths` order) claims its name and its URL; later entries
+ * with either are dropped. By name, so `.mcp.local.json` overrides `.mcp.json` even with
+ * a different URL; by URL, so a server listed by several tools is generated once.
+ * Skipped entries claim nothing: a broken override falls back to the shared entry.
  * @param paths Config file paths to parse (in priority order)
  * @returns Deduplicated servers and any warnings encountered
  * @invariant Only returns http/sse servers, skips stdio/command servers
@@ -304,6 +309,7 @@ export async function findMcpConfigFiles(
 export function getMcpServers(paths: string[]): ParseServersResult {
   const servers: McpServerConfig[] = [];
   const warnings: ConfigWarning[] = [];
+  const seenNames = new Set<string>();
   const seenUrls = new Set<string>();
 
   for (const path of paths) {
@@ -387,10 +393,8 @@ export function getMcpServers(paths: string[]): ParseServersResult {
             continue;
           }
 
-          // Skip duplicates silently (first URL wins is expected behavior)
-          if (seenUrls.has(trimmedUrl)) {
-            continue;
-          }
+          // Overridden or listed twice (see above): skip silently
+          if (seenNames.has(name) || seenUrls.has(trimmedUrl)) continue;
 
           // Determine server type
           let serverType: "http" | "sse";
@@ -409,6 +413,7 @@ export function getMcpServers(paths: string[]): ParseServersResult {
             continue;
           }
 
+          seenNames.add(name);
           seenUrls.add(trimmedUrl);
           const result: McpServerConfig = {
             type: serverType,

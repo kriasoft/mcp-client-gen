@@ -160,7 +160,7 @@ Paths searched (in priority order):
 .vscode/mcp.json     # VS Code format
 ```
 
-First URL wins for deduplication (earlier files take priority).
+Earlier files take priority: the first usable entry claims its server name and its URL, and later entries with either are dropped. So a `.local` entry overrides its shared counterpart even when the URLs differ, and a server listed by several tools is generated once. Skipped entries (stdio, missing URL, unresolved env) claim nothing.
 
 ## Config Formats
 
