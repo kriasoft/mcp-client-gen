@@ -21,6 +21,7 @@ npx mcp-client-gen <url> -o <file>          # Generate to file
 npx mcp-client-gen                          # Interactive
 npx mcp-client-gen -y                       # Quick defaults (src/mcp/ or mcp/)
 npx mcp-client-gen -o <dir>                 # Quick, custom output directory (implies -y)
+npx mcp-client-gen ... --no-oauth           # Either mode: fail instead of opening a browser
 ```
 
 ## Test Commands
@@ -58,11 +59,11 @@ mcp-client-gen/
 │   │
 │   # Configuration
 │   ├── config.ts          # MCP config loading (.mcp.json, .cursor/, .vscode/)
-│   ├── types.ts           # Core type definitions (McpServerConfig)
+│   ├── types.ts           # Core and public types (McpServerConfig, GenerateClientOptions)
 │   │
 │   # MCP Protocol
 │   ├── mcp-client.ts      # Generation-time connection (HTTP/SSE), OAuth via oauth-callback
-│   ├── introspection.ts   # Capability snapshot: connect, list, close
+│   ├── introspection.ts   # Capability snapshot: connect, list (step-up), close
 │   │
 │   # Code Generation
 │   ├── codegen/
@@ -100,8 +101,8 @@ Keep module DAG clean: lower modules must not import from higher ones.
 
 ## Key Constraints
 
-- Runtime: Always use Bun (not Node.js/NPM). Bun auto-loads .env files
-- MCP SDK: `@modelcontextprotocol/client` 2.x (single entry point). The SDK owns OAuth; `oauth-callback/mcp` supplies the browser + loopback provider (ADR-002)
+- Toolchain: Bun for development (tests, scripts; it auto-loads .env files). The published CLI and library run on Node.js 22+ (and Bun): no Bun-only APIs under `src/`
+- MCP SDK: `@modelcontextprotocol/client` ^2.2 (single entry point). The SDK owns OAuth; `oauth-callback/mcp` supplies the browser + loopback provider (ADR-002)
 - Generated Client: a factory per server taking the SDK `Client`, returning full SDK results; type-only SDK imports only (ADR-003), valid under `strict` + `noUnusedLocals` (SPEC-generated-client)
 - Design Philosophy: Prioritize ideal design over backward compatibility
 
@@ -111,7 +112,7 @@ Keep module DAG clean: lower modules must not import from higher ones.
 - **Structured warnings** for skippable config entries (`ConfigWarning`)
 - Config mode writes only after every server succeeds: one failing server fails the run before any file changes (ADR-001)
 - Error messages: include context ("Tool 'search' error: ..."), never stack traces to users
-- CLI output: pass anything derived from config (URLs, headers, SDK error messages) through `redactSecrets()`: env placeholders expand to secrets. Masking covers common serializations (URL encodings, HTML/JSON escaping), so prefer names over config values in messages
+- CLI output: pass errors and anything derived from config (URLs, headers, names) through `printable()` (strips control characters, then `redactSecrets()`): env placeholders expand to secrets. Masking covers common serializations (URL encodings, HTML/JSON escaping), so prefer names over config values in messages
 
 ## Naming Conventions
 

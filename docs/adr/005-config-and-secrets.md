@@ -16,7 +16,7 @@
 - **Precedence:** files are read in priority order (`.local` first, per tool); the first usable entry claims both its name and its connection (type, URL and headers). Skipped entries, including invalid URLs, claim nothing.
 - **Env placeholders:** `${env:NAME}`, `${NAME}`, `${NAME:-fallback}` expand from the environment. Anything unresolvable skips the server with a warning naming the placeholders, never their values; a literal placeholder is never sent as a credential.
 - **Warnings, not failures,** for skippable entries (`ConfigWarning`), printed to stderr.
-- **Secrets:** every substituted value (including fallbacks), every header value and a literal URL's userinfo and query values are registered with its common serializations, and messages built from config values or SDK errors go through `redactSecrets()`. Beyond masking, failures and the usage snippet name entries instead of printing config URLs; warnings carry only names and raw-file parse errors. The registry is module state on purpose: one CLI process, one registry that output from every module must pass through.
+- **Secrets:** every substituted value (including fallbacks), every header value and a literal URL's userinfo and query values (in a config, or given on the command line) are registered with its common serializations, and everything the CLI prints goes through `printable()`: terminal control characters stripped, secrets masked by `redactSecrets()`. Beyond masking, failures name entries instead of printing config URLs, and config mode's usage snippet shows no connection code; warnings carry only names and raw-file parse errors. The registry is module state on purpose: one CLI process, one registry that output from every module must pass through.
 
 ## Alternatives (brief)
 

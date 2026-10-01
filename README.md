@@ -32,6 +32,7 @@ const auth = browserAuth({
   clientName: "my-app",
 });
 await auth.connect(client);
+await client.listTools(); // lets the SDK validate typed results and send tool headers
 
 const notion = createNotionClient(client);
 
@@ -58,7 +59,9 @@ result.structuredContent.items; // typed from the tool's outputSchema
 
 ## Installation
 
-`mcp-client-gen` is a development tool: run it with `npx`, or install it as a dev dependency to regenerate clients in a script. Generated modules need only `@modelcontextprotocol/client` 2.x. Requires Node.js 22+ (or Bun).
+`mcp-client-gen` is a development tool: run it with `npx`, or install it as a dev dependency to regenerate clients in a script. Generated modules need only `@modelcontextprotocol/client` ^2.2. Requires Node.js 22+ (or Bun).
+
+A generated module is a snapshot of the server's tools, prompts and resources, under the protocol revision negotiated during generation: regenerate when the server changes. If its result types depend on that revision, the factory throws for a `Client` that negotiated another.
 
 ## CLI Usage
 
@@ -71,6 +74,9 @@ npx mcp-client-gen <url> -o <file>    # Output to file
 npx mcp-client-gen                    # Interactive
 npx mcp-client-gen -y                 # All servers → src/mcp/ (or mcp/)
 npx mcp-client-gen -o <dir>           # All servers → <dir> (implies -y)
+
+# Either mode
+npx mcp-client-gen ... --no-oauth     # Never open a browser: fail instead (e.g. in CI)
 ```
 
 Config mode writes only after every server succeeds: if any server fails, it lists the errors and leaves your files untouched.
@@ -90,7 +96,7 @@ Config mode writes only after every server succeeds: if any server fails, it lis
 }
 ```
 
-Config files may contain comments and trailing commas. `${NAME}`, `${NAME:-default}` and `${env:NAME}` in `url` and `headers` expand from the environment; a server with an unset variable is skipped with a warning.
+Config files may contain comments and trailing commas. `${NAME}`, `${NAME:-default}` and `${env:NAME}` in `url` and `headers` expand from the environment; a server with an unresolved placeholder is skipped with a warning.
 
 ## Authentication
 
