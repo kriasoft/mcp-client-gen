@@ -11,7 +11,7 @@ Mode determination (priority order):
   1. --help flag → show help, exit
   2. --url flag provided → URL mode
   3. First positional starts with http:// or https:// → URL mode
-  4. Positional provided (not URL) → Direct mode (config-based)
+  4. Output (-o or positional, not URL) → Quick mode with that directory
   5. -y/--yes flag → Quick mode (config-based)
   6. No args → Interactive mode (config-based)
 ```
@@ -39,26 +39,31 @@ npx mcp-client-gen --url https://api.notion.com/mcp
 
 Behavior:
 
-- Connect to MCP server via HTTP/SSE transport
+- Connect to MCP server via Streamable HTTP (browser OAuth if the server demands it)
 - Introspect tools, resources, prompts
 - Generate TypeScript client
-- Output: stdout by default, file if `-o` or second positional provided
+- Output: stdout by default (code only), file if `-o` or second positional provided; a file gets a usage snippet (SDK `Client`, plus `oauth-callback` when the server used OAuth)
 - Server name: `--name` flag or inferred from URL hostname
 
-## Interactive Mode
+## Config Modes
+
+Config modes generate one module per selected server into an output directory (`{dir}/{server}.ts`, kebab-case of the client name), all or nothing (ADR-001):
+
+- Servers whose names map to the same file are rejected before connecting.
+- Servers are introspected one at a time (each may run a browser flow on the same loopback port).
+- If any server fails, nothing is written: the errors are listed and the exit code is 1.
+- An output ending in `.ts` is rejected: pass a directory.
+
+### Interactive Mode
 
 Triggered: `npx mcp-client-gen` (no arguments)
-
-Config-based generation with user prompts.
-
-Flow:
 
 1. Display intro banner
 2. Prompt for config files (multiselect, all pre-selected)
 3. Prompt for servers (multiselect, all pre-selected)
-4. Prompt for output path (text input with smart default)
-5. Generate client with progress spinner
-6. Display summary and usage instructions
+4. Prompt for output directory (text input with smart default)
+5. Generate with a progress spinner per server
+6. Display written files and usage instructions
 
 User can cancel at any prompt (Ctrl+C or Esc).
 
@@ -69,61 +74,35 @@ npx mcp-client-gen
 │
 ◆  Select MCP configuration files to use:
 │  ◻ .mcp.json
-│  ◻ .cursor/mcp.json
 │
 ◆  Select MCP servers to include:
-│  ◻ https://mcp.notion.com/mcp (Type: http)
+│  ◻ notion (http · https://mcp.notion.com/mcp)
 │
-◇  Enter output file path:
-│  src/mcp-client.ts
+◇  Output directory (one module per server):
+│  src/mcp
 │
-◇  Configuration complete! Generating client for 1 server
-│
-◐  Introspecting 1 MCP server...
-◇  Introspected 1 server: 12 tools, 1 resource
+◇  Configuration complete! Generating 1 client
+◇  Introspecting "notion"
 
-Generated client saved to src/mcp-client.ts
+Generated src/mcp/notion.ts
 ```
 
-## Quick Mode
+### Quick Mode
 
-Triggered: `npx mcp-client-gen -y` or `npx mcp-client-gen --yes`
+Triggered: `npx mcp-client-gen -y`, `-o <dir>`, or a positional `<dir>`
 
-Config-based generation with defaults (no prompts).
-
-Behavior:
-
-- Use all discovered config files
+- Use all discovered config files (or `--config <file>`)
 - Include all servers from configs
-- Auto-detect output path: `src/mcp-client.ts` if `src/` exists, else `mcp-client.ts`
-- No prompts, immediate generation
+- Output directory: the given one, else `src/mcp` if `src/` exists, else `mcp`
 
 ```
 npx mcp-client-gen -y
 
-🚀 Using defaults: 1 server → src/mcp-client.ts
-◐  Introspecting 1 MCP server...
-◇  Introspected 1 server: 12 tools, 1 resource
+🚀 Using defaults: 2 servers → src/mcp/
+◇  Introspecting "notion"
+◇  Introspecting "github"
 
-Generated client saved to src/mcp-client.ts
-```
-
-## Direct Mode
-
-Triggered: `npx mcp-client-gen <output-file>` (where output-file is not a URL)
-
-Config-based generation with explicit output path.
-
-Behavior:
-
-- Require explicit output path
-- Use discovered config files (or `--config` path)
-- Include all servers from config
-- No prompts (fail on missing config)
-
-```bash
-npx mcp-client-gen ./src/mcp-client.ts
-npx mcp-client-gen --config custom.mcp.json ./src/mcp.ts
+Generated src/mcp/notion.ts, src/mcp/github.ts
 ```
 
 Error cases:
@@ -136,12 +115,13 @@ Error cases:
 ```
 Arguments:
   <url>             MCP server URL (http:// or https://)
-  [output]          Output file path (default: stdout for URL mode)
+  [file]            URL mode: output file (default: stdout)
+  [dir]             Config mode: output directory (implies -y)
 
 Options:
   --url <url>       Explicit URL source (escape hatch for edge cases)
   --name <name>     Override server name (URL mode only)
-  -o, --output <file>  Output file path
+  -o, --output <path>  Output file (URL mode) or directory (config mode)
   --config <file>   Path to MCP configuration file
   -y, --yes         Accept defaults, skip prompts
   -h, --help        Show this help message
@@ -220,23 +200,9 @@ Earlier files take priority: the first usable entry claims its server name and i
 | `type: "stdio"` or `command` present | skipped       |
 | No `type`, has `url`                 | `http`        |
 
-## Output Path Defaults
-
-Smart default based on project structure:
-
-```typescript
-const srcExists = existsSync(resolve(cwd, "src"));
-const defaultPath = srcExists ? "src/mcp-client.ts" : "mcp-client.ts";
-```
-
-Validation:
-
-- Path must end with `.ts`
-- Path must not be empty
-
 ## Exit Codes
 
 | Code | Meaning                                                |
 | ---- | ------------------------------------------------------ |
 | 0    | Success                                                |
-| 1    | Error (missing config, no servers, generation failure) |
+| 1    | Error (missing config, no servers, any server failing) |

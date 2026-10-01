@@ -2,10 +2,11 @@
 /* SPDX-License-Identifier: MIT */
 
 /**
- * Capability discovery - fetches tools/resources/prompts from MCP servers.
+ * Capability discovery - snapshots a server's tools/resources/prompts for codegen.
  *
- * Contract: introspectServer(server) → IntrospectionResult
- * Invariant: Never throws for per-server failures; returns discriminated union.
+ * Contract: introspectServer(server, config?) → Introspection
+ * Invariant: Always closes its connection. Errors propagate unchanged (SDK error types
+ * and causes intact); callers label them.
  */
 
 import type {
@@ -14,91 +15,29 @@ import type {
   ServerCapabilities,
   Tool,
 } from "@modelcontextprotocol/client";
-import {
-  createMcpConnection,
-  type McpClientConfig,
-  type McpConnection,
-} from "./mcp-client.js";
+import { createMcpConnection, type McpClientConfig } from "./mcp-client.js";
 import type { McpServerConfig } from "./types.js";
 
-/**
- * Successful introspection result with discovered capabilities.
- */
-export interface IntrospectionSuccess {
-  ok: true;
-  server: McpServerConfig;
+/** What a server advertises: everything codegen needs. */
+export interface Introspection {
   /** Server-advertised capabilities (empty object if none advertised) */
   capabilities: ServerCapabilities;
   tools: Tool[];
   resources: Resource[];
   prompts: Prompt[];
+  /** Whether requests carried OAuth tokens (callers likely need OAuth too) */
+  authorized: boolean;
 }
 
-/**
- * Failed introspection result with error message.
- */
-export interface IntrospectionFailure {
-  ok: false;
-  server: McpServerConfig;
-  error: string;
-}
-
-/**
- * Result of introspecting an MCP server.
- * Discriminated union: check `ok` to narrow the type.
- */
-export type IntrospectionResult = IntrospectionSuccess | IntrospectionFailure;
-
-/**
- * Introspect a single MCP server to discover its capabilities.
- * @param server MCP server configuration
- * @param config Optional client configuration
- * @returns Server capabilities or error
- */
+/** Connect, list capabilities, disconnect. */
 export async function introspectServer(
   server: McpServerConfig,
   config?: McpClientConfig,
-): Promise<IntrospectionResult> {
-  let connection: McpConnection | undefined;
-
-  try {
-    connection = await createMcpConnection(server, config);
-
-    return {
-      ok: true,
-      server,
-      capabilities: connection.capabilities,
-      tools: connection.tools,
-      resources: connection.resources,
-      prompts: connection.prompts,
-    };
-  } catch (error) {
-    return {
-      ok: false,
-      server,
-      error: error instanceof Error ? error.message : String(error),
-    };
-  } finally {
-    if (connection?.client) {
-      try {
-        await connection.client.close();
-      } catch {
-        // Ignore disconnect errors
-      }
-    }
-  }
-}
-
-/**
- * Introspect multiple MCP servers in parallel.
- * @param servers Array of server configurations
- * @param config Optional client configuration
- * @returns Array of introspection results (preserves input order)
- */
-export async function introspectServers(
-  servers: McpServerConfig[],
-  config?: McpClientConfig,
-): Promise<IntrospectionResult[]> {
-  const promises = servers.map((server) => introspectServer(server, config));
-  return Promise.all(promises);
+): Promise<Introspection> {
+  const { client, ...introspection } = await createMcpConnection(
+    server,
+    config,
+  );
+  await client.close().catch(() => {}); // the snapshot is complete
+  return introspection;
 }

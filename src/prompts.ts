@@ -26,13 +26,18 @@ import {
   redactSecrets,
   resolveConfigFiles,
 } from "./config.js";
-import type { GenerationResult } from "./pipeline.js";
 import type { McpServerConfig } from "./types.js";
 
 export interface PromptsResult {
   configFiles: string[];
   servers: McpServerConfig[];
-  outputFile: string;
+  /** Directory for the generated modules, one per server */
+  outputDir: string;
+}
+
+/** `src/mcp` when the project has a `src/` directory, else `mcp`. */
+function defaultOutputDir(cwd: string): string {
+  return existsSync(resolve(cwd, "src")) ? "src/mcp" : "mcp";
 }
 
 /**
@@ -122,37 +127,29 @@ export async function promptForServers(
 }
 
 /**
- * Get output path for generated client.
- * @returns Validated TypeScript file path
+ * Get the output directory for generated modules.
+ * @returns Directory path (relative to cwd as entered)
  */
-export async function promptForOutputFile(
+export async function promptForOutputDir(
   cwd: string = process.cwd(),
 ): Promise<string> {
-  // Smart default: src/ if exists, otherwise root
-  const srcExists = existsSync(resolve(cwd, "src"));
-  const defaultPath = srcExists ? "src/mcp-client.ts" : "mcp-client.ts";
-
-  const outputPath = await text({
-    message: "Enter output file path:",
-    placeholder: defaultPath,
-    defaultValue: defaultPath,
-    validate: (value) => {
-      if (!value || value.trim() === "") {
-        return "Output file path is required";
-      }
-      if (!value.endsWith(".ts")) {
-        return "Output file must have .ts extension";
-      }
-      return undefined;
-    },
+  const defaultDir = defaultOutputDir(cwd);
+  const outputDir = await text({
+    message: "Output directory (one module per server):",
+    placeholder: defaultDir,
+    defaultValue: defaultDir,
+    validate: (value) =>
+      value?.trim().endsWith(".ts")
+        ? "Enter a directory; each server gets its own .ts file"
+        : undefined,
   });
 
-  if (isCancel(outputPath)) {
+  if (isCancel(outputDir)) {
     cancel("Operation cancelled");
     process.exit(0);
   }
 
-  return outputPath.trim();
+  return outputDir.trim() || defaultDir;
 }
 
 export interface SetupOptions {
@@ -160,8 +157,8 @@ export interface SetupOptions {
   useDefaults?: boolean;
   /** Explicit config file path (skips config discovery/selection) */
   configPath?: string;
-  /** Output path for quick mode (default: src/mcp-client.ts or mcp-client.ts) */
-  outputFile?: string;
+  /** Output directory for quick mode (default: src/mcp or mcp) */
+  outputDir?: string;
 }
 
 /**
@@ -187,20 +184,13 @@ export async function runInteractiveSetup(
       );
     }
 
-    // Auto-detect src/ directory for better project structure
-    const outputFile =
-      options.outputFile ??
-      (existsSync(resolve(cwd, "src")) ? "src/mcp-client.ts" : "mcp-client.ts");
+    const outputDir = options.outputDir ?? defaultOutputDir(cwd);
 
     console.log(
-      `🚀 Using defaults: ${servers.length} server${servers.length !== 1 ? "s" : ""} → ${outputFile}`,
+      `🚀 Using defaults: ${servers.length} server${servers.length !== 1 ? "s" : ""} → ${outputDir}/`,
     );
 
-    return {
-      configFiles,
-      servers,
-      outputFile,
-    };
+    return { configFiles, servers, outputDir };
   }
 
   intro("🧩 MCP Client Generator");
@@ -218,57 +208,32 @@ export async function runInteractiveSetup(
     const servers = await promptForServers(configFiles);
 
     // Step 3: Destination for generated TypeScript
-    const outputFile = await promptForOutputFile(cwd);
+    const outputDir = await promptForOutputDir(cwd);
 
     outro(
-      `🎉 Configuration complete! Generating client for ${servers.length} server${servers.length !== 1 ? "s" : ""}`,
+      `🎉 Configuration complete! Generating ${servers.length} client${servers.length !== 1 ? "s" : ""}`,
     );
 
-    return {
-      configFiles,
-      servers,
-      outputFile,
-    };
+    return { configFiles, servers, outputDir };
   } catch (error) {
     cancel(`Error: ${(error as Error).message}`);
     process.exit(1);
   }
 }
 
-/**
- * Show progress spinner while generating client.
- * @param servers Servers being processed
- * @param generateFn The generate function to run
- * @returns Generation result
- */
-export async function showGenerationProgress(
-  servers: McpServerConfig[],
-  generateFn: () => Promise<GenerationResult>,
-): Promise<GenerationResult> {
+/** Run `task` behind a spinner labeled `message`. */
+export async function withSpinner<T>(
+  message: string,
+  task: () => Promise<T>,
+): Promise<T> {
   const s = spinner();
-  s.start(
-    `Introspecting ${servers.length} MCP server${servers.length !== 1 ? "s" : ""}...`,
-  );
-
+  s.start(`${message}...`);
   try {
-    const result = await generateFn();
-
-    const totalTools = Array.from(result.servers.values()).reduce(
-      (sum, r) => sum + r.tools.length,
-      0,
-    );
-    const totalResources = Array.from(result.servers.values()).reduce(
-      (sum, r) => sum + r.resources.length,
-      0,
-    );
-
-    s.stop(
-      `Introspected ${result.servers.size} server${result.servers.size !== 1 ? "s" : ""}: ${totalTools} tools, ${totalResources} resources`,
-    );
-
+    const result = await task();
+    s.stop(message);
     return result;
   } catch (error) {
-    s.error(`Failed to introspect servers`);
+    s.error(`${message} failed`);
     throw error;
   }
 }

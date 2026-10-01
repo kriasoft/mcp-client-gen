@@ -2,10 +2,12 @@
 /* SPDX-License-Identifier: MIT */
 
 /**
- * Runtime MCP adapter - creates SDK clients, selects transport, wires OAuth.
+ * Generation-time MCP connection - creates the SDK client, selects transport, wires
+ * OAuth, lists capabilities. Internal: generated clients take the caller's own SDK
+ * `Client` (ADR-003).
  *
  * Contract: createMcpConnection(server, config?) → McpConnection
- * Invariant: Throws on connection failure; never exposes SDK internals.
+ * Invariant: Throws on connection failure.
  */
 
 import {
@@ -24,7 +26,6 @@ import {
   browserAuth,
   type BrowserAuth,
   type BrowserAuthOptions,
-  type CredentialStore,
 } from "oauth-callback/mcp";
 import type { McpServerConfig } from "./types.js";
 
@@ -40,48 +41,30 @@ const MAX_AUTHORIZATIONS = 3;
 /** Hosts where oauth-callback allows plain `http:` (bearer tokens stay on this machine). */
 const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]"]);
 
-/** `browserAuth()` options; `serverUrl` comes from the server config. */
-export interface McpOAuthOptions extends Omit<
-  Partial<BrowserAuthOptions>,
-  "serverUrl" | "store"
-> {
-  /**
-   * Credential store per server. A factory, because oauth-callback binds a store to one
-   * server and a config is shared by every server in `generateClient()`. Default: memory.
-   */
-  store?: (server: McpServerConfig) => CredentialStore;
-}
+/**
+ * oauth-callback `browserAuth()` options; `serverUrl` comes from the server. A `store`
+ * is bound to that one server (default: memory).
+ */
+export type McpOAuthOptions = Omit<Partial<BrowserAuthOptions>, "serverUrl">;
 
 export interface McpClientConfig {
-  /** Client identifier sent to servers; also the OAuth client name for registration */
-  name?: string;
-  /** Client version for compatibility checks */
-  version?: string;
   /** OAuth 2.1 browser authorization settings */
   oauth?: McpOAuthOptions;
   /** Custom fetch for proxies/interceptors */
   fetch?: typeof fetch;
-  /**
-   * Timeout in ms for each request made while connecting and listing capabilities
-   * (SDK default: 60s). Generated client methods take per-call `options` instead.
-   */
+  /** Timeout in ms for each request while connecting and listing (SDK default: 60s) */
   timeout?: number;
 }
 
 export interface McpConnection {
   client: Client;
-  server: McpServerConfig;
   /** Server-advertised capabilities (empty object if none advertised) */
   capabilities: ServerCapabilities;
   tools: Tool[];
   resources: Resource[];
   prompts: Prompt[];
-  /**
-   * Completes an authorization the server demanded after connecting (a request failed with
-   * `UnauthorizedError`, e.g. a 403 step-up over Streamable HTTP or a 401 over SSE); then
-   * retry that request. Resolves at once without OAuth.
-   */
-  authorize(): Promise<void>;
+  /** Whether requests carried OAuth tokens (callers likely need OAuth too) */
+  authorized: boolean;
 }
 
 /**
@@ -146,19 +129,17 @@ export async function createMcpConnection(
   server: McpServerConfig,
   config: McpClientConfig = {},
 ): Promise<McpConnection> {
-  if (server.type !== "http" && server.type !== "sse") {
-    throw new Error(`Unsupported server type: ${server.type}`);
+  const type = server.type ?? "http";
+  if (type !== "http" && type !== "sse") {
+    throw new Error(`Unsupported server type: ${type}`);
   }
 
-  const clientInfo = {
-    name: config.name || "mcp-client-gen",
-    version: config.version || "1.0.0",
-  };
+  const clientInfo = { name: "mcp-client-gen", version: "1.0.0" };
 
   // OAuth only where tokens can't leak (https: or loopback http:); elsewhere, e.g. a
   // private-network http: server, connect unauthenticated (server.headers still apply).
   const url = new URL(server.url);
-  const { store, ...oauth } = config.oauth ?? {};
+  const oauth = config.oauth ?? {};
   const auth =
     url.protocol === "https:" || LOOPBACK_HOSTS.has(url.hostname)
       ? browserAuth({
@@ -169,7 +150,6 @@ export async function createMcpConnection(
           ...(!oauth.clientInformation && {
             clientName: oauth.clientName ?? clientInfo.name,
           }),
-          store: store?.(server),
         })
       : undefined;
 
@@ -180,9 +160,9 @@ export async function createMcpConnection(
   // Server advertises its capabilities during the handshake
   const client = new Client(clientInfo, { capabilities: {} });
 
-  // Completes a pending step-up on the live connection (see McpConnection.authorize)
+  // Completes an authorization the server demands after connecting (e.g. a step-up)
   let completeAuthorization: (() => Promise<void>) | undefined;
-  if (server.type === "http") {
+  if (type === "http") {
     const transportOptions = {
       fetch: config.fetch,
       ...(server.headers && { requestInit: { headers: server.headers } }),
@@ -213,14 +193,6 @@ export async function createMcpConnection(
       completeAuthorization = () => auth.completeAuthorization(transport);
   }
 
-  // Concurrent callers share one completion: on SSE, overlapping completions are unsupported
-  let pending: Promise<void> | undefined;
-  const authorize = async () => {
-    if (!completeAuthorization) return;
-    pending ??= completeAuthorization().finally(() => (pending = undefined));
-    return pending;
-  };
-
   // Every UnauthorizedError leaves a browser flow pending, and oauth-callback can't cancel
   // one short of signing out: complete it (approval or timeout) so none outlives the
   // connection. Bounded, since a server may keep demanding scopes.
@@ -231,7 +203,7 @@ export async function createMcpConnection(
       } catch (error) {
         if (!completeAuthorization || !(error instanceof UnauthorizedError))
           throw error;
-        await authorize();
+        await completeAuthorization();
         if (attempt === MAX_AUTHORIZATIONS) throw error;
       }
     }
@@ -264,15 +236,9 @@ export async function createMcpConnection(
         ).prompts
       : [];
 
-    return {
-      client,
-      server,
-      capabilities,
-      tools,
-      resources,
-      prompts,
-      authorize,
-    };
+    // Tokens exist only once a browser flow (or a provided store) authorized us
+    const authorized = (await auth?.tokens()) !== undefined;
+    return { client, capabilities, tools, resources, prompts, authorized };
   } catch (error) {
     await client.close().catch(() => {}); // don't mask the listing error
     throw error;

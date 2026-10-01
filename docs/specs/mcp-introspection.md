@@ -16,89 +16,31 @@ Data fetched from each MCP server:
 ## Connection Flow
 
 ```
-createMcpConnection(server, config)
-  │
-  ├─ Create transport (http or sse)
-  │   └─ Attach OAuth provider if auth required
-  │
-  ├─ client.connect(transport)
-  │   └─ Handshake: client ↔ server capabilities exchange
-  │
-  ├─ capabilities = client.getServerCapabilities()
-  │
-  ├─ if (capabilities.tools)
-  │   └─ tools = await client.listTools()
-  │
-  ├─ if (capabilities.resources)
-  │   └─ resources = await client.listResources()
-  │
-  ├─ if (capabilities.prompts)
-  │   └─ prompts = await client.listPrompts()
-  │
-  └─ return { client, server, capabilities, tools, resources, prompts }
+introspectServer(server, config)               // src/introspection.ts
+  └─ createMcpConnection(server, config)       // src/mcp-client.ts
+      ├─ Create transport (http or sse), OAuth provider for https: / loopback http:
+      ├─ client.connect(transport)             // handshake: capabilities exchange
+      ├─ capabilities = client.getServerCapabilities()
+      ├─ tools / resources / prompts = list*() // each only if advertised; sequential
+      └─ authorized = provider holds tokens
+  └─ client.close(); return the snapshot
 ```
 
-## IntrospectionResult Types
-
-Discriminated union: check `ok` to narrow the type.
+## Introspection Type
 
 ```typescript
-interface IntrospectionSuccess {
-  ok: true;
-  server: McpServerConfig;
-  capabilities?: ServerCapabilities;
+interface Introspection {
+  capabilities: ServerCapabilities; // {} if none advertised
   tools: Tool[];
   resources: Resource[];
   prompts: Prompt[];
+  authorized: boolean; // requests carried OAuth tokens (the CLI then shows OAuth usage)
 }
-
-interface IntrospectionFailure {
-  ok: false;
-  server: McpServerConfig;
-  error: string;
-}
-
-type IntrospectionResult = IntrospectionSuccess | IntrospectionFailure;
-```
-
-## Parallel Introspection
-
-Multiple servers introspected concurrently via `introspectServers()`:
-
-```typescript
-const results = await introspectServers(servers, config);
-// Results preserve input order
-// Each result either has data or error (not both)
 ```
 
 ## Error Handling
 
-Graceful degradation per server:
-
-```typescript
-// In generateClient():
-const successes = new Map<string, IntrospectionSuccess>();
-const failures = new Map<string, IntrospectionFailure>();
-
-for (const result of results) {
-  const name = extractServerName(result.server, i);
-  if (!result.ok) {
-    failures.set(name, result);
-  } else {
-    successes.set(name, result);
-  }
-}
-
-// Continue if any server succeeded
-if (successes.size > 0) {
-  generateClientFile(successes, options);
-}
-
-// Report failures to user
-for (const [name, failure] of failures) {
-  console.warn(`Warning: ${name} (${failure.server.url}): ${failure.error}`);
-}
-```
+`introspectServer()` throws, and errors pass through unchanged so SDK error types (`UnauthorizedError`, `SdkHttpError`, …) and causes stay inspectable. Callers add context: the CLI labels each failure with the server name (never its config URL, which may hold expanded secrets) and, in config mode, writes nothing if any server failed (ADR-001).
 
 ## Transport Types
 

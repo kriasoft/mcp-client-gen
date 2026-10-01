@@ -2,52 +2,50 @@
 /* SPDX-License-Identifier: MIT */
 
 /**
- * Pipeline coordinator - orchestrates introspection → codegen → formatting.
+ * Pipeline coordinator - introspection → codegen → formatting, for one server.
  *
- * Contract: generateClient(servers, options?) → GenerationResult
- * Invariant: Throws if all servers fail; generateClient() is pure (no file I/O).
+ * Contract: generateClient(server, options?) → code
+ * Invariant: No file I/O; output depends only on the server's capabilities.
  */
 
-import { mkdir, writeFile } from "node:fs/promises";
-import { dirname } from "node:path";
 import { format as prettierFormat, resolveConfig } from "prettier";
-import { clientTypeName, generateClientFile } from "./codegen/index.js";
-import {
-  introspectServers,
-  type IntrospectionFailure,
-  type IntrospectionSuccess,
-} from "./introspection.js";
+import { generateClientFile } from "./codegen/index.js";
+import { introspectServer } from "./introspection.js";
 import type { McpClientConfig } from "./mcp-client.js";
 import type { McpServerConfig } from "./types.js";
 
-export interface GenerationOptions {
-  /** MCP client config for connections */
-  clientConfig?: McpClientConfig;
-  /** Format with Prettier (default: true) */
-  format?: boolean;
-  /** Output file path for Prettier config resolution */
-  outputPath?: string;
-}
+/** Connection settings used while introspecting the server. */
+export type GenerateClientOptions = McpClientConfig;
 
-export interface GenerationResult {
-  code: string;
-  /** Exported factory function names (for CLI usage instructions) */
-  exports: string[];
-  servers: Map<string, IntrospectionSuccess>;
-  failures: Map<string, IntrospectionFailure>;
+/**
+ * Generate a typed client module for one MCP server.
+ * @param server Server URL (Streamable HTTP), or its config; `name` sets the client name
+ *   (default: derived from the URL, e.g. `notion` → `createNotionClient`)
+ * @returns Formatted TypeScript source
+ * @throws When the server can't be reached or introspected (SDK errors pass through)
+ */
+export async function generateClient(
+  server: string | URL | McpServerConfig,
+  options?: GenerateClientOptions,
+): Promise<string> {
+  const config: McpServerConfig =
+    typeof server === "string" || server instanceof URL
+      ? { type: "http", url: String(server) }
+      : server;
+  const introspection = await introspectServer(config, options);
+  return formatTypeScript(
+    generateClientFile(extractServerName(config), introspection),
+  );
 }
 
 /**
  * Extract a meaningful name from server config or URL.
- * Priority: explicit name > URL hostname > fallback index
+ * Priority: explicit name > URL hostname > URL path segment > "server"
  */
-export function extractServerName(
-  server: McpServerConfig,
-  index: number,
-): string {
+export function extractServerName(server: McpServerConfig): string {
   // An empty config key still means "named": deriving from a config URL could
   // copy an expanded secret into generated identifiers
-  if (server.name !== undefined) return server.name || `server${index + 1}`;
+  if (server.name !== undefined) return server.name || "server";
 
   try {
     const url = new URL(server.url);
@@ -74,32 +72,26 @@ export function extractServerName(
       return pathSegment;
     }
 
-    return `server${index + 1}`;
+    return "server";
   } catch {
-    return `server${index + 1}`;
+    return "server";
   }
 }
 
 /**
- * Server label for messages. Config servers show only their name: their URLs may
- * embed expanded secrets. A name derived from the URL comes with the URL itself.
- */
-function describeServer(name: string, server: McpServerConfig): string {
-  return server.name !== undefined ? `"${name}"` : `"${name}" (${server.url})`;
-}
-
-/**
  * Format TypeScript code with Prettier.
- * @param code Source code to format
- * @param filePath File path for Prettier config resolution (searches up from this path)
- * @returns Formatted code, or original if formatting fails
+ * @param filePath Destination whose Prettier config applies (searched upward); without
+ *   it, Prettier's defaults, so output doesn't depend on the working directory
+ * @returns Formatted code, or the input if formatting fails
  */
 export async function formatTypeScript(
   code: string,
   filePath?: string,
 ): Promise<string> {
   try {
-    const prettierConfig = (await resolveConfig(filePath ?? ".")) ?? {};
+    const prettierConfig = filePath
+      ? ((await resolveConfig(filePath)) ?? {})
+      : {};
     return await prettierFormat(code, {
       ...prettierConfig,
       parser: "typescript",
@@ -107,88 +99,4 @@ export async function formatTypeScript(
   } catch {
     return code;
   }
-}
-
-/**
- * Generate TypeScript client from MCP servers.
- * Pipeline: introspect → aggregate → generate → format
- *
- * Note: This function does not write files. Use writeGeneratedClient() for that.
- */
-export async function generateClient(
-  servers: McpServerConfig[],
-  options: GenerationOptions = {},
-): Promise<GenerationResult> {
-  if (servers.length === 0) {
-    throw new Error("No servers provided");
-  }
-
-  // Names must map to distinct clients; check before introspecting (it may run OAuth)
-  const names = servers.map((server, i) => extractServerName(server, i));
-  const byType = new Map<string, number[]>();
-  names.forEach((name, i) => {
-    const typeName = clientTypeName(name);
-    byType.set(typeName, [...(byType.get(typeName) ?? []), i]);
-  });
-  const collisions = [...byType.values()].filter((ids) => ids.length > 1);
-  if (collisions.length > 0) {
-    const details = collisions
-      .map((ids) =>
-        ids
-          .map((i) => `  - ${describeServer(names[i]!, servers[i]!)}`)
-          .join("\n"),
-      )
-      .join("\n\n");
-    throw new Error(
-      `Server names collide in generated code. Give each server a distinct "name":\n\n${details}`,
-    );
-  }
-
-  // Introspect all servers in parallel
-  const results = await introspectServers(servers, options.clientConfig);
-
-  // Aggregate successes and failures by derived server name
-  const successes = new Map<string, IntrospectionSuccess>();
-  const failures = new Map<string, IntrospectionFailure>();
-
-  for (let i = 0; i < results.length; i++) {
-    const result = results[i]!;
-    const name = names[i]!;
-    if (!result.ok) {
-      failures.set(name, result);
-    } else {
-      successes.set(name, result);
-    }
-  }
-
-  // Require at least one successful server
-  if (successes.size === 0) {
-    const errorDetails = Array.from(failures)
-      .map(([name, f]) => `  - ${describeServer(name, f.server)}: ${f.error}`)
-      .join("\n");
-    throw new Error(`All servers failed to introspect:\n${errorDetails}`);
-  }
-
-  // Generate TypeScript code
-  const result = generateClientFile(successes);
-
-  // Format with Prettier
-  let code = result.code;
-  if (options.format !== false) {
-    code = await formatTypeScript(code, options.outputPath);
-  }
-
-  return { code, exports: result.exports, servers: successes, failures };
-}
-
-/**
- * Write generated client code to a file.
- * Creates parent directories if needed.
- */
-export async function writeGeneratedClient(
-  outputPath: string,
-  code: string,
-): Promise<void> {
-  await mkdir(dirname(outputPath), { recursive: true });
-  await writeFile(outputPath, code, "utf-8");
 }

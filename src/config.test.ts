@@ -670,7 +670,7 @@ describe("config", () => {
           }),
         );
         const [server] = getMcpServers([configPath]).servers;
-        expect(extractServerName(server!, 0)).toBe("server1");
+        expect(extractServerName(server!)).toBe("server");
       });
 
       test("skips a server with unset variables and names them", () => {

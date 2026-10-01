@@ -17,8 +17,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { format as prettierFormat, resolveConfig } from "prettier";
 import { generateClientFile } from "../../src/codegen";
-import type { IntrospectionSuccess } from "../../src/introspection";
-import { createMcpConnection } from "../../src/mcp-client";
+import { introspectServer, type Introspection } from "../../src/introspection";
 import { formatTypeScript } from "../../src/pipeline";
 import type { McpServerConfig } from "../../src/types";
 
@@ -42,7 +41,7 @@ const server: McpServerConfig = {
   url: "https://mcp.notion.com/mcp",
 };
 
-async function captureCapabilities(): Promise<IntrospectionSuccess> {
+async function captureCapabilities(): Promise<Introspection> {
   console.log("\nStep 1: Connecting to Notion MCP server...");
   console.log("   URL: https://mcp.notion.com/mcp");
   console.log("\n   The OAuth flow will:");
@@ -51,41 +50,25 @@ async function captureCapabilities(): Promise<IntrospectionSuccess> {
   console.log("   3. Capture and exchange the authorization code");
   console.log("\n   Please complete the authorization in your browser...\n");
 
-  const connection = await createMcpConnection(server, {
+  const result = await introspectServer(server, {
     oauth: {
       clientMetadata: { scope: "read:page:metadata read:database:metadata" },
       timeout: 120000,
     },
   });
 
-  console.log("Connected successfully!");
-
-  console.log("\nStep 2: Introspecting server capabilities...");
-  console.log(`   Tools discovered: ${connection.tools.length}`);
-  console.log(`   Resources discovered: ${connection.resources.length}`);
-  console.log(`   Prompts discovered: ${connection.prompts.length}`);
-
-  const result: IntrospectionSuccess = {
-    ok: true,
-    server,
-    capabilities: connection.capabilities,
-    tools: connection.tools,
-    resources: connection.resources,
-    prompts: connection.prompts,
-  };
-
-  await connection.client.close();
+  console.log("Connected and introspected successfully!");
+  console.log(`   Tools discovered: ${result.tools.length}`);
+  console.log(`   Resources discovered: ${result.resources.length}`);
+  console.log(`   Prompts discovered: ${result.prompts.length}`);
 
   return result;
 }
 
-async function generateClient(introspectionResult: IntrospectionSuccess) {
+async function generateClient(introspectionResult: Introspection) {
   console.log("\nStep 3: Generating TypeScript client...");
 
-  const servers = new Map<string, IntrospectionSuccess>();
-  servers.set("notion", introspectionResult);
-
-  const { code: generatedCode } = generateClientFile(servers);
+  const generatedCode = generateClientFile("notion", introspectionResult);
 
   console.log("   Client code generated successfully!");
   console.log(`   Total size: ${(generatedCode.length / 1024).toFixed(2)} KB`);
@@ -102,7 +85,7 @@ async function generateClient(introspectionResult: IntrospectionSuccess) {
   return generatedCode;
 }
 
-async function saveFixtures(introspectionResult: IntrospectionSuccess) {
+async function saveFixtures(introspectionResult: Introspection) {
   await mkdir(dirname(fixturePath), { recursive: true });
 
   const json = JSON.stringify(introspectionResult, null, 2);

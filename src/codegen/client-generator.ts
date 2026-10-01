@@ -3,8 +3,9 @@
  *
  * One factory per server, taking the SDK `Client` and returning an object literal: a
  * method per tool, prompt and listed resource, plus a generic resource reader. Methods
- * delegate to the SDK and return its full results. Names are allocated before emitting so
- * distinct server names never collide (e.g. `get-user` vs `get_user`).
+ * delegate to the SDK and return its full results. Member names are allocated so distinct
+ * server names never collide (e.g. `get-user` vs `get_user`); tool type names derive from
+ * them (`{Member}Input`/`Output`), so they are unique too.
  *
  * SPDX-FileCopyrightText: 2025-present Kriasoft
  * SPDX-License-Identifier: MIT
@@ -12,7 +13,7 @@
 
 import type { Prompt, Resource, Tool } from "@modelcontextprotocol/client";
 import type { SourceFile } from "ts-morph";
-import type { IntrospectionSuccess } from "../introspection.js";
+import type { Introspection } from "../introspection.js";
 import {
   generateToolInputType,
   generateToolOutputType,
@@ -34,15 +35,11 @@ import {
  */
 const RESERVED_MEMBERS = ["readResource", "then"];
 
-/**
- * Generate the factory, its client type and its tool types for one server.
- * @param typeNames Exported names already taken in the file; allocated names join it.
- */
+/** Generate the factory, its client type and its tool types for one server. */
 export function generateServerClient(
   sourceFile: SourceFile,
   serverName: string,
-  result: IntrospectionSuccess,
-  typeNames: Set<string>,
+  result: Introspection,
 ): void {
   const typeName = clientTypeName(serverName);
   const factoryName = `create${typeName}`;
@@ -52,7 +49,7 @@ export function generateServerClient(
   // Tools are named first: they get the plainest names. Their types precede the factory.
   for (const tool of result.tools) {
     const name = uniqueName(camelCase(tool.name), members);
-    const types = addToolTypes(sourceFile, tool, name, serverName, typeNames);
+    const types = addToolTypes(sourceFile, tool, name);
     methods.push(toolMethod(tool, name, types));
   }
   for (const prompt of result.prompts) {
@@ -92,7 +89,7 @@ export function generateServerClient(
   });
 }
 
-/** Client type name for a server (factory: `create` + it); the pipeline rejects duplicates. */
+/** Client type name for a server; its factory is `create` + this. */
 export function clientTypeName(serverName: string): string {
   return pascalCase(serverName) + "Client";
 }
@@ -102,14 +99,8 @@ function addToolTypes(
   sourceFile: SourceFile,
   tool: Tool,
   methodName: string,
-  serverName: string,
-  typeNames: Set<string>,
 ): { inputType: string; outputType?: string } {
-  const typeBase = allocateTypeBase(
-    pascalCase(methodName),
-    pascalCase(serverName),
-    typeNames,
-  );
+  const typeBase = pascalCase(methodName);
   const inputType = `${typeBase}Input`;
   generateToolInputType(sourceFile, tool, inputType);
   if (!hasOutputSchema(tool)) return { inputType };
@@ -175,21 +166,4 @@ function method(
 ): string {
   const doc = docs?.trim() ? docComment(docs) + "\n" : "";
   return `${doc}${signature} {\n${body}\n},`;
-}
-
-/**
- * Type name stem for a tool: `{Method}` if free, else `{Server}{Method}` (the same tool
- * name on another server), else numbered. Reserves both its Input and Output names.
- */
-function allocateTypeBase(
-  base: string,
-  serverPrefix: string,
-  typeNames: Set<string>,
-): string {
-  const free = (stem: string) =>
-    !typeNames.has(`${stem}Input`) && !typeNames.has(`${stem}Output`);
-  let stem = free(base) ? base : `${serverPrefix}${base}`;
-  for (let n = 2; !free(stem); n++) stem = `${serverPrefix}${base}${n}`;
-  typeNames.add(`${stem}Input`).add(`${stem}Output`);
-  return stem;
 }

@@ -89,17 +89,17 @@ describe("createMcpConnection", () => {
     for (const h of fixture.headers) expect(h.get("x-api-key")).toBe("secret");
   });
 
-  test("creates a credential store per server", async () => {
-    const store = mock((_server: McpServerConfig): CredentialStore => ({
-      load: async () => undefined,
-      save: async () => {},
-    }));
-    const server: McpServerConfig = { type: "http", url: fixture.url };
+  test("reads credentials from the given store", async () => {
+    const load = mock(async () => undefined);
+    const store: CredentialStore = { load, save: async () => {} };
 
-    await connect(server, { oauth: { store } });
+    const connection = await connect(
+      { type: "http", url: fixture.url },
+      { oauth: { store } },
+    );
 
-    expect(store).toHaveBeenCalledTimes(1);
-    expect(store).toHaveBeenCalledWith(server);
+    expect(load).toHaveBeenCalled();
+    expect(connection.authorized).toBe(false); // the server never asked
   });
 
   test("accepts a pre-registered client without a client name", async () => {
@@ -213,20 +213,6 @@ describe("createMcpConnection", () => {
     expect(String(error)).toContain("Request timed out");
   });
 
-  test("authorize() resolves at once without OAuth", async () => {
-    const fetch = ((url: URL | string, init?: RequestInit) =>
-      globalThis.fetch(
-        String(url).replace("http://mcp.internal", fixture.server.url.origin),
-        init,
-      )) as typeof globalThis.fetch;
-    const connection = await connect(
-      { type: "http", url: "http://mcp.internal/mcp" },
-      { fetch },
-    );
-
-    await connection.authorize();
-  });
-
   test("rejects unsupported server types", async () => {
     await expect(
       createMcpConnection({ type: "stdio", url: "" } as never),
@@ -275,6 +261,7 @@ describe("createMcpConnection OAuth", () => {
     );
 
     expect(connection.tools).toEqual([]);
+    expect(connection.authorized).toBe(true);
     expect(oauth.authorizeRequests).toHaveLength(2);
     expect(oauth.authorizeRequests.at(-1)?.searchParams.get("scope")).toContain(
       "admin",
@@ -304,21 +291,5 @@ describe("createMcpConnection OAuth", () => {
       socket: { data() {} },
     });
     listener.stop(true);
-  });
-
-  test("authorize() completes a step-up after connecting", async () => {
-    const connection = await connect(
-      { type: "http", url: oauth.mcpUrl },
-      await oauthConfig(),
-    );
-    oauth.knobs.requiredScope = "admin";
-
-    await expect(connection.client.listTools()).rejects.toBeInstanceOf(
-      UnauthorizedError,
-    );
-    await connection.authorize();
-
-    expect((await connection.client.listTools()).tools).toEqual([]);
-    expect(oauth.authorizeRequests).toHaveLength(2);
   });
 });

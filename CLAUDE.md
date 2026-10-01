@@ -15,10 +15,10 @@ npx mcp-client-gen <url>                    # Generate to stdout
 npx mcp-client-gen <url> -o <file>          # Generate to file
 npx mcp-client-gen <url> <file>             # Shorthand
 
-# Config mode (uses .mcp.json, .cursor/, .vscode/)
+# Config mode (uses .mcp.json, .cursor/, .vscode/): one module per server, all or nothing
 npx mcp-client-gen                          # Interactive
-npx mcp-client-gen -y                       # Quick defaults
-npx mcp-client-gen -o <file>                # Quick, custom output (implies -y)
+npx mcp-client-gen -y                       # Quick defaults (src/mcp/ or mcp/)
+npx mcp-client-gen -o <dir>                 # Quick, custom output directory (implies -y)
 ```
 
 ## Test Commands
@@ -38,6 +38,7 @@ bun validate                    # Full validation (format, typecheck, tests)
 ```bash
 bun capture:notion                  # Capture fixtures + generate example
 bun capture:notion --fixtures-only  # Capture fixtures only
+bun capture:notion --from-fixtures  # Regenerate example from saved fixtures (offline)
 bun smoke:notion                    # Smoke test generated client (no server)
 bun e2e:notion                      # E2E test with real Notion server
 ```
@@ -47,11 +48,10 @@ bun e2e:notion                      # E2E test with real Notion server
 ```bash
 mcp-client-gen/
 ├── src/
-│   ├── index.ts           # Public API exports
-│   ├── internal.ts        # Internal API exports (mcp-client-gen/internal)
+│   ├── index.ts           # Public API: generateClient + its types
 │   │
 │   # CLI & User Interface
-│   ├── cli.ts             # CLI entry - argument parsing, execution modes
+│   ├── cli.ts             # CLI entry - modes, file writes, usage snippets
 │   ├── prompts.ts         # Interactive prompts (@clack/prompts)
 │   │
 │   # Configuration
@@ -59,20 +59,19 @@ mcp-client-gen/
 │   ├── types.ts           # Core type definitions (McpServerConfig)
 │   │
 │   # MCP Protocol
-│   ├── mcp-client.ts      # MCP connection (HTTP/SSE), OAuth via oauth-callback
-│   ├── introspection.ts   # Server capability discovery and caching
+│   ├── mcp-client.ts      # Generation-time connection (HTTP/SSE), OAuth via oauth-callback
+│   ├── introspection.ts   # Capability snapshot: connect, list, close
 │   │
 │   # Code Generation
 │   ├── codegen/
 │   │   ├── index.ts           # Codegen module exports
-│   │   ├── file-builder.ts    # Assembles complete TypeScript file
+│   │   ├── file-builder.ts    # Assembles one server's module
 │   │   ├── client-generator.ts # Per-server factory with tool/prompt/resource methods
 │   │   ├── tool-input-generator.ts # Tool input/output types
 │   │   ├── schema-to-typescript.ts # JSON Schema → TypeScript types
 │   │   └── utils.ts           # camelCase, pascalCase helpers
 │   │
-│   ├── pipeline.ts        # Pipeline orchestrator - coordinates all steps
-│   └── utils.ts           # Shared utilities
+│   └── pipeline.ts        # generateClient: introspect → generate → format
 │
 ├── docs/
 │   ├── adr/               # Architecture Decision Records
@@ -106,9 +105,9 @@ Keep module DAG clean: lower modules must not import from higher ones.
 
 ## Error Handling
 
-- **Throw errors** for unrecoverable failures (missing config, all servers failed)
-- **Discriminated unions** for per-item failures (introspection returns `{ ok: true, ... } | { ok: false, error }`)
-- **Console.warn** for non-fatal issues (single capability fetch failure)
+- **Throw errors** for failures; let SDK errors propagate unchanged (types and causes intact) and label them where they are reported (the CLI prefixes the server name)
+- **Structured warnings** for skippable config entries (`ConfigWarning`)
+- Config mode is all or nothing: one failing server fails the run and writes no files (ADR-001)
 - Error messages: include context ("Tool 'search' error: ..."), never stack traces to users
 - CLI output: pass anything derived from config (URLs, headers, SDK error messages) through `redactSecrets()`: env placeholders expand to secrets. Masking covers common serializations (URL encodings, HTML/JSON escaping), so prefer names over config values in messages
 
@@ -142,32 +141,11 @@ Keep module DAG clean: lower modules must not import from higher ones.
 ## Public API
 
 ```typescript
-import { generateClient, createMcpConnection } from "mcp-client-gen";
+import { generateClient } from "mcp-client-gen";
 ```
 
-- `generateClient(servers, options?)` — generate TypeScript client
-- `writeGeneratedClient(path, code)` — write generated code to file
-- `createMcpConnection(server, config?)` — establish MCP connection
-- `resolveConfigFiles(options?)` — resolve config paths (explicit or discovery)
-- `getMcpServers(paths)` — parse config files, returns `{ servers, warnings }`
-- `formatConfigWarning(warning)` — format a config warning for display
-- `findMcpConfigFiles(cwd?)` — discover config files
-- `formatTypeScript(code, configPath?)` — format code with Prettier
-- `fileStore(path)` — persistent OAuth credential store (one per server)
+- `generateClient(server, options?)` — introspect one server (URL or `McpServerConfig`) and return the formatted client module source; writes nothing
 
-Types: `McpServerConfig`, `ConfigWarning`, `ParseServersResult`, `McpConnection`, `McpClientConfig`, `McpOAuthOptions`, `CredentialStore`, `GenerationOptions`, `GenerationResult`, `IntrospectionResult`, `ResolveConfigOptions`, `Tool`, `Resource`, `Prompt`, `ServerCapabilities`
+Types: `GenerateClientOptions`, `McpOAuthOptions`, `McpServerConfig`
 
-## Internal API
-
-```typescript
-import {
-  introspectServer,
-  jsonSchemaToTypeScript,
-} from "mcp-client-gen/internal";
-```
-
-Not covered by semver — use for custom pipelines:
-
-- `introspectServer()`, `introspectServers()`
-- `generateClientFile()`, `generateServerClient()`, `generateToolInputType()`, `generateToolOutputType()`
-- `jsonSchemaToTypeScript()`, `hasOutputSchema()`, `MCP_CONFIG_PATHS`, `extractServerName()`
+Everything else (connection, OAuth, config discovery, formatting, codegen) is internal; there is no `/internal` entry (ADR-003). Generated modules import only SDK types.

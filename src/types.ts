@@ -5,17 +5,15 @@
  * Core type definitions - shared across all modules.
  */
 
-/**
- * MCP server connection config.
- * @property type Transport protocol (http=streaming, sse=events)
- * @property url Server endpoint URL
- */
+/** MCP server to connect to. */
 export type McpServerConfig = {
-  type: "http" | "sse";
+  /** Server endpoint URL */
   url: string;
-  /** Optional explicit name from config key */
+  /** Transport: Streamable HTTP (default) or legacy SSE */
+  type?: "http" | "sse";
+  /** Client name, e.g. `notion` → `createNotionClient` (default: derived from the URL) */
   name?: string;
-  /** Optional headers for authenticated requests */
+  /** Headers sent with every request, e.g. a static `Authorization` */
   headers?: Record<string, string>;
 };
 

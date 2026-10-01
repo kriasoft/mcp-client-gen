@@ -19,60 +19,42 @@ import {
   jsonSchemaToTypeScript,
   pascalCase,
 } from "./codegen/index.js";
-import type { IntrospectionSuccess } from "./introspection.js";
+import type { Introspection } from "./introspection.js";
 import { extractServerName } from "./pipeline.js";
 
 describe("extractServerName", () => {
+  const name = (url: string, explicit?: string) =>
+    extractServerName({ url, name: explicit });
+
   test("uses explicit name when provided", () => {
-    expect(
-      extractServerName(
-        { type: "http", url: "https://example.com", name: "myServer" },
-        0,
-      ),
-    ).toBe("myServer");
+    expect(name("https://example.com", "myServer")).toBe("myServer");
+    // An empty config key never falls back to the (possibly secret-bearing) URL
+    expect(name("https://notion.com", "")).toBe("server");
   });
 
   test("extracts domain name from URL", () => {
-    expect(
-      extractServerName({ type: "http", url: "https://notion.com/mcp" }, 0),
-    ).toBe("notion");
-    expect(
-      extractServerName(
-        { type: "http", url: "https://api.github.com/v1/mcp" },
-        0,
-      ),
-    ).toBe("github");
+    expect(name("https://notion.com/mcp")).toBe("notion");
+    expect(name("https://api.github.com/v1/mcp")).toBe("github");
   });
 
   test("handles subdomains correctly", () => {
-    expect(
-      extractServerName({ type: "http", url: "https://api.notion.com" }, 0),
-    ).toBe("notion");
-    expect(
-      extractServerName({ type: "http", url: "https://www.example.com" }, 0),
-    ).toBe("example");
+    expect(name("https://api.notion.com")).toBe("notion");
+    expect(name("https://www.example.com")).toBe("example");
   });
 
   test("falls back to path segment", () => {
-    expect(
-      extractServerName({ type: "http", url: "https://api.com/notion/v1" }, 0),
-    ).toBe("notion");
+    expect(name("https://api.com/notion/v1")).toBe("notion");
   });
 
   test("ignores IP and localhost hosts", () => {
-    const name = (url: string) => extractServerName({ type: "http", url }, 0);
-    expect(name("http://127.0.0.1:8080/mcp")).toBe("server1");
+    expect(name("http://127.0.0.1:8080/mcp")).toBe("server");
     expect(name("http://localhost:3000/github")).toBe("github");
-    expect(name("http://[::1]:3000/mcp")).toBe("server1");
+    expect(name("http://[::1]:3000/mcp")).toBe("server");
   });
 
-  test("falls back to index for unresolvable URLs", () => {
-    expect(extractServerName({ type: "http", url: "https://api.com" }, 0)).toBe(
-      "server1",
-    );
-    expect(extractServerName({ type: "http", url: "invalid-url" }, 5)).toBe(
-      "server6",
-    );
+  test('falls back to "server" for unresolvable URLs', () => {
+    expect(name("https://api.com")).toBe("server");
+    expect(name("invalid-url")).toBe("server");
   });
 });
 
@@ -243,84 +225,78 @@ describe("jsonSchemaToTypeScript", () => {
   });
 });
 
-/** Every naming and escaping hazard the generator must survive, on two servers. */
+/** Every naming and escaping hazard the generator must survive. */
 const tool = (name: string, extra: Partial<Tool> = {}): Tool => ({
   name,
   inputSchema: { type: "object" },
   ...extra,
 });
-const edgeCases = new Map<string, IntrospectionSuccess>([
-  [
-    "alpha",
-    {
-      ok: true,
-      server: { type: "http", url: "https://alpha.test/mcp" },
-      capabilities: { tools: {}, prompts: {}, resources: {} },
-      tools: [
-        tool("get-user", {
-          description: "Ends a comment */ early",
-          inputSchema: {
-            type: "object",
-            properties: { "user-id": { type: "string" } },
-            required: ["user-id"],
+const alpha: Introspection = {
+  authorized: false,
+  capabilities: { tools: {}, prompts: {}, resources: {} },
+  tools: [
+    tool("get-user", {
+      description: "Ends a comment */ early",
+      inputSchema: {
+        type: "object",
+        properties: { "user-id": { type: "string" } },
+        required: ["user-id"],
+      },
+    }),
+    tool("get_user"),
+    tool("move", {
+      inputSchema: {
+        type: "object",
+        properties: {
+          to: {
+            type: "array",
+            prefixItems: [{ type: "number" }, { type: "number" }],
+            minItems: 2,
+            items: false,
           },
-        }),
-        tool("get_user"),
-        tool("move", {
-          inputSchema: {
-            type: "object",
-            properties: {
-              to: {
-                type: "array",
-                prefixItems: [{ type: "number" }, { type: "number" }],
-                minItems: 2,
-                items: false,
-              },
-            },
-            minProperties: 1,
-          },
-        }),
-        tool("client"),
-        tool("constructor"),
-        tool("then"),
-        tool('say"hi\\n'),
-        tool("search", {
-          outputSchema: {
-            type: "object",
-            properties: { total: { type: "number" } },
-            required: ["total"],
-          },
-        }),
-      ],
-      resources: [],
-      prompts: [
-        {
-          name: "summarize",
-          arguments: [{ name: "page-id", required: true }, { name: "tone" }],
         },
-      ],
-    },
+        minProperties: 1,
+      },
+    }),
+    tool("client"),
+    tool("constructor"),
+    tool("then"),
+    tool('say"hi\\n'),
+    // Its input type must not clash with search's output type
+    tool("search_output"),
+    tool("search", {
+      outputSchema: {
+        type: "object",
+        properties: { total: { type: "number" } },
+        required: ["total"],
+      },
+    }),
   ],
-  [
-    "beta",
+  resources: [],
+  prompts: [
     {
-      ok: true,
-      server: { type: "http", url: "https://beta.test/mcp" },
-      capabilities: { tools: {} },
-      tools: [
-        tool("search", {
-          inputSchema: {
-            type: "object",
-            properties: { limit: { type: "number" } },
-            required: ["limit"],
-          },
-        }),
-      ],
-      resources: [],
-      prompts: [],
+      name: "summarize",
+      arguments: [{ name: "page-id", required: true }, { name: "tone" }],
     },
   ],
-]);
+};
+
+/** Tools only: no prompt or resource imports. */
+const beta: Introspection = {
+  authorized: false,
+  capabilities: { tools: {} },
+  tools: [
+    tool("search", {
+      inputSchema: {
+        type: "object",
+        properties: { limit: { type: "number" } },
+        required: ["limit"],
+      },
+    }),
+  ],
+  resources: [],
+  prompts: [],
+};
 
 /** Strict typecheck of generated code against the real SDK types. */
 function typecheck(code: string): string[] {
@@ -365,7 +341,7 @@ async function load(code: string): Promise<Record<string, any>> {
 }
 
 describe("generateClientFile", () => {
-  const { code, exports } = generateClientFile(edgeCases);
+  const code = generateClientFile("alpha", alpha);
 
   test("output typechecks strictly despite hostile names", () => {
     expect(typecheck(code)).toEqual([]);
@@ -406,13 +382,11 @@ export async function use(alpha: AlphaClient) {
     expect(code).toContain("client(input: ClientInput");
     expect(code).toContain("constructor(input: ConstructorInput");
     expect(code).toContain("then2(input: Then2Input");
-    // Same tool on two servers: the second server's types get its prefix
-    expect(code).toContain("export type SearchInput =");
-    expect(code).toContain("export type BetaSearchInput =");
+    expect(code).toContain("export type SearchOutput =");
+    expect(code).toContain("export type SearchOutputInput =");
     expect(code).toContain(
       "export type AlphaClient = ReturnType<typeof createAlphaClient>;",
     );
-    expect(exports).toEqual(["createAlphaClient", "createBetaClient"]);
   });
 
   test("escapes wire names, keys and comments", () => {
@@ -422,26 +396,14 @@ export async function use(alpha: AlphaClient) {
   });
 
   test("is deterministic", () => {
-    expect(generateClientFile(edgeCases).code).toBe(code);
-  });
-
-  test("rejects servers whose names map to the same client", () => {
-    const servers = new Map([
-      ["foo-bar", edgeCases.get("beta")!],
-      ["foo_bar", edgeCases.get("beta")!],
-    ]);
-    expect(() => generateClientFile(servers)).toThrow(
-      'Servers "foo-bar" and "foo_bar" both generate FooBarClient',
-    );
+    expect(generateClientFile("alpha", alpha)).toBe(code);
   });
 
   test("emits resource readers and imports only where used", () => {
     expect(code).toContain(
       "readResource(uri: string, options?: RequestOptions): Promise<ReadResourceResult>",
     );
-    const onlyBeta = generateClientFile(
-      new Map([["beta", edgeCases.get("beta")!]]),
-    ).code;
+    const onlyBeta = generateClientFile("beta", beta);
     for (const unused of [
       "readResource",
       "ReadResourceResult",
@@ -523,5 +485,5 @@ describe("generated client at runtime", () => {
     });
   });
 
-  const code = () => generateClientFile(edgeCases).code;
+  const code = () => generateClientFile("alpha", alpha);
 });

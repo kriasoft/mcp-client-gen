@@ -1,6 +1,6 @@
 # Generated Client Specification
 
-Structure and rules for the TypeScript file generated from introspected MCP servers. Code: `src/codegen/`.
+Structure and rules for the TypeScript module generated for one introspected MCP server. Code: `src/codegen/`.
 
 ## File Structure
 
@@ -29,7 +29,7 @@ export type NotionClient = ReturnType<typeof createNotionClient>;
 - Imports are type-only and from the SDK alone: generated code needs neither `mcp-client-gen` nor any runtime import (ADR-003).
 - Only the imports the file uses are emitted, so it compiles under `noUnusedLocals`.
 - Output is deterministic (no timestamps): regenerating an unchanged server yields an unchanged file.
-- One factory per server: bundlers drop unused server clients; methods of a used client stay.
+- One module per server (ADR-001): names never collide across servers, and an app imports only the servers it uses.
 
 ## Client
 
@@ -76,14 +76,14 @@ Parameters default to `{}` when the schema provably accepts it (no `required` na
 Collisions are resolved deterministically, never by emitting invalid code:
 
 - **Members** of a client are unique: a later name that normalizes to a taken one gets a number (`get-user`, `get_user` → `getUser`, `getUser2`). `readResource` and `then` (which would make the client awaitable) are reserved.
-- **Tool types** are unique in the file: when two servers expose the same tool, the later one's types take its server prefix (`SearchInput`, `BetaSearchInput`).
-- **Servers** whose names map to the same client (`foo-bar`, `foo_bar`) are rejected before introspection.
+- **Tool types** follow their member's name (`{Member}Input` / `Output`), so they are unique too.
+- **Servers** (config mode) whose names map to the same module file (`foo-bar`, `foo_bar` → `foo-bar.ts`) are rejected before introspection.
 
 Wire names, URIs and argument names are emitted as string literals; server-provided descriptions become JSDoc with `*/` neutralized.
 
 ### Server Name Derivation
 
-`extractServerName()`: explicit `name` (config key) → URL hostname (second-to-last segment, e.g. `api.notion.com` → `notion`) → first URL path segment (excluding `mcp`, `v1`) → `server{N}`.
+`extractServerName()`: explicit `name` (config key) → URL hostname (second-to-last segment, e.g. `api.notion.com` → `notion`) → first URL path segment (excluding `mcp`, `v1`) → `server`.
 
 ## Type Generation
 

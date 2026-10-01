@@ -2,53 +2,30 @@
 /* SPDX-License-Identifier: MIT */
 
 /**
- * File builder - assembles the complete TS file: imports, per-server tool types,
- * factories and client types.
+ * File builder - assembles one server's module: imports, tool types, factory and
+ * client type.
  *
  * Output is deterministic (no timestamps) and emits only the imports it uses, so it
  * compiles under `noUnusedLocals`. Imports are type-only, from the SDK alone (ADR-003).
- * Each server is a separate factory, so bundlers drop the clients you don't use.
+ * One module per server: names never collide across servers, and an app imports only
+ * the servers it uses.
  */
 
 import { Node, Project, ts } from "ts-morph";
-import type { IntrospectionSuccess } from "../introspection.js";
-import { clientTypeName, generateServerClient } from "./client-generator.js";
+import type { Introspection } from "../introspection.js";
+import { generateServerClient } from "./client-generator.js";
 import { hasOutputSchema } from "./tool-input-generator.js";
 
-/** Generated source plus metadata for usage instructions. */
-export interface CodegenResult {
-  /** Generated TypeScript source code */
-  code: string;
-  /** Exported factory function names (source of truth for CLI) */
-  exports: string[];
-}
-
-/**
- * Generate the client file for successfully introspected servers (keyed by server name).
- * @throws When two server names map to the same client type name
- */
+/** Generate the client module for one introspected server. */
 export function generateClientFile(
-  servers: Map<string, IntrospectionSuccess>,
-): CodegenResult {
-  const clients = new Map<string, string>();
-  for (const name of servers.keys()) {
-    const typeName = clientTypeName(name);
-    const other = clients.get(typeName);
-    if (other !== undefined)
-      throw new Error(
-        `Servers "${other}" and "${name}" both generate ${typeName}; give one a different name`,
-      );
-    clients.set(typeName, name);
-  }
-
-  const results = [...servers.values()];
-  const tools = results.flatMap((r) => r.tools);
+  serverName: string,
+  introspection: Introspection,
+): string {
+  const { tools, prompts, capabilities, resources } = introspection;
   const usesTools = tools.length > 0;
   const usesStructured = tools.some(hasOutputSchema);
-  const usesPrompts = results.some((r) => r.prompts.length > 0);
-  const usesResources = results.some(
-    (r) => r.capabilities.resources || r.resources.length > 0,
-  );
+  const usesPrompts = prompts.length > 0;
+  const usesResources = !!capabilities.resources || resources.length > 0;
 
   const project = new Project({ useInMemoryFileSystem: true });
   const sourceFile = project.createSourceFile("mcp-client.ts", "", {
@@ -82,13 +59,7 @@ export function generateClientFile(
       type: "| (CallToolResult & { isError: true }) | (CallToolResult & { isError?: false; structuredContent: T })",
     });
 
-  // Tool types end in Input/Output, so they only need to avoid each other
-  const typeNames = new Set<string>();
-  const exports: string[] = [];
-  for (const [serverName, result] of servers) {
-    generateServerClient(sourceFile, serverName, result, typeNames);
-    exports.push(`create${clientTypeName(serverName)}`);
-  }
+  generateServerClient(sourceFile, serverName, introspection);
 
   // Separate consecutive type aliases (ts-morph already spaces other declarations)
   for (const alias of sourceFile.getTypeAliases())
@@ -100,5 +71,5 @@ export function generateClientFile(
     semicolons: ts.SemicolonPreference.Insert,
   });
 
-  return { code: sourceFile.getFullText(), exports };
+  return sourceFile.getFullText();
 }
