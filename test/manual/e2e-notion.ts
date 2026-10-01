@@ -20,7 +20,10 @@ async function main() {
   console.log(
     "   (Browser will open for OAuth if not already authenticated)\n",
   );
-  const client = new Client({ name: "mcp-client-gen-e2e", version: "1.0.0" });
+  const client = new Client(
+    { name: "mcp-client-gen-e2e", version: "1.0.0" },
+    { versionNegotiation: { mode: "auto" } }, // speak MCP 2026-07-28 when the server does
+  );
   await browserAuth({
     serverUrl: "https://mcp.notion.com/mcp",
     redirectUri: "http://127.0.0.1:3000/callback",

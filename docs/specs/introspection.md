@@ -17,7 +17,9 @@ interface Introspection {
 }
 ```
 
-Types are the SDK's (`@modelcontextprotocol/client`).
+Types are the SDK's (`@modelcontextprotocol/client`). Over Streamable HTTP they come from the newest protocol era both sides speak, not the SDK's legacy default.
+
+Static `server.headers` are the MCP server's credentials: they go only to requests for its origin, never to OAuth discovery or token endpoints, which share the transport's fetch (the SDK's `requestInit` would apply to those too, so it isn't used).
 
 | Field               | Source                                                                                     |
 | ------------------- | ------------------------------------------------------------------------------------------ |
@@ -35,7 +37,8 @@ List calls without a cursor return every page.
 introspectServer(server, config)                 // src/introspection.ts
   └─ createMcpConnection(server, config)         // src/mcp-client.ts
       ├─ OAuth provider (browserAuth) for https: or loopback http: URLs only
-      ├─ connect: http → auth.connect(client) or a plain StreamableHTTPClientTransport
+      ├─ connect: http → auth.connect(client) or a plain StreamableHTTPClientTransport,
+      │           negotiating the protocol era (2026-07-28 when the server speaks it)
       │           sse  → SSEClientTransport; on 401, completeAuthorization() + fresh transport
       ├─ list tools → resources → templates → prompts, sequentially
       │     each UnauthorizedError (step-up) → complete the browser flow, retry (≤ 3 times)
@@ -49,11 +52,11 @@ introspectServer(server, config)                 // src/introspection.ts
 
 ## Transports
 
-| `type`           | Class                           | Notes                                                                                      |
-| ---------------- | ------------------------------- | ------------------------------------------------------------------------------------------ |
-| `http` (default) | `StreamableHTTPClientTransport` | `server.headers` via `requestInit`                                                         |
-| `sse`            | `SSEClientTransport`            | Deprecated in MCP. Headers merged under request headers; each request bounded by `timeout` |
-| `stdio`          | not supported                   | Config entries with `command` are skipped (SPEC-config)                                    |
+| `type`           | Class                           | Notes                                                                                                                                  |
+| ---------------- | ------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| `http` (default) | `StreamableHTTPClientTransport` | `versionNegotiation: { mode: "auto" }`; `server.headers` only on requests to the server's origin                                       |
+| `sse`            | `SSEClientTransport`            | Deprecated in MCP; legacy era. `server.headers` (under request headers) only to the server's origin; each request bounded by `timeout` |
+| `stdio`          | not supported                   | Config entries with `command` are skipped (SPEC-config)                                                                                |
 
 ## Options
 
@@ -61,7 +64,7 @@ introspectServer(server, config)                 // src/introspection.ts
 
 | Option    | Effect                                                                                                                                 |
 | --------- | -------------------------------------------------------------------------------------------------------------------------------------- |
-| `oauth`   | `browserAuth()` options without `serverUrl` (ADR-002)                                                                                  |
+| `oauth`   | `browserAuth()` options without `serverUrl` (ADR-002); `false` never opens a browser, so a server demanding OAuth fails                |
 | `fetch`   | custom fetch for every request (proxies, interceptors, tests)                                                                          |
 | `timeout` | per request while connecting and listing (SDK default 60 s)                                                                            |
 | `signal`  | aborts connecting, listing and a pending browser flow (except a step-up begun by listing, see Flow); every transport request honors it |

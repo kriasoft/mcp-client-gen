@@ -7,7 +7,10 @@ import { Client } from "@modelcontextprotocol/client";
 import { browserAuth } from "oauth-callback/mcp";
 import { createNotionClient } from "./notion-client";
 
-const client = new Client({ name: "my-app", version: "1.0.0" });
+const client = new Client(
+  { name: "my-app", version: "1.0.0" },
+  { versionNegotiation: { mode: "auto" } }, // speak MCP 2026-07-28 when the server does
+);
 await browserAuth({
   serverUrl: "https://mcp.notion.com/mcp",
   redirectUri: "http://127.0.0.1:3000/callback",

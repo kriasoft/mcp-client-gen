@@ -114,7 +114,7 @@ Usage (npm install @modelcontextprotocol/client oauth-callback):
   import { browserAuth } from "oauth-callback/mcp";
   import { createNotionClient } from "./src/mcp/notion.js";
 
-  const client = new Client({ name: "my-app", version: "1.0.0" });
+  const client = new Client({ name: "my-app", version: "1.0.0" }, { versionNegotiation: { mode: "auto" } });
   const auth = browserAuth({ serverUrl: …, redirectUri: "http://127.0.0.1:3000/callback", clientName: "my-app" });
   await auth.connect(client); // opens the browser when needed
   const notionClient = createNotionClient(client);
@@ -125,6 +125,7 @@ Usage (npm install @modelcontextprotocol/client oauth-callback):
   - otherwise `client.connect(new StreamableHTTPClientTransport(new URL(…)))`;
   - `SSEClientTransport` for legacy SSE servers, plus a note on how to use OAuth with SSE when needed.
 - **URL:** URL mode prints the URL given on the command line. Config mode never prints a config URL (it may hold expanded secrets); it prints `"..."` and names the entry instead (SPEC-config).
+- **Protocol:** Streamable HTTP snippets opt into version negotiation (`versionNegotiation: { mode: "auto" }`), matching generation; the SDK's default is the legacy 2025 era.
 - **Import path:** relative to the working directory, `/`-separated, `.ts` → `.js`, JSON-quoted.
 - **Variable:** `{camelCase(name)}Client`, so it is never a reserved word, `client` or `auth`.
 

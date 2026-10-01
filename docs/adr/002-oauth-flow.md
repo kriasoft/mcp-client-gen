@@ -13,7 +13,8 @@
 
 - The MCP SDK (`@modelcontextprotocol/client` 2.x) owns OAuth: discovery, registration, PKCE, token exchange and refresh.
 - `oauth-callback/mcp`'s `browserAuth()` supplies the `OAuthClientProvider`: browser launch, loopback listener, state checks and credential persistence.
-- OAuth applies only to `https:` or loopback `http:` servers, where bearer tokens can't leak (oauth-callback rejects others). Other `http:` servers, e.g. on a private network, connect unauthenticated; `server.headers` still apply.
+- OAuth applies only to `https:` or loopback `http:` servers, where bearer tokens can't leak (oauth-callback rejects others). Other `http:` servers, e.g. on a private network, connect unauthenticated; `server.headers` still apply. `oauth: false` disables the provider everywhere (e.g. CI, where no browser can open), so a server demanding OAuth fails instead of waiting for approval.
+- `server.headers` go only to the MCP server's origin, through an origin-scoped fetch wrapper, not to the authorization server, which the SDK reaches through the same transport fetch.
 - The internal `createMcpConnection()` builds the provider from `GenerateClientOptions.oauth`:
   - `serverUrl` comes from the server; `redirectUri` defaults to `http://127.0.0.1:3000/callback`. The port is fixed because DCR registers the exact URI.
   - `clientName` defaults to `mcp-client-gen` unless a pre-registered `clientInformation` is given (the two are exclusive).

@@ -38,21 +38,31 @@ import type { McpServerConfig } from "./types.js";
  */
 const DEFAULT_REDIRECT_URI = "http://127.0.0.1:3000/callback";
 
-/** Authorizations one capability listing may complete before giving up. */
+/**
+ * Browser flows one capability listing may complete. The last one only drains the flow
+ * the failing request started (see withAuthorization), so it isn't retried.
+ */
 const MAX_AUTHORIZATIONS = 3;
 
 /** Hosts where oauth-callback allows plain `http:` (bearer tokens stay on this machine). */
 const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]"]);
 
 /**
- * oauth-callback `browserAuth()` options; `serverUrl` comes from the server. A `store`
- * is bound to that one server (default: memory).
+ * oauth-callback `browserAuth()` options. `serverUrl` comes from the server, and
+ * `redirectUri` defaults to a fixed loopback URI. A `store` is bound to that one server
+ * (default: memory).
  */
-export type McpOAuthOptions = Omit<Partial<BrowserAuthOptions>, "serverUrl">;
+export type McpOAuthOptions = Omit<
+  BrowserAuthOptions,
+  "serverUrl" | "redirectUri"
+> & { redirectUri?: BrowserAuthOptions["redirectUri"] };
 
 export interface McpClientConfig {
-  /** OAuth 2.1 browser authorization settings */
-  oauth?: McpOAuthOptions;
+  /**
+   * OAuth 2.1 browser authorization settings. `false` never opens a browser: a server
+   * demanding OAuth then fails generation (e.g. in CI).
+   */
+  oauth?: false | McpOAuthOptions;
   /** Custom fetch for proxies/interceptors */
   fetch?: typeof fetch;
   /** Timeout in ms for each request while connecting and listing (SDK default: 60s) */
@@ -74,14 +84,19 @@ export interface McpConnection {
 }
 
 /**
- * Wrap fetch to inject headers for every request; request headers win.
+ * Wrap fetch to add `headers` to requests for `origin`; request headers win. Other
+ * origins (OAuth discovery and token endpoints share this fetch) never see them: they
+ * are the MCP server's credentials.
  */
-function createFetchWithHeaders(
+export function createFetchWithHeaders(
   baseFetch: typeof fetch | undefined,
   headers: Record<string, string>,
+  origin: string,
 ): typeof fetch {
   const originalFetch = baseFetch || globalThis.fetch;
-  return ((url: URL | string, init?: RequestInit) => {
+  return ((url: URL | string | Request, init?: RequestInit) => {
+    const target = new URL(url instanceof Request ? url.url : url);
+    if (target.origin !== origin) return originalFetch(url, init);
     // Headers instances don't spread, so merge through the Headers API
     const merged = new Headers(headers);
     new Headers(init?.headers).forEach((value, key) => merged.set(key, value));
@@ -165,7 +180,8 @@ export async function createMcpConnection(
   const url = new URL(server.url);
   const oauth = config.oauth ?? {};
   const auth =
-    url.protocol === "https:" || LOOPBACK_HOSTS.has(url.hostname)
+    oauth !== false &&
+    (url.protocol === "https:" || LOOPBACK_HOSTS.has(url.hostname))
       ? browserAuth({
           ...oauth,
           serverUrl: url,
@@ -178,21 +194,55 @@ export async function createMcpConnection(
       : undefined;
 
   const requestOptions: RequestOptions = {
-    ...(config.timeout && { timeout: config.timeout }),
+    ...(config.timeout !== undefined && { timeout: config.timeout }),
     ...(config.signal && { signal: config.signal }),
   };
 
-  // Server advertises its capabilities during the handshake
-  const client = new Client(clientInfo, { capabilities: {} });
+  // Server advertises its capabilities during the handshake. Over Streamable HTTP,
+  // negotiate the newest protocol era the server speaks (2026-07-28 or the legacy
+  // fallback): generated types must match what the server exposes today.
+  const client = new Client(clientInfo, {
+    capabilities: {},
+    ...(type === "http" && { versionNegotiation: { mode: "auto" } }),
+  });
 
+  // One cleanup boundary: a failure anywhere after the client exists closes it
+  try {
+    return await connectAndList(
+      client,
+      type,
+      url,
+      auth,
+      server,
+      config,
+      requestOptions,
+    );
+  } catch (error) {
+    await client.close().catch(() => {}); // don't mask the cause
+    throw error;
+  }
+}
+
+async function connectAndList(
+  client: Client,
+  type: "http" | "sse",
+  url: URL,
+  auth: BrowserAuth | undefined,
+  server: McpServerConfig,
+  config: McpClientConfig,
+  requestOptions: RequestOptions,
+): Promise<McpConnection> {
   // Completes an authorization the server demands after connecting (e.g. a step-up)
   let completeAuthorization: (() => Promise<void>) | undefined;
   if (type === "http") {
+    // Not `requestInit`: the SDK applies it to OAuth discovery and token requests too
+    const signalled = config.signal
+      ? createFetchWithSignal(config.fetch, config.signal)
+      : config.fetch;
     const transportOptions = {
-      fetch: config.signal
-        ? createFetchWithSignal(config.fetch, config.signal)
-        : config.fetch,
-      ...(server.headers && { requestInit: { headers: server.headers } }),
+      fetch: server.headers
+        ? createFetchWithHeaders(signalled, server.headers, url.origin)
+        : signalled,
     };
     if (auth) {
       // Runs the browser flow when the server demands it; on a connected client it
@@ -222,8 +272,9 @@ export async function createMcpConnection(
   }
 
   // Every UnauthorizedError leaves a browser flow pending, and oauth-callback can't cancel
-  // one short of signing out: complete it (approval or timeout) so none outlives the
-  // connection. Bounded, since a server may keep demanding scopes.
+  // a connect()-owned one short of signing out (which would clear the store): complete it
+  // (approval or timeout) so none outlives the connection. Bounded, since a server may
+  // keep demanding scopes; the last completion drains rather than retries.
   const withAuthorization = async <T>(request: () => Promise<T>) => {
     for (let attempt = 1; ; attempt++) {
       try {
@@ -237,65 +288,60 @@ export async function createMcpConnection(
     }
   };
 
-  try {
-    // Fetch advertised capabilities; a listing failure is a connection error.
-    // Sequential: OAuth refreshes on a caller-owned (SSE) transport must not overlap.
-    // List calls without a cursor return every page.
-    const capabilities = client.getServerCapabilities() ?? {};
-    const tools = capabilities.tools
-      ? (
-          await withAuthorization(() =>
-            client.listTools(undefined, requestOptions),
-          )
-        ).tools
-      : [];
-    const resources = capabilities.resources
-      ? (
-          await withAuthorization(() =>
-            client.listResources(undefined, requestOptions),
-          )
-        ).resources
-      : [];
-    // Part of the resources capability, yet some servers don't implement it
-    const resourceTemplates = capabilities.resources
-      ? (
-          await withAuthorization(() =>
-            client
-              .listResourceTemplates(undefined, requestOptions)
-              .catch((error: unknown) => {
-                if (
-                  error instanceof ProtocolError &&
-                  error.code === ProtocolErrorCode.MethodNotFound
-                )
-                  return { resourceTemplates: [] };
-                throw error;
-              }),
-          )
-        ).resourceTemplates
-      : [];
-    const prompts = capabilities.prompts
-      ? (
-          await withAuthorization(() =>
-            client.listPrompts(undefined, requestOptions),
-          )
-        ).prompts
-      : [];
+  // Fetch advertised capabilities; a listing failure is a connection error.
+  // Sequential: OAuth refreshes on a caller-owned (SSE) transport must not overlap.
+  // List calls without a cursor return every page.
+  const capabilities = client.getServerCapabilities() ?? {};
+  const tools = capabilities.tools
+    ? (
+        await withAuthorization(() =>
+          client.listTools(undefined, requestOptions),
+        )
+      ).tools
+    : [];
+  const resources = capabilities.resources
+    ? (
+        await withAuthorization(() =>
+          client.listResources(undefined, requestOptions),
+        )
+      ).resources
+    : [];
+  // Part of the resources capability, yet some servers don't implement it
+  const resourceTemplates = capabilities.resources
+    ? (
+        await withAuthorization(() =>
+          client
+            .listResourceTemplates(undefined, requestOptions)
+            .catch((error: unknown) => {
+              if (
+                error instanceof ProtocolError &&
+                error.code === ProtocolErrorCode.MethodNotFound
+              )
+                return { resourceTemplates: [] };
+              throw error;
+            }),
+        )
+      ).resourceTemplates
+    : [];
+  const prompts = capabilities.prompts
+    ? (
+        await withAuthorization(() =>
+          client.listPrompts(undefined, requestOptions),
+        )
+      ).prompts
+    : [];
 
-    // Tokens exist only once a browser flow (or a provided store) authorized us
-    const authorized = (await auth?.tokens()) !== undefined;
-    return {
-      client,
-      capabilities,
-      tools,
-      resources,
-      resourceTemplates,
-      prompts,
-      authorized,
-    };
-  } catch (error) {
-    await client.close().catch(() => {}); // don't mask the listing error
-    throw error;
-  }
+  // Tokens exist only once a browser flow (or a provided store) authorized us
+  const authorized = (await auth?.tokens()) !== undefined;
+  return {
+    client,
+    capabilities,
+    tools,
+    resources,
+    resourceTemplates,
+    prompts,
+    authorized,
+  };
 }
 
 /**
@@ -311,7 +357,7 @@ async function connectSse(
   requestOptions: RequestOptions,
 ): Promise<SSEClientTransport> {
   const baseFetch = server.headers
-    ? createFetchWithHeaders(config.fetch, server.headers)
+    ? createFetchWithHeaders(config.fetch, server.headers, url.origin)
     : config.fetch;
   // completeAuthorization() can't interrupt this transport's token exchange: bound it here
   const fetch = createFetchWithTimeout(

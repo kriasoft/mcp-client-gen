@@ -14,7 +14,11 @@ import {
 } from "@modelcontextprotocol/server";
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 import type { CredentialStore } from "oauth-callback/mcp";
-import { createMcpConnection, type McpConnection } from "./mcp-client.js";
+import {
+  createFetchWithHeaders,
+  createMcpConnection,
+  type McpConnection,
+} from "./mcp-client.js";
 import { createServer } from "node:net";
 import { startLegacySseServer } from "../test/utils/legacy-sse-server.js";
 import { startMockServer } from "../test/utils/mock-oauth-mcp-server.js";
@@ -87,6 +91,29 @@ describe("createMcpConnection", () => {
     ]);
     expect(connection.prompts.map((p) => p.name)).toEqual(["greet"]);
     expect(connection.capabilities.tools).toBeDefined();
+    // Negotiated, not the SDK's legacy default
+    expect(connection.client.getProtocolEra()).toBe("modern");
+  });
+
+  test("sends server headers only to the MCP server's origin", async () => {
+    const seen: Array<[string, string | null]> = [];
+    const base = (async (url: URL | string | Request, init?: RequestInit) => {
+      seen.push([String(url), new Headers(init?.headers).get("authorization")]);
+      return new Response(null, { status: 204 });
+    }) as typeof globalThis.fetch;
+    const fetch = createFetchWithHeaders(
+      base,
+      { Authorization: "Bearer mcp-key" },
+      "https://mcp.example",
+    );
+
+    await fetch("https://mcp.example/sse");
+    await fetch("https://auth.example/token", { method: "POST" });
+
+    expect(seen).toEqual([
+      ["https://mcp.example/sse", "Bearer mcp-key"],
+      ["https://auth.example/token", null], // e.g. the OAuth token endpoint
+    ]);
   });
 
   test("treats a missing resources/templates/list as no templates", async () => {
@@ -246,9 +273,17 @@ describe("createMcpConnection", () => {
 
   test("an abort ends every handshake request, not only those the SDK signals", async () => {
     const abort = new AbortController();
-    // Stall `notifications/initialized`, which the SDK sends without the request signal
+    // A legacy server (no `server/discover`) gets the initialize handshake; stall its
+    // `notifications/initialized`, which the SDK sends without the request signal
     const fetch = ((url: URL | string, init?: RequestInit) => {
-      if (String(init?.body).includes('"notifications/initialized"')) {
+      const body = typeof init?.body === "string" ? JSON.parse(init.body) : {};
+      if (body.method === "server/discover") {
+        const error = { code: -32601, message: "Method not found" };
+        return Promise.resolve(
+          Response.json({ jsonrpc: "2.0", id: body.id, error }),
+        );
+      }
+      if (body.method === "notifications/initialized") {
         // Never answers; settles only if the request's signal aborts
         const stalled = new Promise<Response>((_, reject) => {
           const signal = init?.signal;
@@ -344,6 +379,16 @@ describe("createMcpConnection OAuth", () => {
     Bun.listen({ hostname: "127.0.0.1", port, socket: { data() {} } }).stop(
       true,
     );
+  });
+
+  test("oauth: false fails instead of opening a browser", async () => {
+    await expect(
+      createMcpConnection(
+        { type: "http", url: oauth.mcpUrl },
+        { oauth: false },
+      ),
+    ).rejects.toThrow();
+    expect(oauth.authorizeRequests).toHaveLength(0); // no browser flow started
   });
 
   test("completes every step-up it triggers, then gives up", async () => {

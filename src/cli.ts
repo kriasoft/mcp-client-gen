@@ -221,7 +221,10 @@ function printUsage(target: Target, authorized: boolean, fromConfig: boolean) {
     ...(oauth ? [`import { browserAuth } from "oauth-callback/mcp";`] : []),
     `import { ${factory} } from ${importPath};`,
     ``,
-    `const client = new Client({ name: "my-app", version: "1.0.0" });`,
+    // Streamable HTTP negotiates the newest protocol era, as generation did
+    sse
+      ? `const client = new Client({ name: "my-app", version: "1.0.0" });`
+      : `const client = new Client({ name: "my-app", version: "1.0.0" }, { versionNegotiation: { mode: "auto" } });`,
     ...(oauth
       ? [
           `const auth = browserAuth({`,

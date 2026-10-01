@@ -22,7 +22,10 @@ import { Client } from "@modelcontextprotocol/client";
 import { browserAuth } from "oauth-callback/mcp";
 import { createNotionClient } from "./notion";
 
-const client = new Client({ name: "my-app", version: "1.0.0" });
+const client = new Client(
+  { name: "my-app", version: "1.0.0" },
+  { versionNegotiation: { mode: "auto" } }, // speak MCP 2026-07-28 when the server does
+);
 const auth = browserAuth({
   serverUrl: "https://mcp.notion.com/mcp",
   redirectUri: "http://127.0.0.1:3000/callback",
@@ -124,6 +127,7 @@ import { generateClient } from "mcp-client-gen";
 
 const code = await generateClient("https://mcp.notion.com/mcp");
 // or: generateClient({ url, name: "notion", headers: { ... } }, { oauth, fetch, timeout, signal })
+// oauth: false fails rather than opening a browser (e.g. in CI)
 ```
 
 `generateClient()` returns the formatted module source; it writes nothing.
