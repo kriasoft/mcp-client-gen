@@ -36,7 +36,7 @@ await auth.connect(client);
 const notion = createNotionClient(client);
 
 // Typed input; the result is the SDK's CallToolResult
-const result = await notion.notionSearch({ query: "Meeting Notes" });
+const result = await notion.search({ query: "Meeting Notes" });
 ```
 
 Servers without OAuth connect with the SDK alone: `await client.connect(new StreamableHTTPClientTransport(new URL(url)))`. After writing a file, the CLI prints the snippet for your server.
@@ -112,11 +112,11 @@ const auth = browserAuth({
 await auth.connect(client);
 
 try {
-  await notion.notionSearch({ query: "Meeting Notes" });
+  await notion.search({ query: "Meeting Notes" });
 } catch (error) {
   if (!(error instanceof UnauthorizedError)) throw error;
   await auth.connect(client);
-  await notion.notionSearch({ query: "Meeting Notes" });
+  await notion.search({ query: "Meeting Notes" });
 }
 ```
 

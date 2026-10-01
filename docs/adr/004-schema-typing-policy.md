@@ -19,6 +19,7 @@
 - **Whole-schema `type` aliases**, not interfaces: roots may be unions or dictionaries, and only aliases are assignable to the SDK's `Record<string, unknown>` arguments.
 - **Local `$ref`s are inlined**, except targets that recur: those become named aliases (`{Type}{last pointer segment}`; a `$ref` to the root is the type itself). Cycles are detected by target identity.
 - **Circularity is decided by the compiler.** Which recursions TypeScript defers is subtle, so when a schema recurses its aliases are compiled in memory (ts-morph). Each alias reported as circular (TS2456) is widened to `unknown`, one per pass.
+- **Dialect:** a declared `$schema` picks the tuple keyword (`items` arrays up to 2019-09, `prefixItems` from 2020-12), and the other is ignored. Undeclared schemas accept both: MCP defaults to 2020-12, but servers often emit draft-07 output without declaring it.
 - **Remote `$ref`s are never fetched.**
 - **A parameter defaults to `{}`** only when `{}` provably satisfies the input schema.
 
@@ -33,7 +34,7 @@
 ## Impact
 
 - Positive: valid calls always compile, and common mistakes don't; recursive schemas are typed; output compiles under `strict`.
-- Negative/Risks: the two exceptions can reject extra keys a server would accept; the compiler check costs ~100–300 ms per recursive schema; conditional schemas (`if`/`then`) stay untyped.
+- Negative/Risks: the circularity check runs on ts-morph's bundled TypeScript (6.x), the minimum generated code targets; newer compilers are assumed not to reject what it accepts. The two exceptions can reject extra keys a server would accept; the compiler check costs ~100–300 ms per recursive schema; conditional schemas (`if`/`then`) stay untyped.
 
 ## Links
 

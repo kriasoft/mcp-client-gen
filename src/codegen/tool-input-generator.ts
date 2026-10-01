@@ -35,7 +35,8 @@ export function generateToolInputType(
       },
       ...recursive,
     ],
-    tool.description,
+    // The tool's description lives on its method, where IntelliSense shows it
+    `Arguments of the \`${tool.name}\` tool.`,
   );
 }
 

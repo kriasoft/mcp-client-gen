@@ -19,7 +19,7 @@ test.skipIf(!process.env.NOTION_E2E)(
     expect(code).toContain(
       "export function createNotionClient(client: Client)",
     );
-    expect(code).toContain("notionSearch(");
+    expect(code).toContain("search(input: SearchInput");
   },
   { timeout: 150_000 },
 );

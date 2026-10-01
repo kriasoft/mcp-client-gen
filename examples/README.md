@@ -18,7 +18,7 @@ await browserAuth({
 }).connect(client);
 const notion = createNotionClient(client);
 
-const result = await notion.notionSearch({ query: "meeting notes" });
+const result = await notion.search({ query: "meeting notes" });
 for (const block of result.content) {
   if (block.type === "text") console.log(block.text);
 }

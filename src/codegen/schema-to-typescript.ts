@@ -109,8 +109,8 @@ function convert(schema: Schema, root: Schema, ctx: Context): string {
   if (typeof schema.$id === "string" && schema !== root) root = schema;
 
   if (typeof schema.$ref === "string") {
-    const target = resolveRef(root, schema.$ref);
-    if (!isObject(target)) return convert(target, root, ctx); // incl. unresolvable
+    const { target, resource } = resolveRef(root, schema.$ref);
+    if (!isObject(target)) return convert(target, resource, ctx); // incl. unresolvable
     const known = ctx.named.get(target);
     if (known) return known;
     if (ctx.expanding.has(target)) {
@@ -120,7 +120,7 @@ function convert(schema: Schema, root: Schema, ctx: Context): string {
       return name;
     }
     ctx.expanding.add(target);
-    const type = convert(target, root, ctx);
+    const type = convert(target, resource, ctx);
     ctx.expanding.delete(target);
     const name = ctx.named.get(target);
     if (!name) return type; // didn't recurse: inline
@@ -197,14 +197,36 @@ function arrayType(
   ctx: Context,
 ): string {
   // Tuples: `prefixItems` + rest `items` (2020-12), or `items: [...]` + `additionalItems`
-  const prefix = schema.prefixItems ?? schema.items;
+  // (draft-07 and earlier, 2019-09). A declared dialect ignores the other's keyword, so
+  // the type is never stricter than that dialect's schema.
+  const dialect = tupleDialect(root);
+  const prefix =
+    dialect === "items"
+      ? schema.items
+      : dialect === "prefixItems"
+        ? schema.prefixItems
+        : (schema.prefixItems ?? schema.items);
   if (Array.isArray(prefix)) {
-    const rest = Array.isArray(schema.items)
-      ? schema.additionalItems
-      : schema.items;
+    const rest =
+      prefix === schema.items ? schema.additionalItems : schema.items;
     return tupleType(prefix, rest, schema.minItems, root, ctx);
   }
+  // An `items` array that isn't this dialect's tuple keyword constrains nothing typed
+  if (Array.isArray(schema.items)) return "unknown[]";
   return `${group(convert(schema.items, root, ctx))}[]`;
+}
+
+/**
+ * Tuple keyword of the resource's declared `$schema`: `items` arrays before 2020-12,
+ * `prefixItems` from 2020-12. Undeclared (MCP's default is 2020-12, but servers often
+ * emit draft-07 output without saying so): either.
+ */
+function tupleDialect(root: Schema): "items" | "prefixItems" | "either" {
+  const uri = isObject(root) ? root.$schema : undefined;
+  if (typeof uri !== "string") return "either";
+  if (/draft-0[3-7]|2019-09/.test(uri)) return "items";
+  if (/2020-12/.test(uri)) return "prefixItems";
+  return "either";
 }
 
 /** Positions past `minItems` may be absent, so they are optional elements. */
@@ -276,24 +298,32 @@ function objectType(
   return `{\n${lines.join("\n")}\n}`;
 }
 
-/** Local JSON Pointer (`#`, `#/$defs/Id`) into `root`; anything else is unresolved. */
-function resolveRef(root: Schema, ref: string): Schema {
-  if (ref === "#") return root;
-  if (!ref.startsWith("#/")) return undefined;
+/** Local JSON Pointer (`#`, `#/$defs/Id`) into `root`, and the resource that owns it. */
+function resolveRef(
+  root: Schema,
+  ref: string,
+): { target: Schema; resource: Schema } {
+  const unresolved = { target: undefined, resource: root };
+  if (ref === "#") return { target: root, resource: root };
+  if (!ref.startsWith("#/")) return unresolved;
   let pointer: string;
   try {
     pointer = decodeURIComponent(ref.slice(2)); // URI-decode, then split (RFC 6901 §6)
   } catch {
-    return undefined;
+    return unresolved;
   }
+  // A pointer may pass into a nested `$id` resource: the target belongs to (and takes
+  // its `$schema` dialect from) the innermost one
   let node: any = root;
+  let resource = root;
   for (const raw of pointer.split("/")) {
     const key = raw.replace(/~1/g, "/").replace(/~0/g, "~");
     if (node === null || typeof node !== "object" || !(key in node))
-      return undefined;
+      return unresolved;
+    if (node !== root && typeof node.$id === "string") resource = node;
     node = node[key];
   }
-  return node;
+  return { target: node, resource };
 }
 
 function literal(value: unknown): string {

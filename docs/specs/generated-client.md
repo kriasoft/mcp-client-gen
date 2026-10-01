@@ -66,19 +66,20 @@ Parameters default to `{}` when the schema provably accepts it (no `required` na
 
 ## Naming
 
-| Element         | Rule                                    | Example                                     |
-| --------------- | --------------------------------------- | ------------------------------------------- |
-| Client type     | PascalCase(server) + `Client`           | `NotionClient`                              |
-| Factory         | `create` + client type name             | `createNotionClient`                        |
-| Tool method     | camelCase(tool)                         | `notion-create-pages` → `notionCreatePages` |
-| Prompt method   | camelCase(prompt) + `Prompt`            | `summarizePrompt`                           |
-| Resource method | `read` + PascalCase(resource name)      | `readReadme`                                |
-| Template method | `read` + PascalCase(template name)      | `readIssue`                                 |
-| Tool types      | PascalCase(method) + `Input` / `Output` | `NotionCreatePagesInput`                    |
+| Element         | Rule                                                                      | Example                                                 |
+| --------------- | ------------------------------------------------------------------------- | ------------------------------------------------------- |
+| Client type     | PascalCase(server) + `Client`                                             | `NotionClient`                                          |
+| Factory         | `create` + client type name                                               | `createNotionClient`                                    |
+| Tool method     | camelCase(tool), minus a `{server}-`/`{server}_` prefix every tool shares | `notion-create-pages` → `createPages` (server `notion`) |
+| Prompt method   | camelCase(prompt) + `Prompt`                                              | `summarizePrompt`                                       |
+| Resource method | `read` + PascalCase(resource name)                                        | `readReadme`                                            |
+| Template method | `read` + PascalCase(template name)                                        | `readIssue`                                             |
+| Tool types      | PascalCase(method) + `Input` / `Output`                                   | `NotionCreatePagesInput`                                |
 
 Collisions are resolved deterministically, never by emitting invalid code:
 
 - **Members** of a client are unique: a later name that normalizes to a taken one gets a number (`get-user`, `get_user` → `getUser`, `getUser2`). `readResource` and `then` (which would make the client awaitable) are reserved.
+- **Prefix stripping** applies only when every tool name starts with the server name plus `-` or `_` (case-insensitive); one tool without it keeps all names as they are. Wire names never change.
 - **Tool types** follow their member's name (`{Member}Input` / `Output`), so they are unique too.
 - **Servers** (config mode) whose names map to the same module file (`foo-bar`, `foo_bar` → `foo-bar.ts`) are rejected before introspection.
 
@@ -95,21 +96,21 @@ Tool input and output types are `type` aliases generated from the whole schema. 
 - an object without `additionalProperties` gets no index signature;
 - `properties` / `items` without `type` imply an object / array.
 
-| JSON Schema                                         | TypeScript                                                                                                             |
-| --------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
-| `string` / `number`, `integer` / `boolean` / `null` | `string` / `number` / `boolean` / `null`                                                                               |
-| `const`, `enum` (any JSON primitive)                | literal union, e.g. `"a" \| 1 \| null`                                                                                 |
-| `array` with `items: T`                             | `T[]`, compound items grouped: `(A \| B)[]`                                                                            |
-| Tuples (`prefixItems` or `items: [...]`)            | `[A, B?, ...R[]]`: past `minItems` optional, rest from `items` / `additionalItems`                                     |
-| `object` with `properties`                          | `{ key: T; opt?: U }`, keys quoted as needed                                                                           |
-| `required` name without a property schema           | `name: unknown`                                                                                                        |
-| `additionalProperties: S`                           | index signature admitting `S` and declared property types                                                              |
-| `object` without properties                         | `Record<string, unknown>` (`never` values if closed)                                                                   |
-| `anyOf` / `oneOf`                                   | union                                                                                                                  |
-| `allOf`                                             | intersection, operands grouped                                                                                         |
-| Composition next to `type`/`properties`             | intersection of both                                                                                                   |
-| `type: [A, B]`                                      | union, each branch keeps sibling keywords                                                                              |
-| Local `$ref` (`#/$defs/X`)                          | inlined; a recursive target becomes an alias `{Type}{X}` (a `$ref` to the root is `{Type}` itself); remote → `unknown` |
-| `true` / `false` schema                             | `unknown` / `never`                                                                                                    |
+| JSON Schema                                         | TypeScript                                                                                                                           |
+| --------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| `string` / `number`, `integer` / `boolean` / `null` | `string` / `number` / `boolean` / `null`                                                                                             |
+| `const`, `enum` (any JSON primitive)                | literal union, e.g. `"a" \| 1 \| null`                                                                                               |
+| `array` with `items: T`                             | `T[]`, compound items grouped: `(A \| B)[]`                                                                                          |
+| Tuples (`prefixItems` or `items: [...]`)            | `[A, B?, ...R[]]`: past `minItems` optional, rest from `items` / `additionalItems`; a declared `$schema` picks the keyword (ADR-004) |
+| `object` with `properties`                          | `{ key: T; opt?: U }`, keys quoted as needed                                                                                         |
+| `required` name without a property schema           | `name: unknown`                                                                                                                      |
+| `additionalProperties: S`                           | index signature admitting `S` and declared property types                                                                            |
+| `object` without properties                         | `Record<string, unknown>` (`never` values if closed)                                                                                 |
+| `anyOf` / `oneOf`                                   | union                                                                                                                                |
+| `allOf`                                             | intersection, operands grouped                                                                                                       |
+| Composition next to `type`/`properties`             | intersection of both                                                                                                                 |
+| `type: [A, B]`                                      | union, each branch keeps sibling keywords                                                                                            |
+| Local `$ref` (`#/$defs/X`)                          | inlined; a recursive target becomes an alias `{Type}{X}` (a `$ref` to the root is `{Type}` itself); remote → `unknown`               |
+| `true` / `false` schema                             | `unknown` / `never`                                                                                                                  |
 
-Property descriptions become JSDoc on the property. Recursive aliases TypeScript rejects as circular (`type A = A | string`, mutual top-level references, recursive tuple rests) are found with the compiler and widened to `unknown`, one per pass until none remains.
+Property descriptions become JSDoc on the property. A tool's description is JSDoc on its method only; its `Input` type gets a one-line reference. Recursive aliases TypeScript rejects as circular (`type A = A | string`, mutual top-level references, recursive tuple rests) are found with the compiler and widened to `unknown`, one per pass until none remains.

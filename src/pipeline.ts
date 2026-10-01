@@ -58,9 +58,15 @@ export function extractServerName(server: McpServerConfig): string {
       !hostname.startsWith("[") &&
       !/^\d+(\.\d+){3}$/.test(hostname);
 
-    // Handle subdomains like "api.notion.com" -> "notion"
-    if (namedHost && parts.length >= 2) {
-      const name = parts.length > 2 ? parts[parts.length - 2] : parts[0];
+    // Registrable label: "api.notion.com" -> "notion"; a country second-level suffix
+    // ("example.co.uk") moves it one label left
+    const secondLevel = /^(co|com|net|org|ac|gov|edu)$/.test(
+      parts.at(-2) ?? "",
+    );
+    const suffixLabels =
+      parts.length > 2 && secondLevel && parts.at(-1)!.length === 2 ? 2 : 1;
+    if (namedHost && parts.length > suffixLabels) {
+      const name = parts[parts.length - suffixLabels - 1];
       if (name && name !== "www" && name !== "api") {
         return name;
       }
@@ -82,7 +88,7 @@ export function extractServerName(server: McpServerConfig): string {
  * Format TypeScript code with Prettier.
  * @param filePath Destination whose Prettier config applies (searched upward); without
  *   it, Prettier's defaults, so output doesn't depend on the working directory
- * @returns Formatted code, or the input if formatting fails
+ * @throws When the code can't be parsed or the Prettier config is invalid
  */
 export async function formatTypeScript(
   code: string,
@@ -96,7 +102,12 @@ export async function formatTypeScript(
       ...prettierConfig,
       parser: "typescript",
     });
-  } catch {
-    return code;
+  } catch (error) {
+    // Unparsable output is a generator bug; a broken project config needs fixing: both
+    // must surface, not ship unformatted code
+    throw new Error(
+      `Failed to format generated code: ${(error as Error).message}`,
+      { cause: error },
+    );
   }
 }

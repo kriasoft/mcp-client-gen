@@ -21,7 +21,7 @@ import {
   schemaTypeAliases,
 } from "./codegen/index.js";
 import type { Introspection } from "./introspection.js";
-import { extractServerName } from "./pipeline.js";
+import { extractServerName, formatTypeScript } from "./pipeline.js";
 
 describe("extractServerName", () => {
   const name = (url: string, explicit?: string) =>
@@ -47,6 +47,11 @@ describe("extractServerName", () => {
     expect(name("https://api.com/notion/v1")).toBe("notion");
   });
 
+  test("skips a country second-level suffix", () => {
+    expect(name("https://api.example.co.uk/mcp")).toBe("example");
+    expect(name("https://example.com.au")).toBe("example");
+  });
+
   test("ignores IP and localhost hosts", () => {
     expect(name("http://127.0.0.1:8080/mcp")).toBe("server");
     expect(name("http://localhost:3000/github")).toBe("github");
@@ -56,6 +61,14 @@ describe("extractServerName", () => {
   test('falls back to "server" for unresolvable URLs', () => {
     expect(name("https://api.com")).toBe("server");
     expect(name("invalid-url")).toBe("server");
+  });
+});
+
+describe("formatTypeScript", () => {
+  test("fails on code it can't parse instead of returning it", async () => {
+    await expect(formatTypeScript("export const = ;")).rejects.toThrow(
+      "Failed to format generated code",
+    );
   });
 });
 
@@ -103,6 +116,43 @@ describe("jsonSchemaToTypeScript", () => {
         items: { anyOf: [{ type: "string" }, { type: "number" }] },
       }),
     ).toBe("(string | number)[]");
+  });
+
+  test("tuples follow the declared dialect's keyword", () => {
+    const pair = [{ type: "string" }, { type: "number" }];
+    const draft07 = "http://json-schema.org/draft-07/schema#";
+    const v2020 = "https://json-schema.org/draft/2020-12/schema";
+    // prefixItems isn't a draft-07 keyword: any array
+    expect(ts({ $schema: draft07, type: "array", prefixItems: pair })).toBe(
+      "unknown[]",
+    );
+    expect(
+      ts({ $schema: draft07, type: "array", items: pair, minItems: 2 }),
+    ).toBe("[string, number, ...unknown[]]");
+    // A pointer into a nested resource takes that resource's dialect
+    expect(
+      ts({
+        $schema: "https://json-schema.org/draft/2019-09/schema",
+        $ref: "#/$defs/child/$defs/tuple",
+        $defs: {
+          child: {
+            $id: "child",
+            $schema: v2020,
+            $defs: {
+              tuple: {
+                prefixItems: [{ type: "string" }],
+                items: false,
+                minItems: 1,
+              },
+            },
+          },
+        },
+      }),
+    ).toBe("[string]");
+    // An items array isn't a 2020-12 tuple
+    expect(ts({ $schema: v2020, type: "array", items: pair })).toBe(
+      "unknown[]",
+    );
   });
 
   test("tuples: positions past minItems are optional, rest from items", () => {
@@ -500,6 +550,29 @@ export async function use(alpha: AlphaClient) {
     expect(code).toContain(
       "export type AlphaClient = ReturnType<typeof createAlphaClient>;",
     );
+  });
+
+  test("documents a tool once, on its method", () => {
+    expect(code.split("Ends a comment *\\/ early")).toHaveLength(2);
+    expect(code).toContain("/** Arguments of the `get-user` tool. */");
+  });
+
+  test("strips the server name shared by every tool", () => {
+    const tools = ["notion-search", "notion_fetch", "Notion-create-pages"].map(
+      (name) => tool(name),
+    );
+    const module = generateClientFile("notion", { ...beta, tools });
+    expect(module).toContain("search(input: SearchInput");
+    expect(module).toContain("fetch(input: FetchInput");
+    expect(module).toContain("createPages(input: CreatePagesInput");
+    expect(module).toContain('name: "notion-search"'); // wire names unchanged
+
+    // One tool without the prefix: names stay as they are
+    const mixed = generateClientFile("notion", {
+      ...beta,
+      tools: [...tools, tool("search")],
+    });
+    expect(mixed).toContain("notionSearch(input: NotionSearchInput");
   });
 
   test("escapes wire names, keys and comments", () => {

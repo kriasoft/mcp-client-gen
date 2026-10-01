@@ -36,8 +36,8 @@ async function main() {
 
   try {
     const notion = createNotionClient(client);
-    console.log("\n2. Calling notionGetUsers({ user_id: 'self' })...");
-    const result = await notion.notionGetUsers({ user_id: "self" });
+    console.log("\n2. Calling getUsers({ user_id: 'self' })...");
+    const result = await notion.getUsers({ user_id: "self" });
     if (result.isError) throw new Error(JSON.stringify(result.content));
     console.log(
       `   ${JSON.stringify(result.content, null, 2).split("\n").join("\n   ")}`,

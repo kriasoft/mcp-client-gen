@@ -55,8 +55,9 @@ export function generateServerClient(
   // Tools are named first: they get the plainest names. Their type names are reserved
   // before any is emitted, so aliases for recursive refs can't take a later tool's.
   const typeNames = new Set([typeName]);
+  const prefix = sharedServerPrefix(serverName, result.tools);
   const tools = result.tools.map((tool) => {
-    const name = uniqueName(camelCase(tool.name), members);
+    const name = uniqueName(camelCase(tool.name.slice(prefix)), members);
     const base = pascalCase(name);
     const inputType = uniqueName(`${base}Input`, typeNames);
     const outputType = hasOutputSchema(tool)
@@ -119,6 +120,22 @@ export function hasResources(result: Introspection): boolean {
     result.resources.length > 0 ||
     result.resourceTemplates.length > 0
   );
+}
+
+/**
+ * Length of `{server}-` / `{server}_` when every tool name starts with it (`notion-search`
+ * → `search`): the client is the namespace already. Otherwise 0, keeping names as-is.
+ * Wire names are never changed.
+ */
+function sharedServerPrefix(serverName: string, tools: Tool[]): number {
+  const server = serverName.toLowerCase();
+  const prefixed = (name: string) =>
+    name.length > server.length + 1 &&
+    name.toLowerCase().startsWith(server) &&
+    "-_".includes(name[server.length]!);
+  return tools.length > 0 && tools.every((tool) => prefixed(tool.name))
+    ? server.length + 1
+    : 0;
 }
 
 /** Client type name for a server; its factory is `create` + this. */
