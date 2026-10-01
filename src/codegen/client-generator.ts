@@ -2,11 +2,11 @@
  * MCP client generation (ADR-003).
  *
  * One factory per server, taking the SDK `Client` and returning an object literal: a
- * method per tool, prompt, listed resource and simple resource template, plus a generic
- * resource reader. Methods
- * delegate to the SDK and return its full results. Member names are allocated so distinct
- * server names never collide (e.g. `get-user` vs `get_user`); tool type names derive from
- * them (`{Member}Input`/`Output`), recursive-ref aliases from those.
+ * method per tool, then `prompts` (a method per prompt) and `resources` (a generic reader,
+ * a method per listed resource and simple resource template). Methods delegate to the SDK
+ * and return its full results. Names are allocated per object so distinct server names
+ * never collide (e.g. `get-user` vs `get_user`); tool type names derive from them
+ * (`{Member}Input`/`Output`), recursive-ref aliases from those.
  *
  * SPDX-FileCopyrightText: 2025-present Kriasoft
  * SPDX-License-Identifier: MIT
@@ -36,13 +36,16 @@ import {
 } from "./utils.js";
 
 /**
- * Names tools/prompts/resources can't take: the generic reader; `then`, which would make
- * the client a thenable (`await`-ing it would call that tool); and `toJSON`, which
- * `JSON.stringify` would call.
+ * Names no object in the client may hold: `then` would make it a thenable (`await`-ing
+ * it, or returning it from an async function, would call that method), and
+ * `JSON.stringify` calls `toJSON`, nested objects included.
  */
-const RESERVED_MEMBERS = ["readResource", "then", "toJSON"];
+const RESERVED = ["then", "toJSON"];
 
-/** Generate the factory, its client type and its tool types for one server. */
+/**
+ * Generate the factory, its client type and its tool types for one server. Everything is
+ * emitted in wire-name order, not listing order, so a reordered catalog changes nothing.
+ */
 export function generateServerClient(
   sourceFile: SourceFile,
   serverName: string,
@@ -50,73 +53,67 @@ export function generateServerClient(
 ): void {
   const typeName = clientTypeName(serverName);
   const factoryName = `create${typeName}`;
-  const members = new Set(RESERVED_MEMBERS);
-  const methods: string[] = [];
+  const members: string[] = [];
 
-  // Names are allocated in wire-name order, not listing order, so a reordered catalog
-  // renames nothing. Tools first: they get the plainest names. Unprefixed tools before
-  // prefixed ones, so `search` keeps its name beside `notion-search`. Type names are
-  // reserved before any is emitted, so aliases for recursive refs can't take a later
-  // tool's.
+  // Tools own the top level; the namespaces are reserved even when absent, so a server
+  // adding its first prompt renames no tool. Unprefixed tools are named first, so `search`
+  // keeps its name beside `notion-search`. Type names are reserved before any is
+  // emitted, so aliases for recursive refs can't take a later tool's.
+  const topLevel = new Set(["prompts", "resources", ...RESERVED]);
   const typeNames = new Set([typeName]);
   const strip = serverPrefixStripper(serverName);
+  const tools = byWireName(result.tools, (tool) => tool.name);
   const toolNames = new Map<Tool, ToolNames>();
-  const [unprefixed, prefixed] = [false, true].map((isPrefixed) =>
-    byWireName(
-      result.tools.filter((tool) => !!strip(tool.name) === isPrefixed),
-      (tool) => tool.name,
-    ),
-  );
-  for (const tool of [...unprefixed!, ...prefixed!]) {
-    // `notion-search` → `search`, unless taken: then `notionSearch`
-    const stripped = strip(tool.name);
-    const preferred =
-      stripped && !members.has(camelCase(stripped)) ? stripped : tool.name;
-    const name = uniqueName(camelCase(preferred), members);
-    const base = pascalCase(name);
-    toolNames.set(tool, {
-      name,
-      inputType: uniqueName(`${base}Input`, typeNames),
-      outputType: hasOutputSchema(tool)
-        ? uniqueName(`${base}Output`, typeNames)
-        : undefined,
-    });
-  }
-  for (const tool of result.tools) {
+  for (const isPrefixed of [false, true])
+    for (const tool of tools.filter((t) => !!strip(t.name) === isPrefixed)) {
+      // `notion-search` → `search`, unless taken: then `notionSearch`
+      const stripped = strip(tool.name);
+      const preferred =
+        stripped && !topLevel.has(camelCase(stripped)) ? stripped : tool.name;
+      const name = uniqueName(camelCase(preferred), topLevel);
+      const base = pascalCase(name);
+      toolNames.set(tool, {
+        name,
+        inputType: uniqueName(`${base}Input`, typeNames),
+        outputType: hasOutputSchema(tool)
+          ? uniqueName(`${base}Output`, typeNames)
+          : undefined,
+      });
+    }
+  for (const tool of tools) {
     const { name, inputType, outputType } = toolNames.get(tool)!;
     generateToolInputType(sourceFile, tool, inputType, typeNames);
     if (outputType)
       generateToolOutputType(sourceFile, tool, outputType, typeNames);
-    methods.push(toolMethod(tool, name, { inputType, outputType }));
+    members.push(toolMethod(tool, name, { inputType, outputType }));
   }
 
-  const promptNames = allocate(
-    result.prompts,
-    (prompt) => prompt.name,
-    // Not `summarizePromptPrompt`
-    (prompt) => camelCase(prompt.name).replace(/(Prompt)?$/, "Prompt"),
-    members,
-  );
-  for (const prompt of result.prompts)
-    methods.push(promptMethod(prompt, promptNames.get(prompt)!));
-
-  if (hasResources(result)) {
-    methods.push(
-      method(
-        "Read a resource by URI (listed or from a resource template).",
-        "readResource(uri: string, options?: RequestOptions): Promise<ReadResourceResult>",
-        "return client.readResource({ uri }, options);",
+  if (result.prompts.length > 0) {
+    const promptNames = allocate(
+      result.prompts,
+      (prompt) => prompt.name,
+      (prompt) => camelCase(prompt.name),
+      new Set(RESERVED),
+    );
+    members.push(
+      namespace(
+        "Prompt templates from the server.",
+        "prompts",
+        [...promptNames].map(([prompt, name]) => promptMethod(prompt, name)),
       ),
     );
+  }
+
+  if (hasResources(result)) {
+    // Listed resources are named before templates
+    const taken = new Set(["read", ...RESERVED]);
     const resourceNames = allocate(
       result.resources,
       (resource) => `${resource.name}\0${resource.uri}`,
-      (resource) => "read" + pascalCase(resource.name),
-      members,
+      (resource) => camelCase(resource.name),
+      taken,
     );
-    for (const resource of result.resources)
-      methods.push(resourceMethod(resource, resourceNames.get(resource)!));
-    // Operators like {?q} aren't expanded: readResource(uri) covers them
+    // Operators like {?q} aren't expanded: read(uri) covers them
     const templates = result.resourceTemplates.flatMap((template) => {
       const uri = expandSimpleTemplate(template.uriTemplate);
       return uri ? [{ template, uri }] : [];
@@ -124,23 +121,38 @@ export function generateServerClient(
     const templateNames = allocate(
       templates,
       ({ template }) => `${template.name}\0${template.uriTemplate}`,
-      ({ template }) => "read" + pascalCase(template.name),
-      members,
+      ({ template }) => camelCase(template.name),
+      taken,
     );
-    for (const entry of templates)
-      methods.push(
-        templateMethod(entry.template, templateNames.get(entry)!, entry.uri),
-      );
+    members.push(
+      namespace(
+        "Resources: `read(uri)` reads any URI; the others read a listed resource or fill a URI template.",
+        "resources",
+        [
+          method(
+            "Read a resource by URI (listed or from a resource template).",
+            "read(uri: string, options?: RequestOptions): Promise<ReadResourceResult>",
+            "return client.readResource({ uri }, options);",
+          ),
+          ...[...resourceNames].map(([resource, name]) =>
+            resourceMethod(resource, name),
+          ),
+          ...[...templateNames].map(([{ template, uri }, name]) =>
+            templateMethod(template, name, uri),
+          ),
+        ],
+      ),
+    );
   }
 
   sourceFile.addFunction({
     name: factoryName,
     isExported: true,
-    parameters: [{ name: "client", type: "Client" }],
+    parameters: [{ name: "client", type: clientParameterType(result) }],
     docs: [commentText(factoryDoc(serverName, result))],
     statements: [
       ...(eraBound(result) ? [eraGuard(factoryName, result)] : []),
-      `return {\n${methods.join("\n\n")}\n};`,
+      `return {\n${members.join("\n\n")}\n};`,
     ],
   });
   sourceFile.addTypeAlias({
@@ -148,6 +160,20 @@ export function generateServerClient(
     isExported: true,
     type: `ReturnType<typeof ${factoryName}>`,
   });
+}
+
+/**
+ * Only the `Client` methods this module calls: the SDK class has private members, so a
+ * structural parameter is what lets a test double (or another SDK copy) stand in.
+ */
+function clientParameterType(result: ServerSnapshot): string {
+  const used = [
+    result.tools.length > 0 && "callTool",
+    result.prompts.length > 0 && "getPrompt",
+    eraBound(result) && "getProtocolEra",
+    hasResources(result) && "readResource",
+  ].filter((name) => name !== false);
+  return `Pick<Client, ${used.map((name) => JSON.stringify(name)).join(" | ") || "never"}>`;
 }
 
 interface ToolNames {
@@ -213,10 +239,15 @@ function allocate<T>(
   );
 }
 
-/** Sorted by code point: locale-independent, so output is the same everywhere. */
+/**
+ * Sorted by code point: locale-independent, so output is the same everywhere. Items
+ * sharing a key (a server bug) are ordered by their JSON, so no listing order shows.
+ */
 function byWireName<T>(items: T[], key: (item: T) => string): T[] {
-  return items.toSorted((a, b) =>
-    key(a) < key(b) ? -1 : key(a) > key(b) ? 1 : 0,
+  const compare = (x: string, y: string) => (x < y ? -1 : x > y ? 1 : 0);
+  return items.toSorted(
+    (a, b) =>
+      compare(key(a), key(b)) || compare(JSON.stringify(a), JSON.stringify(b)),
   );
 }
 
@@ -353,6 +384,11 @@ const VARNAME = /^(?:\w|%[0-9A-Fa-f]{2})+(?:\.(?:\w|%[0-9A-Fa-f]{2})+)*$/;
 function propertyAccess(name: string): string {
   const key = propertyKey(name);
   return key === name ? `.${name}` : `[${key}]`;
+}
+
+/** Object-literal property holding `methods`, with JSDoc. */
+function namespace(docs: string, name: string, methods: string[]): string {
+  return `${docComment(docs)}\n${name}: {\n${methods.join("\n\n")}\n},`;
 }
 
 /** Object-literal method with optional JSDoc. */

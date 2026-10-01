@@ -16,8 +16,8 @@ test.skipIf(!process.env.NOTION_E2E)(
       oauth: { timeout: 120_000 }, // time to approve in the browser
     });
 
-    expect(code).toContain(
-      "export function createNotionClient(client: Client)",
+    expect(code).toMatch(
+      /export function createNotionClient\(\s*client: Pick<Client,/,
     );
     expect(code).toContain("search(input: SearchInput");
   },

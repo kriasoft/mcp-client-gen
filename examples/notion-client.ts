@@ -7,137 +7,115 @@ import type {
   RequestOptions,
 } from "@modelcontextprotocol/client";
 
-/** Arguments of the `notion-search` tool. */
-export type SearchInput = {
-  /**
-   * Semantic search query over your entire Notion workspace and connected sources (Slack, Google Drive, Github, Jira, Microsoft Teams, Sharepoint, OneDrive, or Linear). For best results, don't provide more than one question per tool call. Use a separate "search" tool call for each search you want to perform.
-   * Alternatively, the query can be a substring or keyword to find users by matching against their name or email address. For example: "john" or "john@example.com"
-   */
-  query: string;
-  query_type?: "internal" | "user";
-  content_search_mode?: "workspace_search" | "ai_search";
-  /** Optionally, provide the URL of a Data source to search. This will perform a semantic search over the pages in the Data Source. Note: must be a Data Source, not a Database. <data-source> tags are part of the Notion flavored Markdown format returned by tools like fetch. The full spec is available in the create-pages tool description. */
-  data_source_url?: string;
-  /** Optionally, provide the URL or ID of a page to search within. This will perform a semantic search over the content within and under the specified page. Accepts either a full page URL (e.g. https://notion.so/workspace/Page-Title-1234567890) or just the page ID (UUIDv4) with or without dashes. */
-  page_url?: string;
-  /** Optionally, provide the ID of a teamspace to restrict search results to. This will perform a search over content within the specified teamspace only. Accepts the teamspace ID (UUIDv4) with or without dashes. */
-  teamspace_id?: string;
-  /** Optionally provide filters to apply to the search results. Only valid when query_type is 'internal'. */
-  filters?: {
-    /** Optional filter to only produce search results created within the specified date range. */
-    created_date_range?: {
-      /** The start date of the date range as an ISO 8601 date string, if any. */
-      start_date?: string;
-      /** The end date of the date range as an ISO 8601 date string, if any. */
-      end_date?: string;
-    };
-    /** Optional filter to only produce search results created by the Notion users that have the specified user IDs. */
-    created_by_user_ids?: string[];
-  };
-};
-
-/** Arguments of the `notion-fetch` tool. */
-export type FetchInput = {
-  /** The ID or URL of the Notion page to fetch */
-  id: string;
-};
-
-/** Arguments of the `notion-create-pages` tool. */
-export type CreatePagesInput = {
-  /** The pages to create. */
-  pages: {
-    /** The properties of the new page, which is a JSON map of property names to SQLite values. For pages in a database, use the SQLite schema definition shown in <database>. For pages outside of a database, the only allowed property is "title", which is the title of the page and is automatically shown at the top of the page as a large heading. */
-    properties?: {
-      [key: string]: string | number | null;
-    };
-    /** The content of the new page, using Notion Markdown. */
-    content?: string;
-  }[];
-  /** The parent under which the new pages will be created. This can be a page (page_id), a database page (database_id), or a data source/collection under a database (data_source_id). If omitted, the new pages will be created as private pages at the workspace level. Use data_source_id when you have a collection:// URL from the fetch tool. */
-  parent?:
-    | {
-        /** The ID of the parent page (with or without dashes), for example, 195de9221179449fab8075a27c979105 */
-        page_id: string;
-        type?: "page_id";
-      }
-    | {
-        /** The ID of the parent database (with or without dashes), for example, 195de9221179449fab8075a27c979105 */
-        database_id: string;
-        type?: "database_id";
-      }
-    | {
-        /** The ID of the parent data source (collection), with or without dashes. For example, f336d0bc-b841-465b-8045-024475c079dd */
-        data_source_id: string;
-        type?: "data_source_id";
-      };
-};
-
-/** Arguments of the `notion-update-page` tool. */
-export type UpdatePageInput = {
-  /** The data required for updating a page */
-  data: {
-    /** The ID of the page to update, with or without dashes. */
+/** Arguments of the `notion-create-comment` tool. */
+export type CreateCommentInput = {
+  /** The parent of the comment. This must be a page. */
+  parent: {
+    /** The ID of the parent page (with or without dashes), for example, 195de9221179449fab8075a27c979105 */
     page_id: string;
+    type?: "page_id";
+  };
+  /** An array of rich text objects that represent the content of the comment. */
+  rich_text: ({
+    /** All rich text objects contain an annotations object that sets the styling for the rich text. */
+    annotations?: {
+      bold?: boolean;
+      italic?: boolean;
+      strikethrough?: boolean;
+      underline?: boolean;
+      code?: boolean;
+      color?: string;
+    };
   } & (
     | {
-        command: "update_properties";
-        /** A JSON object that updates the page's properties. For pages in a database, use the SQLite schema definition shown in <database>. For pages outside of a database, the only allowed property is "title", which is the title of the page in inline markdown format. Use null to remove a property's value. */
-        properties: {
-          [key: string]: string | number | null;
+        type?: "text";
+        /** If a rich text object's type value is `text`, then the corresponding text field contains an object including the text content and any inline link. */
+        text: {
+          /** The actual text content of the text. */
+          content: string;
+          /** An object with information about any inline link in this text, if included. */
+          link?: {
+            /** The URL of the link. */
+            url: string;
+          } | null;
         };
       }
     | {
-        command: "replace_content";
-        /** The new string to replace all content with. */
-        new_str: string;
+        type?: "mention";
+        /** Mention objects represent an inline mention of a database, date, link preview mention, page, template mention, or user. A mention is created in the Notion UI when a user types `@` followed by the name of the reference. */
+        mention:
+          | {
+              type?: "user";
+              /** Details of the user mention. */
+              user: {
+                /** The ID of the user. */
+                id: string;
+                object?: "user";
+              };
+            }
+          | {
+              type?: "date";
+              /** Details of the date mention. */
+              date: {
+                /** The start date of the date object. */
+                start: string;
+                /** The end date of the date object, if any. */
+                end?: string | null;
+                /** The time zone of the date object, if any. E.g. America/Los_Angeles, Europe/London, etc. */
+                time_zone?: string | null;
+              };
+            }
+          | {
+              type?: "page";
+              /** Details of the page mention. */
+              page: {
+                /** The ID of the page in the mention. */
+                id: string;
+              };
+            }
+          | {
+              type?: "database";
+              /** Details of the database mention. */
+              database: {
+                /** The ID of the database in the mention. */
+                id: string;
+              };
+            }
+          | {
+              type?: "template_mention";
+              /** Details of the template mention. */
+              template_mention:
+                | {
+                    type?: "template_mention_date";
+                    template_mention_date: "today" | "now";
+                  }
+                | {
+                    type?: "template_mention_user";
+                    template_mention_user: "me";
+                  };
+            }
+          | {
+              type?: "custom_emoji";
+              /** Details of the custom emoji mention. */
+              custom_emoji: {
+                /** The ID of the custom emoji. */
+                id: string;
+                /** The name of the custom emoji. */
+                name?: string;
+                /** The URL of the custom emoji. */
+                url?: string;
+              };
+            };
       }
     | {
-        command: "replace_content_range";
-        /** Unique start and end snippet of the string to replace in the page content, including whitespace. DO NOT provide the entire string to replace. Instead, provide up to the first ~10 characters of the string to replace, an ellipsis, and then up to the last ~10 characters of the string to replace. Make sure you provide enough of the start and end snippet to uniquely identify the string to replace. For example, to replace an entire section, use "old_start_and_end_snippet":"# Section heading...last paragraph." */
-        selection_with_ellipsis: string;
-        /** The new string to replace the old string with. */
-        new_str: string;
+        type?: "equation";
+        /** Notion supports inline LaTeX equations as rich text objects with a type value of `equation`. */
+        equation: {
+          /** A KaTeX compatible string. */
+          expression: string;
+        };
       }
-    | {
-        command: "insert_content_after";
-        /** Unique start and end snippet of the string to match in the page content, including whitespace. DO NOT provide the entire string to match. Instead, provide up to the first ~10 characters of the string to match, an ellipsis, and then up to the last ~10 characters of the string to match. Make sure you provide enough of the start and end snippet to uniquely identify the string to match. For example, to match an entire section, use "selection_with_ellipsis":"# Section heading...last paragraph." */
-        selection_with_ellipsis: string;
-        /** The new content to insert. */
-        new_str: string;
-      }
-  );
-};
-
-/** Arguments of the `notion-move-pages` tool. */
-export type MovePagesInput = {
-  /** An array of up to 100 page or database IDs to move. IDs are v4 UUIDs and can be supplied with or without dashes (e.g. extracted from a <page> or <database> URL given by the "search" or "fetch" tool). Data Sources under Databases can't be moved individually. */
-  page_or_database_ids: string[];
-  /** The new parent under which the pages will be moved. This can be a page, the workspace, a database, or a specific data source under a database when there are multiple. Moving pages to the workspace level adds them as private pages and should rarely be used. */
-  new_parent:
-    | {
-        /** The ID of the parent page (with or without dashes), for example, 195de9221179449fab8075a27c979105 */
-        page_id: string;
-        type?: "page_id";
-      }
-    | {
-        /** The ID of the parent database (with or without dashes), for example, 195de9221179449fab8075a27c979105 */
-        database_id: string;
-        type?: "database_id";
-      }
-    | {
-        /** The ID of the parent data source (collection), with or without dashes. For example, f336d0bc-b841-465b-8045-024475c079dd */
-        data_source_id: string;
-        type?: "data_source_id";
-      }
-    | {
-        type: "workspace";
-      };
-};
-
-/** Arguments of the `notion-duplicate-page` tool. */
-export type DuplicatePageInput = {
-  /** The ID of the page to duplicate. This is a v4 UUID, with or without dashes, and can be parsed from a Notion page URL. */
-  page_id: string;
+  ))[];
 };
 
 /** Arguments of the `notion-create-database` tool. */
@@ -533,6 +511,127 @@ export type CreateDatabaseInput = {
         };
       }
   ))[];
+};
+
+/** Arguments of the `notion-create-pages` tool. */
+export type CreatePagesInput = {
+  /** The pages to create. */
+  pages: {
+    /** The properties of the new page, which is a JSON map of property names to SQLite values. For pages in a database, use the SQLite schema definition shown in <database>. For pages outside of a database, the only allowed property is "title", which is the title of the page and is automatically shown at the top of the page as a large heading. */
+    properties?: {
+      [key: string]: string | number | null;
+    };
+    /** The content of the new page, using Notion Markdown. */
+    content?: string;
+  }[];
+  /** The parent under which the new pages will be created. This can be a page (page_id), a database page (database_id), or a data source/collection under a database (data_source_id). If omitted, the new pages will be created as private pages at the workspace level. Use data_source_id when you have a collection:// URL from the fetch tool. */
+  parent?:
+    | {
+        /** The ID of the parent page (with or without dashes), for example, 195de9221179449fab8075a27c979105 */
+        page_id: string;
+        type?: "page_id";
+      }
+    | {
+        /** The ID of the parent database (with or without dashes), for example, 195de9221179449fab8075a27c979105 */
+        database_id: string;
+        type?: "database_id";
+      }
+    | {
+        /** The ID of the parent data source (collection), with or without dashes. For example, f336d0bc-b841-465b-8045-024475c079dd */
+        data_source_id: string;
+        type?: "data_source_id";
+      };
+};
+
+/** Arguments of the `notion-duplicate-page` tool. */
+export type DuplicatePageInput = {
+  /** The ID of the page to duplicate. This is a v4 UUID, with or without dashes, and can be parsed from a Notion page URL. */
+  page_id: string;
+};
+
+/** Arguments of the `notion-fetch` tool. */
+export type FetchInput = {
+  /** The ID or URL of the Notion page to fetch */
+  id: string;
+};
+
+/** Arguments of the `notion-get-comments` tool. */
+export type GetCommentsInput = {
+  /** Identifier for a Notion page. */
+  page_id: string;
+};
+
+/** Arguments of the `notion-get-teams` tool. */
+export type GetTeamsInput = {
+  /** Optional search query to filter teams by name (case-insensitive). */
+  query?: string;
+};
+
+/** Arguments of the `notion-get-users` tool. */
+export type GetUsersInput = {
+  /** Optional search query to filter users by name or email (case-insensitive). */
+  query?: string;
+  /** Cursor for pagination. Use the next_cursor value from the previous response to get the next page. */
+  start_cursor?: string;
+  /** Number of users to return per page (default: 100, max: 100). */
+  page_size?: number;
+  /** Return only the user matching this ID. Pass "self" to fetch the current user. */
+  user_id?: string;
+};
+
+/** Arguments of the `notion-move-pages` tool. */
+export type MovePagesInput = {
+  /** An array of up to 100 page or database IDs to move. IDs are v4 UUIDs and can be supplied with or without dashes (e.g. extracted from a <page> or <database> URL given by the "search" or "fetch" tool). Data Sources under Databases can't be moved individually. */
+  page_or_database_ids: string[];
+  /** The new parent under which the pages will be moved. This can be a page, the workspace, a database, or a specific data source under a database when there are multiple. Moving pages to the workspace level adds them as private pages and should rarely be used. */
+  new_parent:
+    | {
+        /** The ID of the parent page (with or without dashes), for example, 195de9221179449fab8075a27c979105 */
+        page_id: string;
+        type?: "page_id";
+      }
+    | {
+        /** The ID of the parent database (with or without dashes), for example, 195de9221179449fab8075a27c979105 */
+        database_id: string;
+        type?: "database_id";
+      }
+    | {
+        /** The ID of the parent data source (collection), with or without dashes. For example, f336d0bc-b841-465b-8045-024475c079dd */
+        data_source_id: string;
+        type?: "data_source_id";
+      }
+    | {
+        type: "workspace";
+      };
+};
+
+/** Arguments of the `notion-search` tool. */
+export type SearchInput = {
+  /**
+   * Semantic search query over your entire Notion workspace and connected sources (Slack, Google Drive, Github, Jira, Microsoft Teams, Sharepoint, OneDrive, or Linear). For best results, don't provide more than one question per tool call. Use a separate "search" tool call for each search you want to perform.
+   * Alternatively, the query can be a substring or keyword to find users by matching against their name or email address. For example: "john" or "john@example.com"
+   */
+  query: string;
+  query_type?: "internal" | "user";
+  content_search_mode?: "workspace_search" | "ai_search";
+  /** Optionally, provide the URL of a Data source to search. This will perform a semantic search over the pages in the Data Source. Note: must be a Data Source, not a Database. <data-source> tags are part of the Notion flavored Markdown format returned by tools like fetch. The full spec is available in the create-pages tool description. */
+  data_source_url?: string;
+  /** Optionally, provide the URL or ID of a page to search within. This will perform a semantic search over the content within and under the specified page. Accepts either a full page URL (e.g. https://notion.so/workspace/Page-Title-1234567890) or just the page ID (UUIDv4) with or without dashes. */
+  page_url?: string;
+  /** Optionally, provide the ID of a teamspace to restrict search results to. This will perform a search over content within the specified teamspace only. Accepts the teamspace ID (UUIDv4) with or without dashes. */
+  teamspace_id?: string;
+  /** Optionally provide filters to apply to the search results. Only valid when query_type is 'internal'. */
+  filters?: {
+    /** Optional filter to only produce search results created within the specified date range. */
+    created_date_range?: {
+      /** The start date of the date range as an ISO 8601 date string, if any. */
+      start_date?: string;
+      /** The end date of the date range as an ISO 8601 date string, if any. */
+      end_date?: string;
+    };
+    /** Optional filter to only produce search results created by the Notion users that have the specified user IDs. */
+    created_by_user_ids?: string[];
+  };
 };
 
 /** Arguments of the `notion-update-database` tool. */
@@ -936,139 +1035,40 @@ export type UpdateDatabaseInput = {
   in_trash?: boolean;
 };
 
-/** Arguments of the `notion-create-comment` tool. */
-export type CreateCommentInput = {
-  /** The parent of the comment. This must be a page. */
-  parent: {
-    /** The ID of the parent page (with or without dashes), for example, 195de9221179449fab8075a27c979105 */
+/** Arguments of the `notion-update-page` tool. */
+export type UpdatePageInput = {
+  /** The data required for updating a page */
+  data: {
+    /** The ID of the page to update, with or without dashes. */
     page_id: string;
-    type?: "page_id";
-  };
-  /** An array of rich text objects that represent the content of the comment. */
-  rich_text: ({
-    /** All rich text objects contain an annotations object that sets the styling for the rich text. */
-    annotations?: {
-      bold?: boolean;
-      italic?: boolean;
-      strikethrough?: boolean;
-      underline?: boolean;
-      code?: boolean;
-      color?: string;
-    };
   } & (
     | {
-        type?: "text";
-        /** If a rich text object's type value is `text`, then the corresponding text field contains an object including the text content and any inline link. */
-        text: {
-          /** The actual text content of the text. */
-          content: string;
-          /** An object with information about any inline link in this text, if included. */
-          link?: {
-            /** The URL of the link. */
-            url: string;
-          } | null;
+        command: "update_properties";
+        /** A JSON object that updates the page's properties. For pages in a database, use the SQLite schema definition shown in <database>. For pages outside of a database, the only allowed property is "title", which is the title of the page in inline markdown format. Use null to remove a property's value. */
+        properties: {
+          [key: string]: string | number | null;
         };
       }
     | {
-        type?: "mention";
-        /** Mention objects represent an inline mention of a database, date, link preview mention, page, template mention, or user. A mention is created in the Notion UI when a user types `@` followed by the name of the reference. */
-        mention:
-          | {
-              type?: "user";
-              /** Details of the user mention. */
-              user: {
-                /** The ID of the user. */
-                id: string;
-                object?: "user";
-              };
-            }
-          | {
-              type?: "date";
-              /** Details of the date mention. */
-              date: {
-                /** The start date of the date object. */
-                start: string;
-                /** The end date of the date object, if any. */
-                end?: string | null;
-                /** The time zone of the date object, if any. E.g. America/Los_Angeles, Europe/London, etc. */
-                time_zone?: string | null;
-              };
-            }
-          | {
-              type?: "page";
-              /** Details of the page mention. */
-              page: {
-                /** The ID of the page in the mention. */
-                id: string;
-              };
-            }
-          | {
-              type?: "database";
-              /** Details of the database mention. */
-              database: {
-                /** The ID of the database in the mention. */
-                id: string;
-              };
-            }
-          | {
-              type?: "template_mention";
-              /** Details of the template mention. */
-              template_mention:
-                | {
-                    type?: "template_mention_date";
-                    template_mention_date: "today" | "now";
-                  }
-                | {
-                    type?: "template_mention_user";
-                    template_mention_user: "me";
-                  };
-            }
-          | {
-              type?: "custom_emoji";
-              /** Details of the custom emoji mention. */
-              custom_emoji: {
-                /** The ID of the custom emoji. */
-                id: string;
-                /** The name of the custom emoji. */
-                name?: string;
-                /** The URL of the custom emoji. */
-                url?: string;
-              };
-            };
+        command: "replace_content";
+        /** The new string to replace all content with. */
+        new_str: string;
       }
     | {
-        type?: "equation";
-        /** Notion supports inline LaTeX equations as rich text objects with a type value of `equation`. */
-        equation: {
-          /** A KaTeX compatible string. */
-          expression: string;
-        };
+        command: "replace_content_range";
+        /** Unique start and end snippet of the string to replace in the page content, including whitespace. DO NOT provide the entire string to replace. Instead, provide up to the first ~10 characters of the string to replace, an ellipsis, and then up to the last ~10 characters of the string to replace. Make sure you provide enough of the start and end snippet to uniquely identify the string to replace. For example, to replace an entire section, use "old_start_and_end_snippet":"# Section heading...last paragraph." */
+        selection_with_ellipsis: string;
+        /** The new string to replace the old string with. */
+        new_str: string;
       }
-  ))[];
-};
-
-/** Arguments of the `notion-get-comments` tool. */
-export type GetCommentsInput = {
-  /** Identifier for a Notion page. */
-  page_id: string;
-};
-
-/** Arguments of the `notion-get-teams` tool. */
-export type GetTeamsInput = {
-  /** Optional search query to filter teams by name (case-insensitive). */
-  query?: string;
-};
-
-/** Arguments of the `notion-get-users` tool. */
-export type GetUsersInput = {
-  /** Optional search query to filter users by name or email (case-insensitive). */
-  query?: string;
-  /** Cursor for pagination. Use the next_cursor value from the previous response to get the next page. */
-  start_cursor?: string;
-  /** Number of users to return per page (default: 100, max: 100). */
-  page_size?: number;
-  /** Return only the user matching this ID. Pass "self" to fetch the current user. */
-  user_id?: string;
+    | {
+        command: "insert_content_after";
+        /** Unique start and end snippet of the string to match in the page content, including whitespace. DO NOT provide the entire string to match. Instead, provide up to the first ~10 characters of the string to match, an ellipsis, and then up to the last ~10 characters of the string to match. Make sure you provide enough of the start and end snippet to uniquely identify the string to match. For example, to match an entire section, use "selection_with_ellipsis":"# Section heading...last paragraph." */
+        selection_with_ellipsis: string;
+        /** The new content to insert. */
+        new_str: string;
+      }
+  );
 };
 
 /**
@@ -1076,63 +1076,35 @@ export type GetUsersInput = {
  *
  * Call `client.listTools()` once before using tools: the SDK uses the definitions to validate typed results and to send `x-mcp-header` arguments as headers.
  */
-export function createNotionClient(client: Client) {
+export function createNotionClient(
+  client: Pick<Client, "callTool" | "readResource">,
+) {
   return {
-    /**
-     * Perform a search over:
-     * - "internal": Semantic search over Notion workspace and connected sources (Slack, Google Drive, Github, Jira, Microsoft Teams, Sharepoint, OneDrive, Linear). Supports filtering by creation date and creator.
-     * - "user": Search for users by name or email.
-     *
-     * Auto-selects AI search (with connected sources) or workspace search (workspace-only, faster) based on user's access to Notion AI. Use content_search_mode to override.
-     * Use "fetch" tool for full page/database contents after getting search results.
-     * To search within a database: First fetch the database to get the data source URL (collection://...) from <data-source url="..."> tags, then use that as data_source_url. For multi-source databases, match by view ID (?v=...) in URL or search all sources separately.
-     * Don't combine database URL/ID with collection:// prefix for data_source_url. Don't use database URL as page_url.
-     * 		<example description="Search with date range filter (only documents created in 2024)">
-     * 		{
-     * 			"query": "quarterly revenue report",
-     * 			"query_type": "internal",
-     * 			"filters": {
-     * 				"created_date_range": {
-     * 					"start_date": "2024-01-01",
-     * 					"end_date": "2025-01-01"
-     * 				}
-     * 			}
-     * 		}
-     * 		</example>
-     * 		<example description="Teamspace + creator filter">
-     * 		{"query": "project updates", "query_type": "internal", "teamspace_id": "f336d0bc-b841-465b-8045-024475c079dd", "filters": {"created_by_user_ids": ["a1b2c3d4-e5f6-7890-abcd-ef1234567890"]}}
-     * 		</example>
-     * 		<example description="Database with date + creator filters">
-     * 		{"query": "design review", "data_source_url": "collection://f336d0bc-b841-465b-8045-024475c079dd", "filters": {"created_date_range": {"start_date": "2024-10-01"}, "created_by_user_ids": ["a1b2c3d4-e5f6-7890-abcd-ef1234567890", "b2c3d4e5-f6a7-8901-bcde-f12345678901"]}}
-     * 		</example>
-     * 		<example description="User search">
-     * 		{"query": "john@example.com", "query_type": "user"}
-     * 		</example>
-     */
-    search(
-      input: SearchInput,
+    /** Add a comment to a page */
+    createComment(
+      input: CreateCommentInput,
       options?: CallToolRequestOptions,
     ): Promise<CallToolResult> {
       return client.callTool(
-        { name: "notion-search", arguments: input },
+        { name: "notion-create-comment", arguments: input },
         options,
       );
     },
 
     /**
-     * Retrieves details about a Notion entity (page or database) by URL or ID.
-     * Provide URL or ID in `id` parameter. Make multiple calls to fetch multiple entities.
-     * Pages use enhanced Markdown format. For the complete specification, fetch the MCP resource at `notion://docs/enhanced-markdown-spec`.
-     * Databases return all data sources (collections of pages with same schema). For multi-source databases with URLs like notion.so/db-id?v=view-id, the view ID helps identify which data source to use (check response for view's dataSourceUrl).
-     * 		<example>{"id": "https://notion.so/workspace/Page-a1b2c3d4e5f67890"}</example>
-     * 		<example>{"id": "12345678-90ab-cdef-1234-567890abcdef"}</example>
+     * Creates a new Notion database with the specified properties schema.
+     * If no title property provided, "Name" is auto-added. Returns Markdown with schema and SQLite definition.
+     * Property types: title (required), rich_text, number, select, multi_select, date, people, checkbox, url, email, phone_number, formula, relation, rollup.
+     *
+     * 		<example description="Minimal">{"properties": {}}</example>
+     * 		<example description="Task DB">{"parent": {"page_id": "f336d0bc-b841-465b-8045-024475c079dd"}, "title": [{"text": {"content": "Tasks"}}], "properties": {"Status": {"type": "select", "select": {"options": [{"name": "To Do", "color": "red"}, {"name": "Done", "color": "green"}]}}, "Due Date": {"type": "date", "date": {}}}}</example>
      */
-    fetch(
-      input: FetchInput,
+    createDatabase(
+      input: CreateDatabaseInput,
       options?: CallToolRequestOptions,
     ): Promise<CallToolResult> {
       return client.callTool(
-        { name: "notion-fetch", arguments: input },
+        { name: "notion-create-database", arguments: input },
         options,
       );
     },
@@ -1220,6 +1192,161 @@ export function createNotionClient(client: Client) {
       );
     },
 
+    /** Duplicate a Notion page. The page must be within the current workspace, and you must have permission to access it. The duplication completes asynchronously, so do not rely on the new page identified by the returned ID or URL to be populated immediately. Let the user know that the duplication is in progress and that they can check back later using the 'fetch' tool or by clicking the returned URL and viewing it in the Notion app. */
+    duplicatePage(
+      input: DuplicatePageInput,
+      options?: CallToolRequestOptions,
+    ): Promise<CallToolResult> {
+      return client.callTool(
+        { name: "notion-duplicate-page", arguments: input },
+        options,
+      );
+    },
+
+    /**
+     * Retrieves details about a Notion entity (page or database) by URL or ID.
+     * Provide URL or ID in `id` parameter. Make multiple calls to fetch multiple entities.
+     * Pages use enhanced Markdown format. For the complete specification, fetch the MCP resource at `notion://docs/enhanced-markdown-spec`.
+     * Databases return all data sources (collections of pages with same schema). For multi-source databases with URLs like notion.so/db-id?v=view-id, the view ID helps identify which data source to use (check response for view's dataSourceUrl).
+     * 		<example>{"id": "https://notion.so/workspace/Page-a1b2c3d4e5f67890"}</example>
+     * 		<example>{"id": "12345678-90ab-cdef-1234-567890abcdef"}</example>
+     */
+    fetch(
+      input: FetchInput,
+      options?: CallToolRequestOptions,
+    ): Promise<CallToolResult> {
+      return client.callTool(
+        { name: "notion-fetch", arguments: input },
+        options,
+      );
+    },
+
+    /** Get all comments of a page */
+    getComments(
+      input: GetCommentsInput,
+      options?: CallToolRequestOptions,
+    ): Promise<CallToolResult> {
+      return client.callTool(
+        { name: "notion-get-comments", arguments: input },
+        options,
+      );
+    },
+
+    /**
+     * Retrieves a list of teams (teamspaces) in the current workspace. Shows which teams exist, user membership status, IDs, names, and roles.
+     * Teams are returned split by membership status and limited to a maximum of 10 results.
+     * <examples>
+     * 1. List all teams (up to the limit of each type): {}
+     * 2. Search for teams by name: {"query": "engineering"}
+     * 3. Find a specific team: {"query": "Product Design"}
+     * </examples>
+     */
+    getTeams(
+      input: GetTeamsInput = {},
+      options?: CallToolRequestOptions,
+    ): Promise<CallToolResult> {
+      return client.callTool(
+        { name: "notion-get-teams", arguments: input },
+        options,
+      );
+    },
+
+    /**
+     * Retrieves a list of users in the current workspace. Shows workspace members and guests with their IDs, names, emails (if available), and types (person or bot).
+     * Supports cursor-based pagination to iterate through all users in the workspace.
+     * <examples>
+     * 1. List all users (first page): {}
+     * 2. Search for users by name or email: {"query": "john"}
+     * 3. Get next page of results: {"start_cursor": "abc123"}
+     * 4. Set custom page size: {"page_size": 20}
+     * 5. Fetch a specific user by ID: {"user_id": "00000000-0000-4000-8000-000000000000"}
+     * 6. Fetch the current user: {"user_id": "self"}
+     * </examples>
+     */
+    getUsers(
+      input: GetUsersInput = {},
+      options?: CallToolRequestOptions,
+    ): Promise<CallToolResult> {
+      return client.callTool(
+        { name: "notion-get-users", arguments: input },
+        options,
+      );
+    },
+
+    /** Move one or more Notion pages or databases to a new parent. */
+    movePages(
+      input: MovePagesInput,
+      options?: CallToolRequestOptions,
+    ): Promise<CallToolResult> {
+      return client.callTool(
+        { name: "notion-move-pages", arguments: input },
+        options,
+      );
+    },
+
+    /**
+     * Perform a search over:
+     * - "internal": Semantic search over Notion workspace and connected sources (Slack, Google Drive, Github, Jira, Microsoft Teams, Sharepoint, OneDrive, Linear). Supports filtering by creation date and creator.
+     * - "user": Search for users by name or email.
+     *
+     * Auto-selects AI search (with connected sources) or workspace search (workspace-only, faster) based on user's access to Notion AI. Use content_search_mode to override.
+     * Use "fetch" tool for full page/database contents after getting search results.
+     * To search within a database: First fetch the database to get the data source URL (collection://...) from <data-source url="..."> tags, then use that as data_source_url. For multi-source databases, match by view ID (?v=...) in URL or search all sources separately.
+     * Don't combine database URL/ID with collection:// prefix for data_source_url. Don't use database URL as page_url.
+     * 		<example description="Search with date range filter (only documents created in 2024)">
+     * 		{
+     * 			"query": "quarterly revenue report",
+     * 			"query_type": "internal",
+     * 			"filters": {
+     * 				"created_date_range": {
+     * 					"start_date": "2024-01-01",
+     * 					"end_date": "2025-01-01"
+     * 				}
+     * 			}
+     * 		}
+     * 		</example>
+     * 		<example description="Teamspace + creator filter">
+     * 		{"query": "project updates", "query_type": "internal", "teamspace_id": "f336d0bc-b841-465b-8045-024475c079dd", "filters": {"created_by_user_ids": ["a1b2c3d4-e5f6-7890-abcd-ef1234567890"]}}
+     * 		</example>
+     * 		<example description="Database with date + creator filters">
+     * 		{"query": "design review", "data_source_url": "collection://f336d0bc-b841-465b-8045-024475c079dd", "filters": {"created_date_range": {"start_date": "2024-10-01"}, "created_by_user_ids": ["a1b2c3d4-e5f6-7890-abcd-ef1234567890", "b2c3d4e5-f6a7-8901-bcde-f12345678901"]}}
+     * 		</example>
+     * 		<example description="User search">
+     * 		{"query": "john@example.com", "query_type": "user"}
+     * 		</example>
+     */
+    search(
+      input: SearchInput,
+      options?: CallToolRequestOptions,
+    ): Promise<CallToolResult> {
+      return client.callTool(
+        { name: "notion-search", arguments: input },
+        options,
+      );
+    },
+
+    /**
+     * Update a Notion database's properties, name, description, or other attributes. Returns Markdown showing updated structure and schema.
+     * Database properties define columns/fields. See create_database for property types.
+     * Examples:
+     * (1) Update database title and description: { "database_id": "f336d0bc-b841-465b-8045-024475c079dd", "title": [{"type": "text", "text": {"content": "Project Tracker 2024"}}], "description": [{"type": "text", "text": {"content": "Track all projects and deliverables"}}] }
+     * (2) Add new properties to a database: { "database_id": "f336d0bc-b841-465b-8045-024475c079dd", "properties": { "Priority": { "select": { "options": [ {"name": "High", "color": "red"}, {"name": "Medium", "color": "yellow"}, {"name": "Low", "color": "green"} ] } }, "Due Date": {"date": {}}, "Assigned To": {"people": {}} } }
+     * (3) Rename an existing property (use the property ID or current name): { "database_id": "f336d0bc-b841-465b-8045-024475c079dd", "properties": { "Status": {"name": "Project Status"} } }
+     * (4) Remove a property (set to null): { "database_id": "f336d0bc-b841-465b-8045-024475c079dd", "properties": { "Old Property": null } }
+     * (5) Change display mode from inline to full page: { "database_id": "f336d0bc-b841-465b-8045-024475c079dd", "is_inline": false }
+     * (6) Move to trash (DANGER: confirm with user, cannot undo without Notion UI): {"database_id": "f336d0bc-b841-465b-8045-024475c079dd", "in_trash": true}
+     * Notes: Cannot delete/create title properties. Max one unique_id property. Cannot update synced databases. Use "fetch" first to see current schema.
+     */
+    updateDatabase(
+      input: UpdateDatabaseInput,
+      options?: CallToolRequestOptions,
+    ): Promise<CallToolResult> {
+      return client.callTool(
+        { name: "notion-update-database", arguments: input },
+        options,
+      );
+    },
+
     /**
      * ## Overview
      * Update a Notion page's properties or content.
@@ -1301,151 +1428,26 @@ export function createNotionClient(client: Client) {
       );
     },
 
-    /** Move one or more Notion pages or databases to a new parent. */
-    movePages(
-      input: MovePagesInput,
-      options?: CallToolRequestOptions,
-    ): Promise<CallToolResult> {
-      return client.callTool(
-        { name: "notion-move-pages", arguments: input },
-        options,
-      );
-    },
+    /** Resources: `read(uri)` reads any URI; the others read a listed resource or fill a URI template. */
+    resources: {
+      /** Read a resource by URI (listed or from a resource template). */
+      read(uri: string, options?: RequestOptions): Promise<ReadResourceResult> {
+        return client.readResource({ uri }, options);
+      },
 
-    /** Duplicate a Notion page. The page must be within the current workspace, and you must have permission to access it. The duplication completes asynchronously, so do not rely on the new page identified by the returned ID or URL to be populated immediately. Let the user know that the duplication is in progress and that they can check back later using the 'fetch' tool or by clicking the returned URL and viewing it in the Notion app. */
-    duplicatePage(
-      input: DuplicatePageInput,
-      options?: CallToolRequestOptions,
-    ): Promise<CallToolResult> {
-      return client.callTool(
-        { name: "notion-duplicate-page", arguments: input },
-        options,
-      );
-    },
-
-    /**
-     * Creates a new Notion database with the specified properties schema.
-     * If no title property provided, "Name" is auto-added. Returns Markdown with schema and SQLite definition.
-     * Property types: title (required), rich_text, number, select, multi_select, date, people, checkbox, url, email, phone_number, formula, relation, rollup.
-     *
-     * 		<example description="Minimal">{"properties": {}}</example>
-     * 		<example description="Task DB">{"parent": {"page_id": "f336d0bc-b841-465b-8045-024475c079dd"}, "title": [{"text": {"content": "Tasks"}}], "properties": {"Status": {"type": "select", "select": {"options": [{"name": "To Do", "color": "red"}, {"name": "Done", "color": "green"}]}}, "Due Date": {"type": "date", "date": {}}}}</example>
-     */
-    createDatabase(
-      input: CreateDatabaseInput,
-      options?: CallToolRequestOptions,
-    ): Promise<CallToolResult> {
-      return client.callTool(
-        { name: "notion-create-database", arguments: input },
-        options,
-      );
-    },
-
-    /**
-     * Update a Notion database's properties, name, description, or other attributes. Returns Markdown showing updated structure and schema.
-     * Database properties define columns/fields. See create_database for property types.
-     * Examples:
-     * (1) Update database title and description: { "database_id": "f336d0bc-b841-465b-8045-024475c079dd", "title": [{"type": "text", "text": {"content": "Project Tracker 2024"}}], "description": [{"type": "text", "text": {"content": "Track all projects and deliverables"}}] }
-     * (2) Add new properties to a database: { "database_id": "f336d0bc-b841-465b-8045-024475c079dd", "properties": { "Priority": { "select": { "options": [ {"name": "High", "color": "red"}, {"name": "Medium", "color": "yellow"}, {"name": "Low", "color": "green"} ] } }, "Due Date": {"date": {}}, "Assigned To": {"people": {}} } }
-     * (3) Rename an existing property (use the property ID or current name): { "database_id": "f336d0bc-b841-465b-8045-024475c079dd", "properties": { "Status": {"name": "Project Status"} } }
-     * (4) Remove a property (set to null): { "database_id": "f336d0bc-b841-465b-8045-024475c079dd", "properties": { "Old Property": null } }
-     * (5) Change display mode from inline to full page: { "database_id": "f336d0bc-b841-465b-8045-024475c079dd", "is_inline": false }
-     * (6) Move to trash (DANGER: confirm with user, cannot undo without Notion UI): {"database_id": "f336d0bc-b841-465b-8045-024475c079dd", "in_trash": true}
-     * Notes: Cannot delete/create title properties. Max one unique_id property. Cannot update synced databases. Use "fetch" first to see current schema.
-     */
-    updateDatabase(
-      input: UpdateDatabaseInput,
-      options?: CallToolRequestOptions,
-    ): Promise<CallToolResult> {
-      return client.callTool(
-        { name: "notion-update-database", arguments: input },
-        options,
-      );
-    },
-
-    /** Add a comment to a page */
-    createComment(
-      input: CreateCommentInput,
-      options?: CallToolRequestOptions,
-    ): Promise<CallToolResult> {
-      return client.callTool(
-        { name: "notion-create-comment", arguments: input },
-        options,
-      );
-    },
-
-    /** Get all comments of a page */
-    getComments(
-      input: GetCommentsInput,
-      options?: CallToolRequestOptions,
-    ): Promise<CallToolResult> {
-      return client.callTool(
-        { name: "notion-get-comments", arguments: input },
-        options,
-      );
-    },
-
-    /**
-     * Retrieves a list of teams (teamspaces) in the current workspace. Shows which teams exist, user membership status, IDs, names, and roles.
-     * Teams are returned split by membership status and limited to a maximum of 10 results.
-     * <examples>
-     * 1. List all teams (up to the limit of each type): {}
-     * 2. Search for teams by name: {"query": "engineering"}
-     * 3. Find a specific team: {"query": "Product Design"}
-     * </examples>
-     */
-    getTeams(
-      input: GetTeamsInput = {},
-      options?: CallToolRequestOptions,
-    ): Promise<CallToolResult> {
-      return client.callTool(
-        { name: "notion-get-teams", arguments: input },
-        options,
-      );
-    },
-
-    /**
-     * Retrieves a list of users in the current workspace. Shows workspace members and guests with their IDs, names, emails (if available), and types (person or bot).
-     * Supports cursor-based pagination to iterate through all users in the workspace.
-     * <examples>
-     * 1. List all users (first page): {}
-     * 2. Search for users by name or email: {"query": "john"}
-     * 3. Get next page of results: {"start_cursor": "abc123"}
-     * 4. Set custom page size: {"page_size": 20}
-     * 5. Fetch a specific user by ID: {"user_id": "00000000-0000-4000-8000-000000000000"}
-     * 6. Fetch the current user: {"user_id": "self"}
-     * </examples>
-     */
-    getUsers(
-      input: GetUsersInput = {},
-      options?: CallToolRequestOptions,
-    ): Promise<CallToolResult> {
-      return client.callTool(
-        { name: "notion-get-users", arguments: input },
-        options,
-      );
-    },
-
-    /** Read a resource by URI (listed or from a resource template). */
-    readResource(
-      uri: string,
-      options?: RequestOptions,
-    ): Promise<ReadResourceResult> {
-      return client.readResource({ uri }, options);
-    },
-
-    /**
-     * Complete specification for Notion's enhanced Markdown format, including all block types, rich text formatting, and XML elements. This specification is subject to change as Notion's capabilities evolve.
-     *
-     * URI: notion://docs/enhanced-markdown-spec
-     */
-    readEnhancedMarkdownSpecification(
-      options?: RequestOptions,
-    ): Promise<ReadResourceResult> {
-      return client.readResource(
-        { uri: "notion://docs/enhanced-markdown-spec" },
-        options,
-      );
+      /**
+       * Complete specification for Notion's enhanced Markdown format, including all block types, rich text formatting, and XML elements. This specification is subject to change as Notion's capabilities evolve.
+       *
+       * URI: notion://docs/enhanced-markdown-spec
+       */
+      enhancedMarkdownSpecification(
+        options?: RequestOptions,
+      ): Promise<ReadResourceResult> {
+        return client.readResource(
+          { uri: "notion://docs/enhanced-markdown-spec" },
+          options,
+        );
+      },
     },
   };
 }

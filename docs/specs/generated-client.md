@@ -22,55 +22,63 @@ type ToolResult<T> =
 // Per server: tool types, factory, client type
 export type SearchInput = { ... };
 export type SearchOutput = { ... };
-export function createNotionClient(client: Client) { return { ... }; }
+export function createNotionClient(client: Pick<Client, "callTool" | …>) { return { ... }; }
 export type NotionClient = ReturnType<typeof createNotionClient>;
 ```
 
 - Imports are type-only and from the SDK alone: generated code needs neither `mcp-client-gen` nor any runtime import (ADR-003).
 - Only the imports the file uses are emitted, so it compiles under `noUnusedLocals`.
-- Output is deterministic (no timestamps): regenerating an unchanged server (same catalog and protocol revision) with the same generator dependencies yields an unchanged file. The listing order doesn't affect names.
+- Output is deterministic (no timestamps): regenerating an unchanged server (same catalog and protocol revision) with the same generator dependencies yields an unchanged file, whatever order the server lists things in: members and types are emitted in code-point order of wire names.
 - The header records the negotiated protocol revision: the module is a snapshot of the server's catalog under it.
 - One module per server (ADR-001): names never collide across servers, and an app imports only the servers it uses.
 
 ## Client
 
-The factory takes a connected SDK `Client`, which the caller owns (connection, auth, `close()`), and returns an object literal of one-line delegations. Its JSDoc states what the client needs: `versionNegotiation: { mode: "auto" }` when generated under the modern era, and one `client.listTools()` call when there are tools (ADR-003).
+The factory takes a connected SDK `Client`, which the caller owns (connection, auth, `close()`), and returns an object literal of one-line delegations: tools at the top level, prompts and resources in namespaces. Its JSDoc states what the client needs: `versionNegotiation: { mode: "auto" }` when generated under the modern era, and one `client.listTools()` call when there are tools: the SDK validates `structuredContent` and sends `x-mcp-header` arguments as `Mcp-Param-*` headers only from cached definitions (without them, a call pays a rejected request and a re-list) (ADR-003).
+
+The parameter is `Pick<Client, …>` of the methods the module calls (`callTool`, `getPrompt`, `getProtocolEra`, `readResource`; `never` for an empty catalog): the SDK class has private members, so this is what lets a plain test double, or a `Client` from another copy of the SDK, stand in.
 
 ```typescript
-export function createNotionClient(client: Client) {
+export function createNotionClient(client: Pick<Client, "callTool" | "getPrompt" | "readResource">) {
   return {
     /** Tool description */
     search(input: SearchInput, options?: CallToolRequestOptions): Promise<ToolResult<SearchOutput>> { ... }, // outputSchema
     fetch(input: FetchInput, options?: CallToolRequestOptions): Promise<CallToolResult> { ... },
 
-    summarizePrompt(args: { "page-id": string; tone?: string }, options?: RequestOptions): Promise<GetPromptResult> { ... },
+    prompts: {
+      summarize(args: { "page-id": string; tone?: string }, options?: RequestOptions): Promise<GetPromptResult> { ... },
+    },
 
-    readResource(uri: string, options?: RequestOptions): Promise<ReadResourceResult> { ... },
-    readReadme(options?: RequestOptions): Promise<ReadResourceResult> { ... }, // one per listed resource
-    readIssue(params: { owner: string; number: string }, options?: RequestOptions): Promise<ReadResourceResult> { ... }, // per simple template
+    resources: {
+      read(uri: string, options?: RequestOptions): Promise<ReadResourceResult> { ... },
+      readme(options?: RequestOptions): Promise<ReadResourceResult> { ... }, // one per listed resource
+      issue(params: { owner: string; number: string }, options?: RequestOptions): Promise<ReadResourceResult> { ... }, // per simple template
+    },
   };
 }
 ```
 
-| Member           | Returns                    | Notes                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
-| ---------------- | -------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Tool             | `ToolResult<{Tool}Output>` | When the tool declares `outputSchema`: `structuredContent` typed unless `isError`                                                                                                                                                                                                                                                                                                                                                                                    |
-| Tool             | `CallToolResult`           | Otherwise                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
-| Prompt           | `GetPromptResult`          | Arguments keep their wire names (quoted when not identifiers); one declared twice is optional unless every declaration requires it                                                                                                                                                                                                                                                                                                                                   |
-| `readResource`   | `ReadResourceResult`       | Any URI (listed or from a template); emitted when the server has resources                                                                                                                                                                                                                                                                                                                                                                                           |
-| `read{Name}`     | `ReadResourceResult`       | Per listed resource, reads its URI                                                                                                                                                                                                                                                                                                                                                                                                                                   |
-| `read{Template}` | `ReadResourceResult`       | Per resource template whose expressions are all `{var}` (RFC 6570 level 1): typed `params`, each value encoded with `encodeURIComponent` like the SDK's `UriTemplate` (so `!'()*` stay unencoded, unlike strict RFC 6570: the SDK's server-side matching passes captures through undecoded, so a server built on it receives exactly what the SDK client would send). Templates with operators (`{?q}`, `{+path}`, …) get no method; `readResource(uri)` covers them |
+`prompts` is emitted when the server has prompts, `resources` when it has resources or templates (or advertises the capability). Methods close over `client`, never `this`, so they work detached (`const { search } = notion`).
+
+| Member                 | Returns                    | Notes                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| ---------------------- | -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Tool                   | `ToolResult<{Tool}Output>` | When the tool declares `outputSchema`: `structuredContent` typed unless `isError`                                                                                                                                                                                                                                                                                                                                                                            |
+| Tool                   | `CallToolResult`           | Otherwise                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| `prompts.{name}`       | `GetPromptResult`          | Arguments keep their wire names (quoted when not identifiers); one declared twice is optional unless every declaration requires it                                                                                                                                                                                                                                                                                                                           |
+| `resources.read`       | `ReadResourceResult`       | Any URI (listed or from a template)                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| `resources.{name}`     | `ReadResourceResult`       | Per listed resource, reads its URI                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| `resources.{template}` | `ReadResourceResult`       | Per resource template whose expressions are all `{var}` (RFC 6570 level 1): typed `params`, each value encoded with `encodeURIComponent` like the SDK's `UriTemplate` (so `!'()*` stay unencoded, unlike strict RFC 6570: the SDK's server-side matching passes captures through undecoded, so a server built on it receives exactly what the SDK client would send). Templates with operators (`{?q}`, `{+path}`, …) get no method; `read(uri)` covers them |
 
 Results are the SDK's, unchanged. Tool failures are data (`isError: true`), as in the SDK; protocol errors (including `UnauthorizedError` for step-up authorization) propagate. `ToolResult<T>` relies on the server's MCP obligation to return conforming `structuredContent`; the SDK validates it once `client.listTools()` has cached the tool definitions.
 
-Parameters default to `{}` when the schema provably accepts it (no `required` names, no `minProperties`, compositions, refs, literals or conditionals), so `client.listPages()` works without arguments; otherwise the argument is required.
+Parameters default to `{}` when the schema provably accepts it (no `required` names, no `minProperties`, compositions, refs, literals or conditionals), so `notion.listPages()` works without arguments; otherwise the argument is required.
 
 ### Era Guard
 
 Emitted when the output types hold only in the generation's era. Toward legacy clients the SDK wraps a non-object `outputSchema` root, and its `structuredContent`, in `{ result }`. So a modern snapshot is era-bound when an output schema's root `type` isn't `"object"`, and a legacy snapshot when a schema has the wrapper's shape (sole property `result`, required). Otherwise any era works.
 
 ```typescript
-export function createNotionClient(client: Client) {
+export function createNotionClient(client: Pick<Client, "callTool" | "getProtocolEra">) {
   // Only when output types depend on the era (ADR-003)
   if (client.getProtocolEra() !== "modern") throw new Error("createNotionClient: generated for MCP 2026-07-28 (modern era); …");
   return { ... };
@@ -84,14 +92,15 @@ export function createNotionClient(client: Client) {
 | Client type     | PascalCase(server) + `Client`                           | `NotionClient`                                          |
 | Factory         | `create` + client type name                             | `createNotionClient`                                    |
 | Tool method     | camelCase(tool), minus a `{server}-`/`{server}_` prefix | `notion-create-pages` → `createPages` (server `notion`) |
-| Prompt method   | camelCase(prompt) + `Prompt`, never doubled             | `summarize`, `summarize-prompt` → `summarizePrompt`     |
-| Resource method | `read` + PascalCase(resource name)                      | `readReadme`                                            |
-| Template method | `read` + PascalCase(template name)                      | `readIssue`                                             |
+| Prompt method   | `prompts.` + camelCase(prompt)                          | `summarize-pr` → `prompts.summarizePr`                  |
+| Resource method | `resources.` + camelCase(resource name)                 | `README` → `resources.readme`                           |
+| Template method | `resources.` + camelCase(template name)                 | `issue` → `resources.issue`                             |
 | Tool types      | PascalCase(method) + `Input` / `Output`                 | `CreatePagesInput`                                      |
 
 Collisions are resolved deterministically, never by emitting invalid code:
 
-- **Members** of a client are unique: a name that normalizes to a taken one gets a number (`get-user`, `get_user` → `getUser`, `getUser2`). Names are allocated in code-point order of wire names (tools, then prompts, resources, templates), not listing order, so a reordered catalog renames nothing; methods are emitted in listing order. `readResource`, `then` (which would make the client awaitable) and `toJSON` (which `JSON.stringify` calls) are reserved.
+- **Members** are unique per object (the client, `prompts`, `resources`): a name that normalizes to a taken one gets a number (`get-user`, `get_user` → `getUser`, `getUser2`). Names are allocated in code-point order of wire names, not listing order, so a reordered catalog renames nothing; in `resources`, listed resources before templates.
+- **Reserved:** `then` (which would make an object awaitable) and `toJSON` (which `JSON.stringify` calls) in every object; `prompts` and `resources` at the top level, even when absent, so a server's first prompt renames no tool; `read` in `resources`.
 - **Prefix stripping** is per tool: a name starting with the server name plus `-` or `_` (case-insensitive) loses it, so adding an unprefixed tool renames none. Unprefixed tools are named first; a stripped name already taken keeps its prefix (`search` and `notion-search` → `search`, `notionSearch`). The prefix is the client name, so `--name` changes what is stripped. Wire names never change.
 - **Tool types** follow their member's name (`{Member}Input` / `Output`), so they are unique too.
 - **Servers** (config mode) whose names map to the same module file (`foo-bar`, `foo_bar` → `foo-bar.ts`) are rejected before introspection.

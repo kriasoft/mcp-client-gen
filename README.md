@@ -50,11 +50,19 @@ if (result.isError) throw new Error("search failed");
 result.structuredContent.items; // typed from the tool's outputSchema
 ```
 
+Tools are methods on the client; prompts and resources have their own namespaces:
+
+```typescript
+await notion.prompts.summarize({ page: "Roadmap" });
+await notion.resources.read("file:///README.md"); // or a named resource / URI template method
+```
+
 ## Features
 
 - **Type-safe** — Generated TypeScript types from tool schemas, typed parameters for resource templates
 - **Thin** — Generated methods delegate to the official SDK `Client` and return its results unchanged
 - **No runtime dependency on this package** — Generated modules import only SDK types
+- **Easy to test** — A factory takes only the `Client` methods it calls, so a plain object can stand in
 - **Zero config auth** — OAuth 2.1 with PKCE during generation, just approve in browser
 
 ## Installation

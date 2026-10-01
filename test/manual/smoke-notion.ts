@@ -10,7 +10,6 @@
  * Usage: bun run test/manual/smoke-notion.ts
  */
 
-import type { Client } from "@modelcontextprotocol/client";
 import {
   createNotionClient,
   type NotionClient,
@@ -18,9 +17,16 @@ import {
 
 console.log("Smoke test: Generated Notion client\n");
 
-// Test 1: Client creation (methods only touch the SDK client when called)
+// Test 1: Client creation from a plain fake: the factory takes only the Client methods
+// it calls (methods only touch it when called)
 console.log("1. Testing client creation...");
-const client: NotionClient = createNotionClient({} as Client);
+const unused = async (): Promise<never> => {
+  throw new Error("not called");
+};
+const client: NotionClient = createNotionClient({
+  callTool: unused,
+  readResource: unused,
+});
 console.log("   PASS: Client created successfully");
 
 // Test 2: Verify expected methods exist
@@ -38,12 +44,14 @@ const expectedMethods = [
   "getComments",
   "getTeams",
   "getUsers",
-  "readResource",
-  "readEnhancedMarkdownSpecification",
+  "resources.read",
+  "resources.enhancedMarkdownSpecification",
 ];
 
 const missingMethods = expectedMethods.filter(
-  (method) => typeof (client as any)[method] !== "function",
+  (path) =>
+    typeof path.split(".").reduce((o: any, key) => o?.[key], client) !==
+    "function",
 );
 
 if (missingMethods.length > 0) {

@@ -569,7 +569,7 @@ export async function use(alpha: AlphaClient) {
     expect(code).toContain("to?: [number, number];");
     expect(code).toContain("export type TreeInputNode = {");
     expect(code).toContain("children?: TreeInputNode[];");
-    // Object-literal members: only `then` (thenable) and the generic reader are reserved
+    // Object-literal members: only `then`, `toJSON` and the namespaces are reserved
     expect(code).toContain("client(input: ClientInput");
     expect(code).toContain("constructor(input: ConstructorInput");
     expect(code).toContain("then2(input: Then2Input");
@@ -606,37 +606,57 @@ export async function use(alpha: AlphaClient) {
     expect(grown).toContain("notionSearch(input: NotionSearchInput");
   });
 
-  test("names don't depend on the listing order", () => {
-    const tools = [tool("get_user"), tool("get-user"), tool("get.user")];
-    const prompts = [{ name: "a-b" }, { name: "a_b" }];
-    const names = (module: string) =>
-      [...module.matchAll(/^\s*(\w+)\(.*\n.*name: "([^"]+)"/gm)].map(
-        ([, method, wire]) => `${method}=${wire}`,
-      );
-    const forward = generateClientFile("x", {
+  test("output doesn't depend on the listing order", () => {
+    const catalog = {
       ...beta,
-      capabilities: { tools: {}, prompts: {} },
-      tools,
-      prompts,
-    });
+      capabilities: { tools: {}, prompts: {}, resources: {} },
+      tools: [tool("get_user"), tool("get-user"), tool("get.user")],
+      prompts: [{ name: "a-b" }, { name: "a_b" }],
+      resources: [
+        { name: "doc", uri: "file:///b" },
+        { name: "doc", uri: "file:///a" },
+      ],
+      resourceTemplates: [
+        { name: "page", uriTemplate: "p://{id}" },
+        { name: "doc", uriTemplate: "d://{id}" },
+      ],
+    };
+    const forward = generateClientFile("x", catalog);
     const reversed = generateClientFile("x", {
-      ...beta,
-      capabilities: { tools: {}, prompts: {} },
-      tools: tools.toReversed(),
-      prompts: prompts.toReversed(),
+      ...catalog,
+      tools: catalog.tools.toReversed(),
+      prompts: catalog.prompts.toReversed(),
+      resources: catalog.resources.toReversed(),
+      resourceTemplates: catalog.resourceTemplates.toReversed(),
     });
-    expect(names(forward).toSorted()).toEqual(names(reversed).toSorted());
-    // Code-point order: `-` < `.` < `_`
-    expect(names(forward)).toEqual([
-      "getUser3=get_user",
-      "getUser=get-user",
-      "getUser2=get.user",
-      "aBPrompt=a-b",
-      "aBPrompt2=a_b",
+    expect(reversed).toBe(forward);
+    // Duplicate wire names (a server bug) too
+    const dup = (type: string) =>
+      tool("dup", {
+        inputSchema: { type: "object", properties: { v: { type } } },
+      });
+    const dups = [dup("string"), dup("number")];
+    expect(generateClientFile("x", { ...beta, tools: dups })).toBe(
+      generateClientFile("x", { ...beta, tools: dups.toReversed() }),
+    );
+    // Code-point order: `-` < `.` < `_`; listed resources are named before templates
+    const names = [
+      ...forward.matchAll(/^\s*(\w+)\(.*\n.*(?:name|uri): ("[^"]*"|`[^`]*`)/gm),
+    ].map(([, method, wire]) => `${method}=${wire}`);
+    expect(names).toEqual([
+      'getUser="get-user"',
+      'getUser2="get.user"',
+      'getUser3="get_user"',
+      'aB="a-b"',
+      'aB2="a_b"',
+      'doc="file:///a"',
+      'doc2="file:///b"',
+      "doc3=`d://${encodeURIComponent(params.id)}`",
+      "page=`p://${encodeURIComponent(params.id)}`",
     ]);
   });
 
-  test("prompt methods: one Prompt suffix, duplicate arguments merged", () => {
+  test("prompt methods: duplicate arguments merged", () => {
     const module = generateClientFile("x", {
       ...beta,
       tools: [],
@@ -702,20 +722,24 @@ export async function use(alpha: AlphaClient) {
 
   test("reads simple resource templates with typed parameters", () => {
     expect(code).toContain(
-      'readIssue(params: { owner: string; repo: string; number: string; "1st": string; }, options?: RequestOptions)',
+      'issue(params: { owner: string; repo: string; number: string; "1st": string; }, options?: RequestOptions)',
     );
     expect(code).toContain(
-      'readUser(params: { "user.name": string; "%69d": string; }',
+      'user(params: { "user.name": string; "%69d": string; }',
     );
-    expect(code).not.toContain("readSearch(");
+    expect(code).not.toMatch(/search\(params/);
   });
 
-  test("emits resource readers and imports only where used", () => {
+  test("emits namespaces and imports only where used", () => {
+    expect(code).toContain("prompts: {");
+    expect(code).toContain("resources: {");
     expect(code).toContain(
-      "readResource(uri: string, options?: RequestOptions): Promise<ReadResourceResult>",
+      "read(uri: string, options?: RequestOptions): Promise<ReadResourceResult>",
     );
     const onlyBeta = generateClientFile("beta", beta);
     for (const unused of [
+      "prompts:",
+      "resources:",
       "readResource",
       "ReadResourceResult",
       "GetPromptResult",
@@ -724,6 +748,20 @@ export async function use(alpha: AlphaClient) {
     ])
       expect(onlyBeta).not.toMatch(unused);
     expect(typecheck(onlyBeta)).toEqual([]);
+  });
+
+  test("takes only the Client methods it calls, so a plain object can stand in", () => {
+    expect(code).toContain(
+      'createAlphaClient(client: Pick<Client, "callTool" | "getPrompt" | "readResource">)',
+    );
+    const onlyBeta = generateClientFile("beta", beta);
+    expect(onlyBeta).toContain('client: Pick<Client, "callTool">');
+    const fake = `
+export const beta = createBetaClient({ callTool: async () => ({ content: [] }) });`;
+    expect(typecheck(onlyBeta + fake)).toEqual([]);
+    const empty = generateClientFile("e", { ...beta, tools: [] });
+    expect(empty).toContain("client: Pick<Client, never>");
+    expect(typecheck(empty)).toEqual([]);
   });
 });
 
@@ -788,20 +826,22 @@ describe("generated client at runtime", () => {
       getPrompt: prompt,
     });
     const alpha = mod.createAlphaClient(client);
-    expect(await alpha.readResource("file:///a")).toEqual(read);
-    expect(await alpha.summarizePrompt({ "page-id": "p1" })).toEqual(prompt);
+    expect(await alpha.resources.read("file:///a")).toEqual(read);
+    expect(await alpha.prompts.summarize({ "page-id": "p1" })).toEqual(prompt);
     expect(calls.at(-1)).toEqual({
       method: "getPrompt",
       params: { name: "summarize", arguments: { "page-id": "p1" } },
     });
 
-    await alpha.readIssue({
+    await alpha.resources.issue({
       owner: "a b",
       repo: "r/x",
       number: "1",
       "1st": "?",
     });
-    await alpha.readOdd({ id: "7" });
+    // Detached from its object: methods close over the client, not `this`
+    const { odd } = alpha.resources;
+    await odd({ id: "7" });
     expect(calls.slice(-2)).toEqual([
       {
         method: "readResource",
@@ -811,19 +851,23 @@ describe("generated client at runtime", () => {
     ]);
   });
 
-  test("reserves members JavaScript calls implicitly", async () => {
+  test("reserves members JavaScript calls implicitly, and the namespaces", async () => {
     const mod = await load(
       generateClientFile("x", {
         ...beta,
-        tools: [tool("toJSON"), tool("then")],
+        capabilities: { tools: {}, prompts: {} },
+        tools: [tool("toJSON"), tool("then"), tool("prompts")],
+        prompts: [{ name: "then" }, { name: "toJSON" }],
       }),
     );
     const { client, calls } = fakeClient({});
     const x = mod.createXClient(client);
-    expect(JSON.stringify(x)).toBe("{}"); // no tool call
+    expect(JSON.stringify(x)).toBe('{"prompts":{}}'); // no tool or prompt call
     expect(await x).toBe(x); // not a thenable
+    expect(await x.prompts).toBe(x.prompts);
     expect(calls).toEqual([]);
-    expect(Object.keys(x)).toEqual(["toJSON2", "then2"]);
+    expect(Object.keys(x)).toEqual(["prompts2", "then2", "toJSON2", "prompts"]);
+    expect(Object.keys(x.prompts)).toEqual(["then2", "toJSON2"]);
   });
 
   test("an era-bound client rejects a client of the other era", async () => {

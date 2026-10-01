@@ -13,13 +13,13 @@
 
 ## Decision
 
-- **Input:** a factory per server takes the SDK `Client` the caller connected and owns. The generated file imports only types from `@modelcontextprotocol/client`, nothing from this package.
-- **Shape:** the factory returns an object literal; its type is `export type {Server}Client = ReturnType<typeof create{Server}Client>` (structural, so trivially mocked).
+- **Input:** a factory per server takes the SDK `Client` the caller connected and owns, typed as `Pick<Client, …>` of the methods the module calls: `Client` has private members, so only a structural parameter accepts a plain test double or another copy of the SDK. The generated file imports only types from `@modelcontextprotocol/client`, nothing from this package.
+- **Shape:** the factory returns an object literal; its type is `export type {Server}Client = ReturnType<typeof create{Server}Client>` (structural, so trivially mocked). Tools, the common case, sit at the top level (`notion.search()`); prompts and resources sit in `prompts` and `resources` (`notion.prompts.summarize()`, `notion.resources.read(uri)`), so each kind names its own members with no affixes, and only `prompts` and `resources` are taken from the tools' namespace.
 - **Results:** methods return the SDK's full results. A tool with `outputSchema` returns `ToolResult<{Tool}Output>`, a `CallToolResult` refined so `structuredContent` is typed once `isError` is ruled out. Tool failures are data, as in the SDK; protocol failures throw.
 - **Options:** the most specific SDK option type per call: `CallToolRequestOptions` for tools (e.g. `toolDefinition`), `RequestOptions` otherwise.
 - Methods are one-line delegations with no runtime helpers.
-- **Protocol era:** the types describe the protocol revision generation negotiated. They differ between eras only for structured output: toward legacy (2025) clients the SDK wraps a non-object `outputSchema` root, and its `structuredContent`, in `{ result }`. When a module's output types depend on that, the factory throws for a `Client` of the other era (one line, checked once). Modules whose types are the same in both eras accept either, so a default-constructed `Client` keeps working.
-- **Tool definitions:** apps call `client.listTools()` once before using tools: the SDK validates `structuredContent` and sends `x-mcp-header` arguments as `Mcp-Param-*` headers only from cached definitions (without them it pays a rejected request and a re-list). The factory's JSDoc says so, for library users who never see the CLI snippet.
+- **Protocol era:** the types describe the protocol revision generation negotiated, and the SDK reshapes some structured output between eras. When a module's output types depend on the era, the factory throws for a `Client` of the other era (one line, checked once; the rule: SPEC-generated-client). Modules whose types are the same in both eras accept either, so a default-constructed `Client` keeps working.
+- **Tool definitions:** apps call `client.listTools()` once before using tools, because the SDK validates results and mirrors header arguments only from cached definitions. The factory's JSDoc says so, for library users who never see the CLI snippet.
 - **Package:** a generator only. The root exports `generateClientModule(endpoint, options?) → code` and its two types (SPEC-api), named for what it returns: source, not a client; connecting, OAuth (during generation), config discovery and formatting are internal, and there is no `/internal` entry. Apps connect with the SDK, and with `oauth-callback/mcp`'s `browserAuth().connect(client)` when a server needs OAuth; that provider also completes step-up authorizations.
 
 ## Alternatives (brief)
@@ -27,6 +27,8 @@
 - Keep projections — lossy, and they hide the SDK's two error channels.
 - Throw a generated `ToolError` on `isError` — a class per generated file breaks `instanceof` across files, and makes an expected outcome (a tool saying no, which agent loops feed back to the model) an exception.
 - Class only (`new NotionClient(client)`) — nominal type; reads "client" twice.
+- Take `Client` itself — nominal through its private members: fakes need casts, and two installed SDK copies don't typecheck against each other.
+- Everything flat (`summarizePrompt()`, `readReadme()`) — needs `Prompt` / `read` affixes and cross-kind collision rules, and every prompt or resource competes with tools for names. Everything namespaced (`notion.tools.search()`) — longer for the call made most.
 - Validate `structuredContent` in generated code — duplicates the SDK, which validates against the listed tool definitions.
 - Always require the generation's era, or pin its revision in the snippet — rejects clients whose results are identical in both eras, and a pin fails the day the server adds a revision. Per-method era checks — a cost on every call, only to cover a `Client` reconnecting after its server changed eras.
 - Embed each typed tool's definition and pass it as `toolDefinition` — the SDK then validates without a prior `listTools()`, but an explicit definition disables its recovery from `Mcp-Param-*` header mismatches (it re-lists tools only when none was passed), so a server's later schema change would turn into hard failures; it also adds every schema to the module. Apps call `client.listTools()` once instead.
