@@ -19,7 +19,8 @@ test.skipIf(!process.env.NOTION_E2E)(
     expect(code).toMatch(
       /export function createNotionClient\(\s*client: Pick<Client,/,
     );
-    expect(code).toContain("search(input: SearchInput");
+    // Prettier wraps long signatures, so allow line breaks
+    expect(code).toMatch(/\bsearch\(\s*input: SearchInput\b/);
   },
   { timeout: 150_000 },
 );

@@ -78,6 +78,7 @@ In tests, pass a plain object instead of a real `Client`: the factory needs only
 ```typescript
 const notion = createNotionClient({
   callTool: async () => ({ content: [{ type: "text", text: "stub" }] }),
+  getPrompt: async () => ({ messages: [] }),
   readResource: async () => ({ contents: [] }),
 });
 ```

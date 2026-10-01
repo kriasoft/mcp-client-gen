@@ -71,11 +71,15 @@ async function generateClient(introspectionResult: ServerSnapshot) {
 
   const toolCount = introspectionResult.tools.length;
   const resourceCount = introspectionResult.resources.length;
+  // Upper bound: only templates whose expressions are all {var} get a method
+  const templateCount = introspectionResult.resourceTemplates.length;
   const promptCount = introspectionResult.prompts.length;
 
   console.log("\n   Generated client includes:");
   console.log(`   - ${toolCount} tool method(s)`);
-  console.log(`   - ${resourceCount > 0 ? 1 : 0} resource method(s)`);
+  console.log(
+    `   - ${resourceCount + templateCount} resource method(s), plus resources.read(uri)`,
+  );
   console.log(`   - ${promptCount} prompt method(s)`);
 
   return generatedCode;

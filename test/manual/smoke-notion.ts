@@ -25,6 +25,7 @@ const unused = async (): Promise<never> => {
 };
 const client: NotionClient = createNotionClient({
   callTool: unused,
+  getPrompt: unused,
   readResource: unused,
 });
 console.log("   PASS: Client created successfully");
@@ -39,11 +40,12 @@ const expectedMethods = [
   "movePages",
   "duplicatePage",
   "createDatabase",
-  "updateDatabase",
+  "updateDataSource",
   "createComment",
   "getComments",
   "getTeams",
   "getUsers",
+  "prompts.makeThisANotionPage",
   "resources.read",
   "resources.enhancedMarkdownSpecification",
 ];
