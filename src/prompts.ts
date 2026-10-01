@@ -23,7 +23,7 @@ import {
   findMcpConfigFiles,
   formatConfigWarning,
   getMcpServers,
-  redactSecrets,
+  printable,
   resolveConfigFiles,
 } from "./config.js";
 import type { McpServerConfig } from "./types.js";
@@ -84,7 +84,7 @@ function loadServers(configFiles: string[]): McpServerConfig[] {
   if (warnings.length > 0) {
     console.error("\nConfig warnings:");
     for (const warning of warnings) {
-      console.error(`  - ${formatConfigWarning(warning)}`);
+      console.error(`  - ${printable(formatConfigWarning(warning))}`);
     }
     console.error();
   }
@@ -111,8 +111,8 @@ export async function promptForServers(
     options: servers.map((server) => ({
       value: server,
       // Config URLs may hold expanded secrets
-      label: server.name ?? redactSecrets(server.url),
-      hint: `${server.type} · ${redactSecrets(server.url)}`,
+      label: printable(server.name ?? server.url),
+      hint: `${server.type} · ${printable(server.url)}`,
     })),
     initialValues: servers, // Select all by default
     required: true,
@@ -216,7 +216,7 @@ export async function runInteractiveSetup(
 
     return { configFiles, servers, outputDir };
   } catch (error) {
-    cancel(`Error: ${(error as Error).message}`);
+    cancel(`Error: ${printable(error)}`);
     process.exit(1);
   }
 }

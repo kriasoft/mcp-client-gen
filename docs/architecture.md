@@ -37,21 +37,21 @@ The library and the CLI compose the same internals. The CLI calls them directly,
 
 ## Modules
 
-| Module                                | Responsibility                                                                      | Depends on                                                              |
-| ------------------------------------- | ----------------------------------------------------------------------------------- | ----------------------------------------------------------------------- |
-| `src/index.ts`                        | Public API: `generateClient` and its types; nothing else is exported                | pipeline; mcp-client, types (types)                                     |
-| `src/pipeline.ts`                     | `generateClient`, server name derivation, Prettier formatting                       | codegen, introspection, prettier; mcp-client, types (types)             |
-| `src/cli.ts`                          | Modes, staged writes, usage snippet, exit codes                                     | codegen, config, introspection, pipeline, prompts; types (types)        |
-| `src/prompts.ts`                      | Interactive prompts, config loading for CLI modes, spinners                         | config, @clack/prompts; types (types)                                   |
-| `src/config.ts`                       | Config discovery and parsing, env expansion, secret redaction (CLI only)            | types (types)                                                           |
-| `src/introspection.ts`                | Connect → list → close; returns the snapshot                                        | mcp-client; SDK, types (types)                                          |
-| `src/mcp-client.ts`                   | SDK client, Streamable HTTP / SSE transports, generation-time OAuth, step-up, abort | SDK, oauth-callback; types (types)                                      |
-| `src/codegen/file-builder.ts`         | One server's module: imports, `ToolResult<T>`, declarations                         | client-generator, tool-input-generator, ts-morph; introspection (types) |
-| `src/codegen/client-generator.ts`     | Factory with tool / prompt / resource / template methods; name allocation           | tool-input-generator, utils; introspection, SDK, ts-morph (types)       |
-| `src/codegen/tool-input-generator.ts` | Tool input/output type aliases                                                      | schema-to-typescript, utils; SDK, ts-morph (types)                      |
-| `src/codegen/schema-to-typescript.ts` | JSON Schema → TypeScript; recursive aliases and the circularity check               | utils, ts-morph                                                         |
-| `src/codegen/utils.ts`                | Casing, property keys, JSDoc sanitizing, `uniqueName`                               | —                                                                       |
-| `src/types.ts`                        | `McpServerConfig`, `ConfigWarning`                                                  | —                                                                       |
+| Module                                | Responsibility                                                                 | Depends on                                                              |
+| ------------------------------------- | ------------------------------------------------------------------------------ | ----------------------------------------------------------------------- |
+| `src/index.ts`                        | Public API: `generateClient` and its types; nothing else is exported           | pipeline; types (types)                                                 |
+| `src/pipeline.ts`                     | `generateClient`, server name derivation, Prettier formatting                  | codegen, introspection, prettier; types (types)                         |
+| `src/cli.ts`                          | Modes, staged writes, usage snippet, exit codes                                | codegen, config, introspection, pipeline, prompts; types (types)        |
+| `src/prompts.ts`                      | Interactive prompts, config loading for CLI modes, spinners                    | config, @clack/prompts; types (types)                                   |
+| `src/config.ts`                       | Config discovery and parsing, env expansion, secret redaction (CLI only)       | types (types)                                                           |
+| `src/introspection.ts`                | Connect → list (step-up retries) → close; returns the snapshot                 | mcp-client, SDK; types (types)                                          |
+| `src/mcp-client.ts`                   | SDK client, Streamable HTTP / SSE transports, generation-time OAuth, abort     | SDK, oauth-callback; types (types)                                      |
+| `src/codegen/file-builder.ts`         | One server's module: imports, `ToolResult<T>`, declarations                    | client-generator, tool-input-generator, ts-morph; introspection (types) |
+| `src/codegen/client-generator.ts`     | Factory with tool / prompt / resource / template methods; name allocation      | tool-input-generator, utils; introspection, SDK, ts-morph (types)       |
+| `src/codegen/tool-input-generator.ts` | Tool input/output type aliases                                                 | schema-to-typescript, utils; SDK, ts-morph (types)                      |
+| `src/codegen/schema-to-typescript.ts` | JSON Schema → TypeScript; recursive aliases and the circularity check          | utils, ts-morph                                                         |
+| `src/codegen/utils.ts`                | Casing, property keys, JSDoc sanitizing, `uniqueName`                          | —                                                                       |
+| `src/types.ts`                        | `McpServerConfig`, `GenerateClientOptions`, `McpOAuthOptions`, `ConfigWarning` | oauth-callback (types)                                                  |
 
 **Dependency rule:** lower modules never import higher ones at runtime. Imports listed with "(types)" are type-only; codegen may import the `Introspection` snapshot type, but not the code that produces it.
 
@@ -63,19 +63,19 @@ The library and the CLI compose the same internals. The CLI calls them directly,
 
 Changes must keep these true; each links to where it's defined and tested.
 
-| Invariant                                                                                                                                                                      | Defined in                     |
-| ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------ |
-| Generated modules import only types, only from `@modelcontextprotocol/client`, and contain no runtime helpers                                                                  | ADR-003, SPEC-generated-client |
-| Generated modules compile under `strict` + `noUnusedLocals` for any server input (hostile names, recursive schemas)                                                            | SPEC-generated-client, ADR-004 |
-| Generated methods return the SDK's results unchanged; tool failures are data (`isError`)                                                                                       | ADR-003                        |
-| Generated types are never stricter than the schema, except the two documented cases                                                                                            | ADR-004                        |
-| Output is deterministic: an unchanged server regenerates byte-identical code (library output also ignores cwd)                                                                 | SPEC-generated-client          |
-| The public API is `generateClient` and its option types; no other entry points                                                                                                 | ADR-003                        |
-| Config mode changes no file unless every server succeeds; writes are staged; servers are introspected one at a time                                                            | ADR-001, SPEC-cli              |
-| OAuth tokens are only sent to `https:` or loopback servers; no browser flow outlives generation, except a step-up that `signal` aborts mid-listing (ADR-002 Impact)            | ADR-002                        |
-| Expanded config secrets never reach CLI output: config-derived values and SDK errors pass through `redactSecrets()`; errors and the usage snippet name entries instead of URLs | ADR-005, SPEC-config           |
-| Errors propagate unchanged (types and causes); the CLI labels them with server names                                                                                           | SPEC-introspection             |
-| `src/` runs on Node 22+ (no Bun-only APIs); Bun is the dev toolchain                                                                                                           | `package.json` `engines`       |
+| Invariant                                                                                                                                                                                                                                             | Defined in                     |
+| ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------ |
+| Generated modules import only types, only from `@modelcontextprotocol/client`, and contain no runtime helpers (the one exception: an era check when output types depend on the protocol era)                                                          | ADR-003, SPEC-generated-client |
+| Generated modules compile under `strict` + `noUnusedLocals` for any server input (hostile names, recursive schemas)                                                                                                                                   | SPEC-generated-client, ADR-004 |
+| Generated methods return the SDK's results unchanged; tool failures are data (`isError`)                                                                                                                                                              | ADR-003                        |
+| Generated types are never stricter than the schema, except the two documented cases                                                                                                                                                                   | ADR-004                        |
+| Output is deterministic: an unchanged server (catalog and protocol revision) regenerates byte-identical code with the same installed dependencies; names never depend on the listing order (library output also ignores cwd)                          | SPEC-generated-client          |
+| The public API is `generateClient` and its option types; no other entry points                                                                                                                                                                        | ADR-003                        |
+| Config mode changes no file unless every server succeeds; writes are staged; servers are introspected one at a time                                                                                                                                   | ADR-001, SPEC-cli              |
+| OAuth tokens are only sent to `https:` or loopback servers; no browser flow outlives generation, except a step-up that `signal` aborts mid-listing (ADR-002 Impact)                                                                                   | ADR-002                        |
+| Registered secrets (expanded config values, literal credentials, command-line URL credentials) are masked in every common serialization before CLI output, and config URLs are never printed; best effort, a transformed secret (e.g. base64) escapes | ADR-005, SPEC-config           |
+| Errors propagate unchanged (types and causes); the CLI labels them with server names                                                                                                                                                                  | SPEC-introspection             |
+| `src/` runs on Node 22+ (no Bun-only APIs); Bun is the dev toolchain                                                                                                                                                                                  | `package.json` `engines`       |
 
 ## Dependencies
 
@@ -96,13 +96,13 @@ Changes must keep these true; each links to where it's defined and tested.
 
 ## Tests
 
-| Layer      | Approach                                                                                                                                                                                               | Files                                   |
-| ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | --------------------------------------- |
-| Codegen    | Hostile-name fixture compiled under `strict` against real SDK types; consumer-side typechecks (`@ts-expect-error`); output transpiled and run against a fake `Client`; compiler-backed recursion cases | `src/codegen.test.ts`                   |
-| Connection | Real in-process servers: `@modelcontextprotocol/server` (Streamable HTTP), a legacy SSE fixture, oauth-callback's mock OAuth server (step-up, abort)                                                   | `src/mcp-client.test.ts`, `test/utils/` |
-| Config     | Temp config files: formats, precedence, env expansion, redaction                                                                                                                                       | `src/config.test.ts`                    |
-| CLI        | The real CLI in a subprocess: streams, exit codes, staged writes after every server succeeds, secret non-disclosure                                                                                    | `src/cli.test.ts`                       |
-| Manual     | Real Notion server: fixture capture, example regeneration, smoke and E2E scripts                                                                                                                       | `test/manual/`, `test/e2e/`             |
+| Layer      | Approach                                                                                                                                                                                               | Files                                      |
+| ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------ |
+| Codegen    | Hostile-name fixture compiled under `strict` against real SDK types; consumer-side typechecks (`@ts-expect-error`); output transpiled and run against a fake `Client`; compiler-backed recursion cases | `src/codegen.test.ts`                      |
+| Connection | Real in-process servers: `@modelcontextprotocol/server` (Streamable HTTP), a legacy SSE fixture, oauth-callback's mock OAuth server (step-up, abort)                                                   | `src/introspection.test.ts`, `test/utils/` |
+| Config     | Temp config files: formats, precedence, env expansion, redaction                                                                                                                                       | `src/config.test.ts`                       |
+| CLI        | The real CLI in a subprocess: streams, exit codes, staged writes after every server succeeds, secret non-disclosure                                                                                    | `src/cli.test.ts`                          |
+| Manual     | Real Notion server: fixture capture, example regeneration, smoke and E2E scripts                                                                                                                       | `test/manual/`, `test/e2e/`                |
 
 - **Isolation:** tests run with `--isolate`, because `mock.module()` is process-global.
 - **Hangs:** a test that could hang bounds its own wait, so a regression fails fast instead of stalling the suite.

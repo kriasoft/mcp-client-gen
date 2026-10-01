@@ -53,6 +53,8 @@ beforeAll(() => {
       mcpServers: {
         remote: { url: "http://127.0.0.1:1/mcp" },
         local: { command: "node", args: ["server.js"] },
+        // A terminal escape (sets the window title) in a config key
+        "\u001b]0;pwned\u0007title": { command: "node" },
       },
     }),
   );
@@ -85,6 +87,9 @@ describe("cli", () => {
     const { stdout, stderr } = run("-y");
     expect(stderr).toContain('Skipped "local" (stdio servers not supported)');
     expect(stdout).not.toContain("Skipped");
+    // Printed without control characters
+    expect(stderr).toContain('Skipped "]0;pwnedtitle"');
+    expect(stderr).not.toMatch(/[\u001b\u0007]/);
   });
 
   describe("argument errors", () => {
@@ -183,13 +188,13 @@ describe("cli", () => {
 
       expect(exitCode).toBe(0);
       expect(existsSync(join(dir, "out/demo.ts"))).toBe(true);
-      expect(stdout).toContain(
-        'await client.connect(new StreamableHTTPClientTransport(new URL("..."))); // "demo" in your MCP config',
-      );
+      // Connecting is the app's business: only the factory
+      expect(stdout).toContain('Usage for "demo":');
       expect(stdout).toContain(
         'import { createDemoClient } from "./out/demo.js";',
       );
-      expect(stdout).toContain('versionNegotiation: { mode: "auto" }');
+      expect(stdout).toContain("const demoClient = createDemoClient(client);");
+      expect(stdout).not.toContain("new URL(");
       // Config URLs may hold expanded secrets: never echoed
       expect(stdout).not.toContain("SECRET");
     });
@@ -245,6 +250,23 @@ describe("cli", () => {
       expect(exitCode).toBe(0);
       expect(existsSync(join(dir, "demo.ts"))).toBe(true);
       expect(stdout).toContain(`new URL(${JSON.stringify(url)})`);
+      expect(stdout).toContain('versionNegotiation: { mode: "auto" }');
+      expect(stdout).toContain("await client.listTools();");
+    });
+
+    test("URL mode masks credentials in the given URL", async () => {
+      const url = `${server.url}mcp?token=hunter22`;
+      const { exitCode, stdout } = await generate(
+        {},
+        url,
+        "-o",
+        "demo.ts",
+        "--no-oauth",
+      );
+
+      expect(exitCode).toBe(0);
+      expect(stdout).toContain(`new URL("${server.url}mcp?token=***")`);
+      expect(stdout).not.toContain("hunter22");
     });
   });
 });

@@ -61,8 +61,13 @@ export type ConfigWarning =
   | { kind: "missing_url"; path: string; name: string }
   | { kind: "invalid_url"; path: string; name: string }
   | { kind: "unknown_type"; path: string; name: string; type: string }
-  /** Placeholders in url/headers with no value; names only, never values. */
-  | { kind: "unresolved_env"; path: string; name: string; variables: string[] };
+  /** Placeholders in url/headers with no value (e.g. `API_KEY`, `input:key`); never values */
+  | {
+      kind: "unresolved_placeholder";
+      path: string;
+      name: string;
+      placeholders: string[];
+    };
 
 /**
  * Result of parsing MCP config files.

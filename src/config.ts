@@ -33,8 +33,8 @@ export function formatConfigWarning(warning: ConfigWarning): string {
       return `${file}: Skipped "${warning.name}" (url is not an http(s) URL)`;
     case "unknown_type":
       return `${file}: Skipped "${warning.name}" (unknown type "${warning.type}")`;
-    case "unresolved_env":
-      return `${file}: Skipped "${warning.name}" (unset environment variable ${warning.variables.join(", ")})`;
+    case "unresolved_placeholder":
+      return `${file}: Skipped "${warning.name}" (unresolved placeholder ${warning.placeholders.join(", ")})`;
   }
 }
 
@@ -121,6 +121,18 @@ export function redactSecrets(text: string): string {
 }
 
 /**
+ * An error's message, or any text, made safe for the terminal: control characters
+ * stripped (a server's error page or a config key may carry escape sequences), secrets
+ * masked before and after, since a secret may contain them or be split by them.
+ */
+export function printable(value: unknown): string {
+  const text = value instanceof Error ? value.message : String(value);
+  return redactSecrets(
+    redactSecrets(text).replace(/[\x00-\x08\x0b-\x1f\x7f-\x9f]/g, ""),
+  );
+}
+
+/**
  * Register a secret as written, trimmed (header/URL normalization), URL-encoded, and as
  * error bodies commonly echo it (HTML-escaped 404 pages, JSON). Best effort: a server
  * may transform it in ways no list anticipates.
@@ -187,10 +199,10 @@ function registerSecretUrl(expanded: string): void {
 }
 
 /**
- * Credentials a literal config URL carries: userinfo and query values, as written
- * (still encoded) and decoded once, since errors may echo either.
+ * Credentials a literal URL (in a config, or on the command line) carries: userinfo and
+ * query values, as written (still encoded) and decoded once, since errors may echo either.
  */
-function registerUrlCredentials(url: string): void {
+export function registerUrlCredentials(url: string): void {
   if (!URL.canParse(url)) return;
   const { username, password, search, searchParams } = new URL(url);
   const rawQueryValues = search
@@ -412,10 +424,10 @@ export function getMcpServers(paths: string[]): ParseServersResult {
           // Skip rather than send a literal placeholder as a URL or credential
           if (missing.size > 0) {
             warnings.push({
-              kind: "unresolved_env",
+              kind: "unresolved_placeholder",
               path,
               name,
-              variables: [...missing],
+              placeholders: [...missing],
             });
             continue;
           }
@@ -451,11 +463,13 @@ export function getMcpServers(paths: string[]): ParseServersResult {
           // Overridden or listed twice (see above): skip silently
           const connection = JSON.stringify([
             serverType,
-            trimmedUrl,
-            // Header names are case-insensitive
+            // As fetch sends it: a default port or host case isn't another server
+            new URL(trimmedUrl).href,
+            // Header names are case-insensitive (not `new Headers()`: it throws on
+            // values fetch would reject, which must fail that server, not parsing)
             Object.entries(headers ?? {})
               .map(([key, value]) => [key.toLowerCase(), value] as const)
-              .sort(([a], [b]) => a.localeCompare(b)),
+              .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)),
           ]);
           if (seenNames.has(name) || seenConnections.has(connection)) continue;
 

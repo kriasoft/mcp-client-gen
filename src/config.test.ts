@@ -18,7 +18,9 @@ import {
   getMcpServers,
   MCP_CONFIG_PATHS,
   parseJsonc,
+  printable,
   redactSecrets,
+  registerUrlCredentials,
   resolveConfigFiles,
 } from "./config";
 
@@ -35,6 +37,19 @@ afterAll(() => {
 });
 
 describe("config", () => {
+  describe("printable", () => {
+    test("strips terminal controls without unmasking secrets", () => {
+      // Unique to this test: the registry is process-wide
+      registerUrlCredentials("https://printable.test/?key=ctrl%1Bsecret");
+      expect(printable("key ctrl\x1bsecret")).toBe("key ***");
+      expect(printable("\x1b[2Jclear\x07")).toBe("[2Jclear");
+      expect(printable(new Error("boom\r"))).toBe("boom");
+      expect(printable({ toString: () => "thrown object" })).toBe(
+        "thrown object",
+      );
+    });
+  });
+
   describe("formatConfigWarning", () => {
     test("formats malformed JSON warning", () => {
       const msg = formatConfigWarning({
@@ -79,13 +94,13 @@ describe("config", () => {
 
     test("formats unresolved env warning", () => {
       const msg = formatConfigWarning({
-        kind: "unresolved_env",
+        kind: "unresolved_placeholder",
         path: "/path/to/.mcp.json",
         name: "api",
-        variables: ["API_KEY", "API_HOST"],
+        placeholders: ["API_KEY", "API_HOST"],
       });
       expect(msg).toBe(
-        '.mcp.json: Skipped "api" (unset environment variable API_KEY, API_HOST)',
+        '.mcp.json: Skipped "api" (unresolved placeholder API_KEY, API_HOST)',
       );
     });
   });
@@ -297,6 +312,11 @@ describe("config", () => {
               url,
               headers: { authorization: "Bearer WORK" }, // names are case-insensitive
             },
+            // The same URL as fetch sends it
+            canonical: {
+              url: "https://MCP.example.com:443",
+              headers: { Authorization: "Bearer PERSONAL" },
+            },
             legacy: { type: "sse", url },
           },
         }),
@@ -366,10 +386,10 @@ describe("config", () => {
       ]);
       expect(warnings).toEqual([
         {
-          kind: "unresolved_env",
+          kind: "unresolved_placeholder",
           path: localPath,
           name: "docs",
-          variables: ["UNSET_OVERRIDE_URL"],
+          placeholders: ["UNSET_OVERRIDE_URL"],
         },
       ]);
     });
@@ -600,8 +620,8 @@ describe("config", () => {
         expect(servers).toEqual([]);
         expect(JSON.stringify(warnings)).not.toContain("super-secret");
         expect(warnings[0]).toMatchObject({
-          kind: "unresolved_env",
-          variables: ["API-KEY", "MCP_TEST_KEY"],
+          kind: "unresolved_placeholder",
+          placeholders: ["API-KEY", "MCP_TEST_KEY"],
         });
       });
 
@@ -720,10 +740,10 @@ describe("config", () => {
         expect(servers).toEqual([]);
         expect(warnings).toEqual([
           {
-            kind: "unresolved_env",
+            kind: "unresolved_placeholder",
             path: resolve(TEST_DIR, "env.json"),
             name: "api",
-            variables: ["MCP_TEST_HOST", "MCP_TEST_MISSING", "input:token"],
+            placeholders: ["MCP_TEST_HOST", "MCP_TEST_MISSING", "input:token"],
           },
         ]);
       });

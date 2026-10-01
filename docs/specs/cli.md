@@ -5,8 +5,8 @@ Modes, arguments, output and exit codes of `mcp-client-gen`. Code: `src/cli.ts`,
 ## Grammar
 
 ```
-npx mcp-client-gen <url> [-o file] [--name name]   # URL mode
-npx mcp-client-gen [--config file] [-y] [-o dir]   # config mode
+npx mcp-client-gen <url> [-o file] [--name name] [--no-oauth]   # URL mode
+npx mcp-client-gen [--config file] [-y] [-o dir] [--no-oauth]   # config mode
 npx mcp-client-gen --help
 ```
 
@@ -17,6 +17,7 @@ npx mcp-client-gen --help
 | `--name <name>`       | URL    | Client name: `notion` → `createNotionClient` (default: from the URL) |
 | `--config <file>`     | config | Config file to read instead of discovery                             |
 | `-y, --yes`           | config | All servers, default directory, no prompts                           |
+| `--no-oauth`          | both   | Never open a browser: a server demanding OAuth fails (e.g. in CI)    |
 | `-h, --help`          | —      | Help on stdout, exit 0                                               |
 
 Anything outside the grammar is an error (stderr, help, exit 1), never ignored:
@@ -100,7 +101,7 @@ Generated src/mcp/notion.ts, src/mcp/github.ts
 
 ## Usage Snippet
 
-After writing files, the CLI prints how to use the first module:
+After writing a file, URL mode prints how to connect and use it:
 
 ```
 Usage (npm install @modelcontextprotocol/client oauth-callback):
@@ -112,15 +113,18 @@ Usage (npm install @modelcontextprotocol/client oauth-callback):
   const client = new Client({ name: "my-app", version: "1.0.0" }, { versionNegotiation: { mode: "auto" } });
   const auth = browserAuth({ serverUrl: …, redirectUri: "http://127.0.0.1:3000/callback", clientName: "my-app" });
   await auth.connect(client); // opens the browser when needed
+  await client.listTools();
   const notionClient = createNotionClient(client);
 ```
+
+Config mode prints only the first module's import and factory call, labeled with its entry name (`Usage for "notion":`): connecting is the app's business, and a config's URL and headers may hold expanded secrets (SPEC-config). The factory's JSDoc carries the connection requirements (SPEC-generated-client).
 
 - **Connection code:**
   - `browserAuth(…).connect(client)` (and `oauth-callback` in the install line) only when requests carried OAuth tokens during generation;
   - otherwise `client.connect(new StreamableHTTPClientTransport(new URL(…)))`;
   - `SSEClientTransport` for legacy SSE servers, plus a note on how to use OAuth with SSE when needed.
-- **Typed tools:** when a tool declares an output schema, the snippet calls `client.listTools()` once, so the SDK validates `structuredContent` (ADR-003).
-- **URL:** URL mode prints the URL given on the command line. Config mode never prints a config URL (it may hold expanded secrets); it prints `"..."` and names the entry instead (SPEC-config).
+- **Tools:** when the module has tools, the snippet calls `client.listTools()` once, so the SDK validates `structuredContent` and sends `x-mcp-header` arguments as headers (ADR-003).
+- **URL:** the URL given on the command line, with its userinfo and query values masked (`?token=***`); they are registered as secrets, so errors mask them too.
 - **Protocol:** Streamable HTTP snippets opt into version negotiation (`versionNegotiation: { mode: "auto" }`), matching generation; the SDK's default is the legacy 2025 era.
 - **Import path:** relative to the working directory, `/`-separated, `.ts` → `.js`, JSON-quoted.
 - **Variable:** `{camelCase(name)}Client`, so it is never a reserved word, `client` or `auth`.
@@ -129,7 +133,7 @@ Usage (npm install @modelcontextprotocol/client oauth-callback):
 
 - **Stdout:** generated code (URL mode without a file), progress, usage and help.
 - **Stderr:** errors, config warnings, and help printed after an argument error.
-- **Redaction:** every error message passes through `redactSecrets()` (SPEC-config).
+- **Printing:** errors (any thrown value), warnings and config entry names pass through `printable()`: control characters are stripped (a server's error page or a config key may carry terminal escapes), then secrets masked (SPEC-config).
 
 | Code | Meaning                                                                                    |
 | ---- | ------------------------------------------------------------------------------------------ |
