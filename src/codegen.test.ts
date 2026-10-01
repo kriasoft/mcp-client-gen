@@ -18,6 +18,7 @@ import {
   generateClientFile,
   jsonSchemaToTypeScript,
   pascalCase,
+  schemaTypeAliases,
 } from "./codegen/index.js";
 import type { Introspection } from "./introspection.js";
 import { extractServerName } from "./pipeline.js";
@@ -193,6 +194,87 @@ describe("jsonSchemaToTypeScript", () => {
     expect(ts({ $ref: "https://example.com/schema" })).toBe("unknown");
   });
 
+  test("names recursive refs instead of widening them", () => {
+    const tree = {
+      type: "object",
+      properties: {
+        children: { type: "array", items: { $ref: "#" } },
+        first: { $ref: "#/$defs/Node" },
+      },
+      $defs: {
+        Node: {
+          type: "object",
+          properties: { next: { $ref: "#/$defs/Node" } },
+          required: ["next"],
+        },
+      },
+    };
+    const taken = new Set(["TreeNode"]); // e.g. another tool's type
+    expect(schemaTypeAliases(tree, "Tree", taken)).toEqual([
+      { name: "Tree", type: "{\nchildren?: Tree[];\nfirst?: TreeNode2;\n}" },
+      { name: "TreeNode2", type: "{\nnext: TreeNode2;\n}" },
+    ]);
+    expect(taken).toContain("TreeNode2");
+    // Without names, the cycle widens
+    expect(ts(tree)).toContain("children?: {\nchildren?: unknown[];");
+  });
+
+  test("widens aliases TypeScript rejects as circular", () => {
+    const aliases = (schema: object) =>
+      schemaTypeAliases(schema, "A", new Set());
+    const self = { $ref: "#" };
+    const string = { type: "string" };
+    const types = (schema: object) => aliases(schema).map((a) => a.type);
+
+    expect(types({ anyOf: [self, string] })).toEqual(["unknown"]);
+    // Parentheses don't defer: (A | string) & {...} is circular
+    expect(
+      types({ allOf: [{ anyOf: [self, string] }, { type: "object" }] }),
+    ).toEqual(["unknown"]);
+    // A tuple rest spreads eagerly
+    expect(
+      types({
+        anyOf: [
+          {
+            type: "array",
+            prefixItems: [],
+            items: { type: "array", items: self },
+          },
+          string,
+        ],
+      }),
+    ).toEqual(["unknown"]);
+    // Mutual top-level references between named aliases
+    const ref = (def: string) => ({ $ref: `#/$defs/${def}` });
+    const mutual = aliases({
+      type: "object",
+      properties: { x: ref("P") },
+      $defs: {
+        P: ref("Q"),
+        Q: { anyOf: [ref("P"), { type: "array", items: ref("Q") }] },
+      },
+    });
+    expect(
+      typecheck(
+        mutual.map((a) => `export type ${a.name} = ${a.type};`).join("\n"),
+      ),
+    ).toEqual([]);
+
+    // Recursion through arrays, tuples and objects is deferred: kept
+    const kept = [
+      types({ anyOf: [{ type: "array", items: self }, string] }),
+      types({ type: "array", items: { anyOf: [self, string] } }),
+      types({ type: "array", prefixItems: [self] }),
+      types({ type: "object", additionalProperties: self }),
+    ].flat();
+    expect(kept).toEqual([
+      "A[] | string",
+      "(A | string)[]",
+      "[A?, ...unknown[]]",
+      "{\n[key: string]: A;\n}",
+    ]);
+  });
+
   test("scopes refs to the nearest $id and decodes pointers first", () => {
     const type = ts({
       type: "object",
@@ -256,6 +338,21 @@ const alpha: Introspection = {
           },
         },
         minProperties: 1,
+      },
+    }),
+    // Recursive input: a named alias, compiled by the typecheck below
+    tool("tree", {
+      inputSchema: {
+        type: "object",
+        properties: { node: { $ref: "#/$defs/Node" } },
+        $defs: {
+          Node: {
+            type: "object",
+            properties: {
+              children: { type: "array", items: { $ref: "#/$defs/Node" } },
+            },
+          },
+        },
       },
     }),
     tool("client"),
@@ -392,6 +489,8 @@ export async function use(alpha: AlphaClient) {
       "move(input: MoveInput, options?: CallToolRequestOptions)",
     );
     expect(code).toContain("to?: [number, number];");
+    expect(code).toContain("export type TreeInputNode = {");
+    expect(code).toContain("children?: TreeInputNode[];");
     // Object-literal members: only `then` (thenable) and the generic reader are reserved
     expect(code).toContain("client(input: ClientInput");
     expect(code).toContain("constructor(input: ConstructorInput");

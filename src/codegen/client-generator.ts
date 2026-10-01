@@ -6,7 +6,7 @@
  * resource reader. Methods
  * delegate to the SDK and return its full results. Member names are allocated so distinct
  * server names never collide (e.g. `get-user` vs `get_user`); tool type names derive from
- * them (`{Member}Input`/`Output`), so they are unique too.
+ * them (`{Member}Input`/`Output`), recursive-ref aliases from those.
  *
  * SPDX-FileCopyrightText: 2025-present Kriasoft
  * SPDX-License-Identifier: MIT
@@ -52,11 +52,23 @@ export function generateServerClient(
   const members = new Set(RESERVED_MEMBERS);
   const methods: string[] = [];
 
-  // Tools are named first: they get the plainest names. Their types precede the factory.
-  for (const tool of result.tools) {
+  // Tools are named first: they get the plainest names. Their type names are reserved
+  // before any is emitted, so aliases for recursive refs can't take a later tool's.
+  const typeNames = new Set([typeName]);
+  const tools = result.tools.map((tool) => {
     const name = uniqueName(camelCase(tool.name), members);
-    const types = addToolTypes(sourceFile, tool, name);
-    methods.push(toolMethod(tool, name, types));
+    const base = pascalCase(name);
+    const inputType = uniqueName(`${base}Input`, typeNames);
+    const outputType = hasOutputSchema(tool)
+      ? uniqueName(`${base}Output`, typeNames)
+      : undefined;
+    return { tool, name, inputType, outputType };
+  });
+  for (const { tool, name, inputType, outputType } of tools) {
+    generateToolInputType(sourceFile, tool, inputType, typeNames);
+    if (outputType)
+      generateToolOutputType(sourceFile, tool, outputType, typeNames);
+    methods.push(toolMethod(tool, name, { inputType, outputType }));
   }
   for (const prompt of result.prompts) {
     const name = uniqueName(camelCase(prompt.name) + "Prompt", members);
@@ -112,21 +124,6 @@ export function hasResources(result: Introspection): boolean {
 /** Client type name for a server; its factory is `create` + this. */
 export function clientTypeName(serverName: string): string {
   return pascalCase(serverName) + "Client";
-}
-
-/** Emit a tool's input (and output) types; returns their names. */
-function addToolTypes(
-  sourceFile: SourceFile,
-  tool: Tool,
-  methodName: string,
-): { inputType: string; outputType?: string } {
-  const typeBase = pascalCase(methodName);
-  const inputType = `${typeBase}Input`;
-  generateToolInputType(sourceFile, tool, inputType);
-  if (!hasOutputSchema(tool)) return { inputType };
-  const outputType = `${typeBase}Output`;
-  generateToolOutputType(sourceFile, tool, outputType);
-  return { inputType, outputType };
 }
 
 function toolMethod(

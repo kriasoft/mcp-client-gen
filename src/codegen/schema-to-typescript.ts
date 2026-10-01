@@ -1,27 +1,106 @@
 /**
  * JSON Schema to TypeScript type conversion.
  *
- * Emits a type expression for a whole schema. Types may be looser than the schema, never
- * stricter: anything not expressible (recursive refs, remote refs) widens to `unknown`
- * rather than rejecting valid values.
+ * Emits type expressions for whole schemas. Types may be looser than the schema, never
+ * stricter: anything not expressible (remote refs, self-references TypeScript rejects as
+ * circular) widens to `unknown` rather than rejecting valid values. Local `$ref`s are inlined, except those
+ * that recurse: `schemaTypeAliases()` names their targets, `jsonSchemaToTypeScript()`
+ * widens the cycle.
  *
  * SPDX-FileCopyrightText: 2025-present Kriasoft
  * SPDX-License-Identifier: MIT
  */
 
-import { docComment, propertyKey } from "./utils.js";
+import { Project } from "ts-morph";
+import { docComment, pascalCase, propertyKey, uniqueName } from "./utils.js";
 
 type Schema = boolean | Record<string, any> | null | undefined;
 
-/**
- * Convert a JSON Schema to a TypeScript type expression.
- * @param root Document that local `$ref`s (`#/...`) resolve against; defaults to `schema`.
- */
-export function jsonSchemaToTypeScript(schema: Schema, root = schema): string {
-  return convert(schema, root, new Set());
+export interface TypeAlias {
+  name: string;
+  type: string;
 }
 
-function convert(schema: Schema, root: Schema, refs: Set<string>): string {
+interface Context {
+  /** `$ref` targets being expanded (the root first): meeting one again is recursion */
+  expanding: Set<object>;
+  /** Recursive targets and their alias names */
+  named: Map<object, string>;
+  /** Aliases for recursive targets other than the root */
+  aliases: TypeAlias[];
+  /** Alias name for a recursive target; absent: widen recursion to `unknown` */
+  nameRef?: (ref: string, target: object) => string;
+}
+
+/** Convert a JSON Schema to a TypeScript type expression; recursion widens to `unknown`. */
+export function jsonSchemaToTypeScript(schema: Schema): string {
+  return convert(schema, schema, {
+    expanding: new Set(),
+    named: new Map(),
+    aliases: [],
+  });
+}
+
+/**
+ * Type aliases for a schema: `name` first, then one per recursive `$ref` target, named
+ * `{name}{pointer's last segment}` (a `$ref` to the root is `name` itself). Allocated
+ * names join `taken`.
+ */
+export function schemaTypeAliases(
+  schema: Schema,
+  name: string,
+  taken: Set<string>,
+): TypeAlias[] {
+  const ctx: Context = {
+    expanding: new Set(isObject(schema) ? [schema] : []),
+    named: new Map(),
+    aliases: [],
+    nameRef: (ref, target) =>
+      target === schema
+        ? name
+        : uniqueName(name + pascalCase(ref.split("/").at(-1)!), taken),
+  };
+  const aliases = [
+    { name, type: convert(schema, schema, ctx) },
+    ...ctx.aliases,
+  ];
+  return ctx.named.size > 0 ? breakCircularAliases(aliases) : aliases;
+}
+
+/**
+ * Widen aliases TypeScript rejects as circular (TS2456, e.g. `type A = A | string`, or
+ * mutual top-level references) to `unknown`, asking the compiler: which recursions it
+ * defers (object members, array elements, some tuple positions) is subtle.
+ */
+function breakCircularAliases(aliases: TypeAlias[]): TypeAlias[] {
+  project ??= new Project({ useInMemoryFileSystem: true });
+  for (;;) {
+    const file = project.createSourceFile(
+      "aliases.ts",
+      aliases.map(({ name, type }) => `type ${name} = ${type};`).join("\n"),
+      { overwrite: true },
+    );
+    // The diagnostic spans the alias name
+    const circular = new Set(
+      file
+        .getPreEmitDiagnostics()
+        .filter((d) => d.getCode() === CIRCULAR_ALIAS)
+        .map((d) => file.getFullText().substr(d.getStart()!, d.getLength())),
+    );
+    // Widen one alias per pass: it may break a cycle the others are only part of
+    const index = aliases.findIndex((alias) => circular.has(alias.name));
+    if (index < 0) return aliases;
+    aliases = aliases.with(index, { ...aliases[index]!, type: "unknown" });
+  }
+}
+
+/** Reused: lib files parse once. */
+let project: Project | undefined;
+
+/** "Type alias '{0}' circularly references itself." */
+const CIRCULAR_ALIAS = 2456;
+
+function convert(schema: Schema, root: Schema, ctx: Context): string {
   if (schema === true || schema === undefined || schema === null)
     return "unknown";
   if (schema === false) return "never";
@@ -30,11 +109,23 @@ function convert(schema: Schema, root: Schema, refs: Set<string>): string {
   if (typeof schema.$id === "string" && schema !== root) root = schema;
 
   if (typeof schema.$ref === "string") {
-    const ref: string = schema.$ref;
-    // Recursive or unresolvable: widen instead of emitting a named recursive type
-    const target = refs.has(ref) ? undefined : resolveRef(root, ref);
-    if (target === undefined) return "unknown";
-    return convert(target, root, new Set(refs).add(ref));
+    const target = resolveRef(root, schema.$ref);
+    if (!isObject(target)) return convert(target, root, ctx); // incl. unresolvable
+    const known = ctx.named.get(target);
+    if (known) return known;
+    if (ctx.expanding.has(target)) {
+      if (!ctx.nameRef) return "unknown";
+      const name = ctx.nameRef(schema.$ref, target);
+      ctx.named.set(target, name);
+      return name;
+    }
+    ctx.expanding.add(target);
+    const type = convert(target, root, ctx);
+    ctx.expanding.delete(target);
+    const name = ctx.named.get(target);
+    if (!name) return type; // didn't recurse: inline
+    ctx.aliases.push({ name, type });
+    return name;
   }
 
   if ("const" in schema) return literal(schema.const);
@@ -43,14 +134,14 @@ function convert(schema: Schema, root: Schema, refs: Set<string>): string {
 
   // Composition applies alongside sibling keywords (e.g. type + anyOf)
   const parts: string[] = [];
-  const base = baseType(schema, root, refs);
+  const base = baseType(schema, root, ctx);
   if (base !== undefined) parts.push(base);
   const alternatives = schema.anyOf ?? schema.oneOf;
   if (Array.isArray(alternatives))
-    parts.push(union(alternatives.map((s: Schema) => convert(s, root, refs))));
+    parts.push(union(alternatives.map((s: Schema) => convert(s, root, ctx))));
   if (Array.isArray(schema.allOf))
     parts.push(
-      ...schema.allOf.map((s: Schema) => group(convert(s, root, refs))),
+      ...schema.allOf.map((s: Schema) => group(convert(s, root, ctx))),
     );
 
   // `X & unknown` is just X
@@ -65,14 +156,13 @@ function convert(schema: Schema, root: Schema, refs: Set<string>): string {
 function baseType(
   schema: Record<string, any>,
   root: Schema,
-  refs: Set<string>,
+  ctx: Context,
 ): string | undefined {
   if (Array.isArray(schema.type)) {
     // Keep sibling keywords (items, properties, …) for every branch
     return union(
       schema.type.map(
-        (type: string) =>
-          baseType({ ...schema, type }, root, refs) ?? "unknown",
+        (type: string) => baseType({ ...schema, type }, root, ctx) ?? "unknown",
       ),
     );
   }
@@ -87,14 +177,14 @@ function baseType(
     case "null":
       return "null";
     case "array":
-      return arrayType(schema, root, refs);
+      return arrayType(schema, root, ctx);
     case "object":
-      return objectType(schema, root, refs);
+      return objectType(schema, root, ctx);
     case undefined:
       if (schema.properties || schema.additionalProperties !== undefined)
-        return objectType(schema, root, refs);
+        return objectType(schema, root, ctx);
       if (schema.items || schema.prefixItems)
-        return arrayType(schema, root, refs);
+        return arrayType(schema, root, ctx);
       return undefined;
     default:
       return "unknown";
@@ -104,7 +194,7 @@ function baseType(
 function arrayType(
   schema: Record<string, any>,
   root: Schema,
-  refs: Set<string>,
+  ctx: Context,
 ): string {
   // Tuples: `prefixItems` + rest `items` (2020-12), or `items: [...]` + `additionalItems`
   const prefix = schema.prefixItems ?? schema.items;
@@ -112,9 +202,9 @@ function arrayType(
     const rest = Array.isArray(schema.items)
       ? schema.additionalItems
       : schema.items;
-    return tupleType(prefix, rest, schema.minItems, root, refs);
+    return tupleType(prefix, rest, schema.minItems, root, ctx);
   }
-  return `${group(convert(schema.items, root, refs))}[]`;
+  return `${group(convert(schema.items, root, ctx))}[]`;
 }
 
 /** Positions past `minItems` may be absent, so they are optional elements. */
@@ -123,21 +213,21 @@ function tupleType(
   rest: Schema,
   minItems: unknown,
   root: Schema,
-  refs: Set<string>,
+  ctx: Context,
 ): string {
   const required = typeof minItems === "number" ? minItems : 0;
   const elements = prefix.map((s, i) => {
-    const type = convert(s, root, refs);
+    const type = convert(s, root, ctx);
     return i < required ? type : `${group(type)}?`;
   });
-  if (rest !== false) elements.push(`...${group(convert(rest, root, refs))}[]`);
+  if (rest !== false) elements.push(`...${group(convert(rest, root, ctx))}[]`);
   return `[${elements.join(", ")}]`;
 }
 
 function objectType(
   schema: Record<string, any>,
   root: Schema,
-  refs: Set<string>,
+  ctx: Context,
 ): string {
   const properties: Record<string, Schema> = schema.properties ?? {};
   const required = new Set<string>(schema.required ?? []);
@@ -145,7 +235,7 @@ function objectType(
   const valueTypes: string[] = [];
 
   for (const [key, propSchema] of Object.entries(properties)) {
-    const type = convert(propSchema, root, refs);
+    const type = convert(propSchema, root, ctx);
     const optional = !required.has(key);
     valueTypes.push(optional ? `${type} | undefined` : type);
     const doc =
@@ -168,7 +258,7 @@ function objectType(
   const extraTypes = [
     ...(additional !== undefined && additional !== false ? [additional] : []),
     ...patterns,
-  ].map((s) => convert(s, root, refs));
+  ].map((s) => convert(s, root, ctx));
   if (extraTypes.length > 0) {
     // The index signature must admit every declared property's type (TS2411)
     const indexType = union(extraTypes);
@@ -242,4 +332,8 @@ function hasTopLevelOperator(type: string): boolean {
     else if (depth === 0 && (char === "|" || char === "&")) return true;
   }
   return false;
+}
+
+function isObject(schema: unknown): schema is Record<string, any> {
+  return typeof schema === "object" && schema !== null;
 }

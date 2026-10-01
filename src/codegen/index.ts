@@ -10,5 +10,8 @@
 
 export { clientTypeName } from "./client-generator.js";
 export { generateClientFile } from "./file-builder.js";
-export { jsonSchemaToTypeScript } from "./schema-to-typescript.js";
+export {
+  jsonSchemaToTypeScript,
+  schemaTypeAliases,
+} from "./schema-to-typescript.js";
 export { camelCase, pascalCase } from "./utils.js";

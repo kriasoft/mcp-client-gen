@@ -95,21 +95,21 @@ Tool input and output types are `type` aliases generated from the whole schema (
 - An object without `additionalProperties` gets no index signature (JSON Schema would allow extra keys). Servers rarely mean it, and an open signature on every object disables excess-property checks.
 - `properties` / `items` without `type` imply an object / array (JSON Schema applies them conditionally).
 
-| JSON Schema                                         | TypeScript                                                                         |
-| --------------------------------------------------- | ---------------------------------------------------------------------------------- |
-| `string` / `number`, `integer` / `boolean` / `null` | `string` / `number` / `boolean` / `null`                                           |
-| `const`, `enum` (any JSON primitive)                | literal union, e.g. `"a" \| 1 \| null`                                             |
-| `array` with `items: T`                             | `T[]`, compound items grouped: `(A \| B)[]`                                        |
-| Tuples (`prefixItems` or `items: [...]`)            | `[A, B?, ...R[]]`: past `minItems` optional, rest from `items` / `additionalItems` |
-| `object` with `properties`                          | `{ key: T; opt?: U }`, keys quoted as needed                                       |
-| `required` name without a property schema           | `name: unknown`                                                                    |
-| `additionalProperties: S`                           | index signature admitting `S` and declared property types                          |
-| `object` without properties                         | `Record<string, unknown>` (`never` values if closed)                               |
-| `anyOf` / `oneOf`                                   | union                                                                              |
-| `allOf`                                             | intersection, operands grouped                                                     |
-| Composition next to `type`/`properties`             | intersection of both                                                               |
-| `type: [A, B]`                                      | union, each branch keeps sibling keywords                                          |
-| Local `$ref` (`#/$defs/X`)                          | resolved inline; recursive or remote → `unknown`                                   |
-| `true` / `false` schema                             | `unknown` / `never`                                                                |
+| JSON Schema                                         | TypeScript                                                                                                             |
+| --------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| `string` / `number`, `integer` / `boolean` / `null` | `string` / `number` / `boolean` / `null`                                                                               |
+| `const`, `enum` (any JSON primitive)                | literal union, e.g. `"a" \| 1 \| null`                                                                                 |
+| `array` with `items: T`                             | `T[]`, compound items grouped: `(A \| B)[]`                                                                            |
+| Tuples (`prefixItems` or `items: [...]`)            | `[A, B?, ...R[]]`: past `minItems` optional, rest from `items` / `additionalItems`                                     |
+| `object` with `properties`                          | `{ key: T; opt?: U }`, keys quoted as needed                                                                           |
+| `required` name without a property schema           | `name: unknown`                                                                                                        |
+| `additionalProperties: S`                           | index signature admitting `S` and declared property types                                                              |
+| `object` without properties                         | `Record<string, unknown>` (`never` values if closed)                                                                   |
+| `anyOf` / `oneOf`                                   | union                                                                                                                  |
+| `allOf`                                             | intersection, operands grouped                                                                                         |
+| Composition next to `type`/`properties`             | intersection of both                                                                                                   |
+| `type: [A, B]`                                      | union, each branch keeps sibling keywords                                                                              |
+| Local `$ref` (`#/$defs/X`)                          | inlined; a recursive target becomes an alias `{Type}{X}` (a `$ref` to the root is `{Type}` itself); remote → `unknown` |
+| `true` / `false` schema                             | `unknown` / `never`                                                                                                    |
 
-Property descriptions become JSDoc on the property.
+Property descriptions become JSDoc on the property. Recursive aliases TypeScript rejects as circular (`type A = A | string`, mutual top-level references, recursive tuple rests) are found with the compiler and widened to `unknown`, one per pass until none remains.
