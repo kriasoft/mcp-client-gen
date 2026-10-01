@@ -2,7 +2,8 @@
  * MCP client generation (ADR-003).
  *
  * One factory per server, taking the SDK `Client` and returning an object literal: a
- * method per tool, prompt and listed resource, plus a generic resource reader. Methods
+ * method per tool, prompt, listed resource and simple resource template, plus a generic
+ * resource reader. Methods
  * delegate to the SDK and return its full results. Member names are allocated so distinct
  * server names never collide (e.g. `get-user` vs `get_user`); tool type names derive from
  * them (`{Member}Input`/`Output`), so they are unique too.
@@ -11,7 +12,12 @@
  * SPDX-License-Identifier: MIT
  */
 
-import type { Prompt, Resource, Tool } from "@modelcontextprotocol/client";
+import type {
+  Prompt,
+  Resource,
+  ResourceTemplateType,
+  Tool,
+} from "@modelcontextprotocol/client";
 import type { SourceFile } from "ts-morph";
 import type { Introspection } from "../introspection.js";
 import {
@@ -56,8 +62,7 @@ export function generateServerClient(
     const name = uniqueName(camelCase(prompt.name) + "Prompt", members);
     methods.push(promptMethod(prompt, name));
   }
-  // Servers may serve resources through templates without listing any
-  if (result.capabilities.resources || result.resources.length > 0) {
+  if (hasResources(result)) {
     methods.push(
       method(
         "Read a resource by URI (listed or from a resource template).",
@@ -68,6 +73,12 @@ export function generateServerClient(
     for (const resource of result.resources) {
       const name = uniqueName("read" + pascalCase(resource.name), members);
       methods.push(resourceMethod(resource, name));
+    }
+    for (const template of result.resourceTemplates) {
+      const uri = expandSimpleTemplate(template.uriTemplate);
+      if (!uri) continue; // operators like {?q}: readResource(uri) covers them
+      const name = uniqueName("read" + pascalCase(template.name), members);
+      methods.push(templateMethod(template, name, uri));
     }
   }
 
@@ -87,6 +98,15 @@ export function generateServerClient(
     isExported: true,
     type: `ReturnType<typeof ${factoryName}>`,
   });
+}
+
+/** Whether the client reads resources; servers may serve them only through templates. */
+export function hasResources(result: Introspection): boolean {
+  return (
+    !!result.capabilities.resources ||
+    result.resources.length > 0 ||
+    result.resourceTemplates.length > 0
+  );
 }
 
 /** Client type name for a server; its factory is `create` + this. */
@@ -156,6 +176,57 @@ function resourceMethod(resource: Resource, name: string): string {
     `${name}(options?: RequestOptions): Promise<ReadResourceResult>`,
     `return client.readResource({ uri: ${JSON.stringify(resource.uri)} }, options);`,
   );
+}
+
+function templateMethod(
+  template: ResourceTemplateType,
+  name: string,
+  { variables, literal }: { variables: string[]; literal: string },
+): string {
+  const docs = [template.description, `URI template: ${template.uriTemplate}`]
+    .filter(Boolean)
+    .join("\n\n");
+  const params = variables.length
+    ? `params: { ${variables.map((v) => `${propertyKey(v)}: string`).join("; ")} }, `
+    : "";
+  return method(
+    docs,
+    `${name}(${params}options?: RequestOptions): Promise<ReadResourceResult>`,
+    `return client.readResource({ uri: ${literal} }, options);`,
+  );
+}
+
+/**
+ * Template literal expanding an RFC 6570 level-1 template (`repo://{owner}/{repo}`), each
+ * value percent-encoded like the SDK's `UriTemplate`; undefined for other templates.
+ */
+function expandSimpleTemplate(
+  uriTemplate: string,
+): { variables: string[]; literal: string } | undefined {
+  const variables: string[] = [];
+  let literal = "";
+  // Odd indexes are `{…}` expressions
+  for (const [i, part] of uriTemplate.split(/(\{[^{}]*\})/).entries()) {
+    if (i % 2 === 0) {
+      if (/[{}]/.test(part)) return undefined; // unbalanced braces
+      literal += part.replace(/[`\\]/g, "\\$&"); // braces excluded, so `${` can't occur
+      continue;
+    }
+    const variable = part.slice(1, -1);
+    if (!VARNAME.test(variable)) return undefined; // operator, modifier or list
+    if (!variables.includes(variable)) variables.push(variable);
+    literal += `\${encodeURIComponent(params${propertyAccess(variable)})}`;
+  }
+  return { variables, literal: `\`${literal}\`` };
+}
+
+/** RFC 6570 varname: word chars and pct-encoded octets, dot-separated. */
+const VARNAME = /^(?:\w|%[0-9A-Fa-f]{2})+(?:\.(?:\w|%[0-9A-Fa-f]{2})+)*$/;
+
+/** `.name` when `name` is an identifier, else `["name"]`. */
+function propertyAccess(name: string): string {
+  const key = propertyKey(name);
+  return key === name ? `.${name}` : `[${key}]`;
 }
 
 /** Object-literal method with optional JSDoc. */

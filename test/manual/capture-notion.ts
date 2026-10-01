@@ -113,7 +113,10 @@ async function saveExample(clientCode: string) {
 async function runCapture() {
   if (fromFixtures) {
     const saved = JSON.parse(await readFile(fixturePath, "utf8"));
-    await saveExample(await generateClient(saved));
+    // Fixtures captured before template listing have none
+    await saveExample(
+      await generateClient({ resourceTemplates: [], ...saved }),
+    );
     return;
   }
   try {

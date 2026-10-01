@@ -13,7 +13,7 @@
 
 import { Node, Project, ts } from "ts-morph";
 import type { Introspection } from "../introspection.js";
-import { generateServerClient } from "./client-generator.js";
+import { generateServerClient, hasResources } from "./client-generator.js";
 import { hasOutputSchema } from "./tool-input-generator.js";
 
 /** Generate the client module for one introspected server. */
@@ -21,11 +21,11 @@ export function generateClientFile(
   serverName: string,
   introspection: Introspection,
 ): string {
-  const { tools, prompts, capabilities, resources } = introspection;
+  const { tools, prompts } = introspection;
   const usesTools = tools.length > 0;
   const usesStructured = tools.some(hasOutputSchema);
   const usesPrompts = prompts.length > 0;
-  const usesResources = !!capabilities.resources || resources.length > 0;
+  const usesResources = hasResources(introspection);
 
   const project = new Project({ useInMemoryFileSystem: true });
   const sourceFile = project.createSourceFile("mcp-client.ts", "", {

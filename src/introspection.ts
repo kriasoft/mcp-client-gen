@@ -2,7 +2,7 @@
 /* SPDX-License-Identifier: MIT */
 
 /**
- * Capability discovery - snapshots a server's tools/resources/prompts for codegen.
+ * Capability discovery - snapshots a server's tools/resources/templates/prompts for codegen.
  *
  * Contract: introspectServer(server, config?) → Introspection
  * Invariant: Always closes its connection. Errors propagate unchanged (SDK error types
@@ -12,6 +12,7 @@
 import type {
   Prompt,
   Resource,
+  ResourceTemplateType,
   ServerCapabilities,
   Tool,
 } from "@modelcontextprotocol/client";
@@ -24,6 +25,7 @@ export interface Introspection {
   capabilities: ServerCapabilities;
   tools: Tool[];
   resources: Resource[];
+  resourceTemplates: ResourceTemplateType[];
   prompts: Prompt[];
   /** Whether requests carried OAuth tokens (callers likely need OAuth too) */
   authorized: boolean;

@@ -6,12 +6,13 @@ Defines how MCP server capabilities are discovered for code generation.
 
 Data fetched from each MCP server:
 
-| Field          | Type                 | Source                                            |
-| -------------- | -------------------- | ------------------------------------------------- |
-| `capabilities` | `ServerCapabilities` | Handshake response                                |
-| `tools`        | `Tool[]`             | `listTools()` if `capabilities.tools` set         |
-| `resources`    | `Resource[]`         | `listResources()` if `capabilities.resources` set |
-| `prompts`      | `Prompt[]`           | `listPrompts()` if `capabilities.prompts` set     |
+| Field               | Type                     | Source                                                                                                 |
+| ------------------- | ------------------------ | ------------------------------------------------------------------------------------------------------ |
+| `capabilities`      | `ServerCapabilities`     | Handshake response                                                                                     |
+| `tools`             | `Tool[]`                 | `listTools()` if `capabilities.tools` set                                                              |
+| `resources`         | `Resource[]`             | `listResources()` if `capabilities.resources` set                                                      |
+| `resourceTemplates` | `ResourceTemplateType[]` | `listResourceTemplates()` if `capabilities.resources` set; `[]` if the server answers method-not-found |
+| `prompts`           | `Prompt[]`               | `listPrompts()` if `capabilities.prompts` set                                                          |
 
 ## Connection Flow
 
@@ -21,7 +22,7 @@ introspectServer(server, config)               // src/introspection.ts
       ├─ Create transport (http or sse), OAuth provider for https: / loopback http:
       ├─ client.connect(transport)             // handshake: capabilities exchange
       ├─ capabilities = client.getServerCapabilities()
-      ├─ tools / resources / prompts = list*() // each only if advertised; sequential
+      ├─ tools / resources / templates / prompts = list*() // if advertised; sequential
       └─ authorized = provider holds tokens
   └─ client.close(); return the snapshot
 ```
@@ -33,6 +34,7 @@ interface Introspection {
   capabilities: ServerCapabilities; // {} if none advertised
   tools: Tool[];
   resources: Resource[];
+  resourceTemplates: ResourceTemplateType[];
   prompts: Prompt[];
   authorized: boolean; // requests carried OAuth tokens (the CLI then shows OAuth usage)
 }

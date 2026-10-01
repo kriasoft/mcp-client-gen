@@ -7,7 +7,11 @@
  */
 
 import { UnauthorizedError } from "@modelcontextprotocol/client";
-import { createMcpHandler, McpServer } from "@modelcontextprotocol/server";
+import {
+  createMcpHandler,
+  McpServer,
+  ResourceTemplate,
+} from "@modelcontextprotocol/server";
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 import type { CredentialStore } from "oauth-callback/mcp";
 import { createMcpConnection, type McpConnection } from "./mcp-client.js";
@@ -42,6 +46,12 @@ function startFixture() {
       { mimeType: "text/markdown" },
       async (uri) => ({ contents: [{ uri: uri.href, text: "# Hi" }] }),
     );
+    server.registerResource(
+      "issue",
+      new ResourceTemplate("repo://{owner}/issues/{id}", { list: undefined }),
+      {},
+      async (uri) => ({ contents: [{ uri: uri.href, text: "issue" }] }),
+    );
     server.registerPrompt("greet", { description: "Greet" }, async () => ({
       messages: [{ role: "user", content: { type: "text", text: "Hi" } }],
     }));
@@ -72,8 +82,29 @@ describe("createMcpConnection", () => {
     expect(connection.resources.map((r) => r.uri)).toEqual([
       "file:///readme.md",
     ]);
+    expect(connection.resourceTemplates.map((t) => t.uriTemplate)).toEqual([
+      "repo://{owner}/issues/{id}",
+    ]);
     expect(connection.prompts.map((p) => p.name)).toEqual(["greet"]);
     expect(connection.capabilities.tools).toBeDefined();
+  });
+
+  test("treats a missing resources/templates/list as no templates", async () => {
+    const fetch = (async (url: URL | string, init?: RequestInit) => {
+      const body = typeof init?.body === "string" ? JSON.parse(init.body) : {};
+      if (body.method !== "resources/templates/list")
+        return globalThis.fetch(url, init);
+      const error = { code: -32601, message: "Method not found" };
+      return Response.json({ jsonrpc: "2.0", id: body.id, error });
+    }) as typeof globalThis.fetch;
+
+    const connection = await connect(
+      { type: "http", url: fixture.url },
+      { fetch },
+    );
+
+    expect(connection.resourceTemplates).toEqual([]);
+    expect(connection.resources).toHaveLength(1);
   });
 
   test("sends server headers through the custom fetch", async () => {

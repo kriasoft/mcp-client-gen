@@ -46,17 +46,19 @@ export function createNotionClient(client: Client) {
 
     readResource(uri: string, options?: RequestOptions): Promise<ReadResourceResult> { ... },
     readReadme(options?: RequestOptions): Promise<ReadResourceResult> { ... }, // one per listed resource
+    readIssue(params: { owner: string; number: string }, options?: RequestOptions): Promise<ReadResourceResult> { ... }, // per simple template
   };
 }
 ```
 
-| Member         | Returns                    | Notes                                                                             |
-| -------------- | -------------------------- | --------------------------------------------------------------------------------- |
-| Tool           | `ToolResult<{Tool}Output>` | When the tool declares `outputSchema`: `structuredContent` typed unless `isError` |
-| Tool           | `CallToolResult`           | Otherwise                                                                         |
-| Prompt         | `GetPromptResult`          | Arguments keep their wire names (quoted when not identifiers)                     |
-| `readResource` | `ReadResourceResult`       | Any URI (listed or from a template); emitted when the server has resources        |
-| `read{Name}`   | `ReadResourceResult`       | Per listed resource, reads its URI                                                |
+| Member           | Returns                    | Notes                                                                                                                                                                                                                                                                 |
+| ---------------- | -------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Tool             | `ToolResult<{Tool}Output>` | When the tool declares `outputSchema`: `structuredContent` typed unless `isError`                                                                                                                                                                                     |
+| Tool             | `CallToolResult`           | Otherwise                                                                                                                                                                                                                                                             |
+| Prompt           | `GetPromptResult`          | Arguments keep their wire names (quoted when not identifiers)                                                                                                                                                                                                         |
+| `readResource`   | `ReadResourceResult`       | Any URI (listed or from a template); emitted when the server has resources                                                                                                                                                                                            |
+| `read{Name}`     | `ReadResourceResult`       | Per listed resource, reads its URI                                                                                                                                                                                                                                    |
+| `read{Template}` | `ReadResourceResult`       | Per resource template whose expressions are all `{var}` (RFC 6570 level 1): typed `params`, each value encoded with `encodeURIComponent` like the SDK's `UriTemplate`. Templates with operators (`{?q}`, `{+path}`, …) get no method; `readResource(uri)` covers them |
 
 Results are the SDK's, unchanged. Tool failures are data (`isError: true`), as in the SDK; protocol errors (including `UnauthorizedError` for step-up authorization) propagate. `ToolResult<T>` relies on the server's MCP obligation to return conforming `structuredContent`; the SDK validates it once `client.listTools()` has cached the tool definitions.
 
@@ -71,6 +73,7 @@ Parameters default to `{}` when the schema provably accepts it (no `required` na
 | Tool method     | camelCase(tool)                         | `notion-create-pages` → `notionCreatePages` |
 | Prompt method   | camelCase(prompt) + `Prompt`            | `summarizePrompt`                           |
 | Resource method | `read` + PascalCase(resource name)      | `readReadme`                                |
+| Template method | `read` + PascalCase(template name)      | `readIssue`                                 |
 | Tool types      | PascalCase(method) + `Input` / `Output` | `NotionCreatePagesInput`                    |
 
 Collisions are resolved deterministically, never by emitting invalid code:

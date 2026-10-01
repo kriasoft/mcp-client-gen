@@ -273,6 +273,19 @@ const alpha: Introspection = {
     }),
   ],
   resources: [],
+  resourceTemplates: [
+    {
+      name: "issue",
+      description: "An issue",
+      uriTemplate: "repo://{owner}/{repo}/issues/{number}?v={1st}",
+    },
+    // Literal hazards in a template literal: backtick, backslash, `$` before `{`
+    { name: "odd", uriTemplate: "x://a`b\\c$/{id}" },
+    // RFC 6570 varnames may hold dots and pct-encoded octets
+    { name: "user", uriTemplate: "u://{user.name}/{%69d}" },
+    // Operators aren't expanded inline: readResource(uri) covers them
+    { name: "search", uriTemplate: "search://{?q}" },
+  ],
   prompts: [
     {
       name: "summarize",
@@ -295,6 +308,7 @@ const beta: Introspection = {
     }),
   ],
   resources: [],
+  resourceTemplates: [],
   prompts: [],
 };
 
@@ -399,6 +413,16 @@ export async function use(alpha: AlphaClient) {
     expect(generateClientFile("alpha", alpha)).toBe(code);
   });
 
+  test("reads simple resource templates with typed parameters", () => {
+    expect(code).toContain(
+      'readIssue(params: { owner: string; repo: string; number: string; "1st": string; }, options?: RequestOptions)',
+    );
+    expect(code).toContain(
+      'readUser(params: { "user.name": string; "%69d": string; }',
+    );
+    expect(code).not.toContain("readSearch(");
+  });
+
   test("emits resource readers and imports only where used", () => {
     expect(code).toContain(
       "readResource(uri: string, options?: RequestOptions): Promise<ReadResourceResult>",
@@ -483,6 +507,21 @@ describe("generated client at runtime", () => {
       method: "getPrompt",
       params: { name: "summarize", arguments: { "page-id": "p1" } },
     });
+
+    await alpha.readIssue({
+      owner: "a b",
+      repo: "r/x",
+      number: "1",
+      "1st": "?",
+    });
+    await alpha.readOdd({ id: "7" });
+    expect(calls.slice(-2)).toEqual([
+      {
+        method: "readResource",
+        params: { uri: "repo://a%20b/r%2Fx/issues/1?v=%3F" },
+      },
+      { method: "readResource", params: { uri: "x://a`b\\c$/7" } },
+    ]);
   });
 
   const code = () => generateClientFile("alpha", alpha);

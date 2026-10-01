@@ -13,12 +13,15 @@
 import {
   Client,
   DEFAULT_REQUEST_TIMEOUT_MSEC,
+  ProtocolError,
+  ProtocolErrorCode,
   SSEClientTransport,
   StreamableHTTPClientTransport,
   UnauthorizedError,
   type Prompt,
   type RequestOptions,
   type Resource,
+  type ResourceTemplateType,
   type ServerCapabilities,
   type Tool,
 } from "@modelcontextprotocol/client";
@@ -62,6 +65,7 @@ export interface McpConnection {
   capabilities: ServerCapabilities;
   tools: Tool[];
   resources: Resource[];
+  resourceTemplates: ResourceTemplateType[];
   prompts: Prompt[];
   /** Whether requests carried OAuth tokens (callers likely need OAuth too) */
   authorized: boolean;
@@ -228,6 +232,23 @@ export async function createMcpConnection(
           )
         ).resources
       : [];
+    // Part of the resources capability, yet some servers don't implement it
+    const resourceTemplates = capabilities.resources
+      ? (
+          await withAuthorization(() =>
+            client
+              .listResourceTemplates(undefined, requestOptions)
+              .catch((error: unknown) => {
+                if (
+                  error instanceof ProtocolError &&
+                  error.code === ProtocolErrorCode.MethodNotFound
+                )
+                  return { resourceTemplates: [] };
+                throw error;
+              }),
+          )
+        ).resourceTemplates
+      : [];
     const prompts = capabilities.prompts
       ? (
           await withAuthorization(() =>
@@ -238,7 +259,15 @@ export async function createMcpConnection(
 
     // Tokens exist only once a browser flow (or a provided store) authorized us
     const authorized = (await auth?.tokens()) !== undefined;
-    return { client, capabilities, tools, resources, prompts, authorized };
+    return {
+      client,
+      capabilities,
+      tools,
+      resources,
+      resourceTemplates,
+      prompts,
+      authorized,
+    };
   } catch (error) {
     await client.close().catch(() => {}); // don't mask the listing error
     throw error;

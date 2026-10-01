@@ -48,7 +48,7 @@ result.structuredContent.items; // typed from the tool's outputSchema
 
 ## Features
 
-- **Type-safe** — Generated TypeScript types from server schemas
+- **Type-safe** — Generated TypeScript types from tool schemas, typed parameters for resource templates
 - **Thin** — Generated methods delegate to the official SDK `Client` and return its results unchanged
 - **No runtime dependency on this package** — Generated modules import only SDK types
 - **Zero config auth** — OAuth 2.1 with PKCE during generation, just approve in browser

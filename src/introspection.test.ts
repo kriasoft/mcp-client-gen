@@ -12,6 +12,7 @@ const createMcpConnection = mock(async () => ({
   capabilities: { tools: {} },
   tools,
   resources: [],
+  resourceTemplates: [],
   prompts: [],
   authorized: true,
 }));
@@ -32,6 +33,7 @@ describe("introspectServer", () => {
       capabilities: { tools: {} },
       tools,
       resources: [],
+      resourceTemplates: [],
       prompts: [],
       authorized: true,
     });
