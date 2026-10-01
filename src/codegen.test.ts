@@ -120,9 +120,26 @@ describe("jsonSchemaToTypeScript", () => {
         items: { anyOf: [{ type: "string" }, { type: "number" }] },
       }),
     ).toBe("(string | number)[]");
-    expect(ts({ type: "array", items: [{ type: "string" }] })).toBe(
-      "unknown[]",
+  });
+
+  test("tuples: positions past minItems are optional, rest from items", () => {
+    const pair = [
+      { type: "string" },
+      { anyOf: [{ type: "number" }, { type: "null" }] },
+    ];
+    expect(ts({ type: "array", prefixItems: pair })).toBe(
+      "[string?, (number | null)?, ...unknown[]]",
     );
+    expect(
+      ts({ type: "array", prefixItems: pair, minItems: 2, items: false }),
+    ).toBe("[string, number | null]");
+    expect(
+      ts({ prefixItems: pair, minItems: 1, items: { type: "boolean" } }),
+    ).toBe("[string, (number | null)?, ...boolean[]]");
+    // Draft-07 form: items array + additionalItems
+    expect(
+      ts({ type: "array", items: pair, minItems: 2, additionalItems: false }),
+    ).toBe("[string, number | null]");
   });
 
   test("type arrays keep sibling keywords per branch", () => {
@@ -249,6 +266,20 @@ const edgeCases = new Map<string, IntrospectionSuccess>([
           },
         }),
         tool("get_user"),
+        tool("move", {
+          inputSchema: {
+            type: "object",
+            properties: {
+              to: {
+                type: "array",
+                prefixItems: [{ type: "number" }, { type: "number" }],
+                minItems: 2,
+                items: false,
+              },
+            },
+            minProperties: 1,
+          },
+        }),
         tool("client"),
         tool("constructor"),
         tool("then"),
@@ -349,6 +380,11 @@ describe("generateClientFile", () => {
     expect(code).toContain(
       "async getUser2(input: GetUser2Input = {}, options?: RequestOptions)",
     );
+    // minProperties rejects {}: no default
+    expect(code).toContain(
+      "async move(input: MoveInput, options?: RequestOptions)",
+    );
+    expect(code).toContain("to?: [number, number];");
     expect(code).toContain("async client2(");
     expect(code).toContain("async constructor2(");
     expect(code).toContain("async then2(");

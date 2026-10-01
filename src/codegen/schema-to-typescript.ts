@@ -2,8 +2,8 @@
  * JSON Schema to TypeScript type conversion.
  *
  * Emits a type expression for a whole schema. Types may be looser than the schema, never
- * stricter: anything not expressible (tuples, recursive refs, remote refs) widens to
- * `unknown` rather than rejecting valid values.
+ * stricter: anything not expressible (recursive refs, remote refs) widens to `unknown`
+ * rather than rejecting valid values.
  *
  * SPDX-FileCopyrightText: 2025-present Kriasoft
  * SPDX-License-Identifier: MIT
@@ -93,7 +93,8 @@ function baseType(
     case undefined:
       if (schema.properties || schema.additionalProperties !== undefined)
         return objectType(schema, root, refs);
-      if (schema.items) return arrayType(schema, root, refs);
+      if (schema.items || schema.prefixItems)
+        return arrayType(schema, root, refs);
       return undefined;
     default:
       return "unknown";
@@ -105,9 +106,32 @@ function arrayType(
   root: Schema,
   refs: Set<string>,
 ): string {
-  // Tuple forms (items: [...], prefixItems) aren't modeled: any element type
-  if (Array.isArray(schema.items) || schema.prefixItems) return "unknown[]";
+  // Tuples: `prefixItems` + rest `items` (2020-12), or `items: [...]` + `additionalItems`
+  const prefix = schema.prefixItems ?? schema.items;
+  if (Array.isArray(prefix)) {
+    const rest = Array.isArray(schema.items)
+      ? schema.additionalItems
+      : schema.items;
+    return tupleType(prefix, rest, schema.minItems, root, refs);
+  }
   return `${group(convert(schema.items, root, refs))}[]`;
+}
+
+/** Positions past `minItems` may be absent, so they are optional elements. */
+function tupleType(
+  prefix: Schema[],
+  rest: Schema,
+  minItems: unknown,
+  root: Schema,
+  refs: Set<string>,
+): string {
+  const required = typeof minItems === "number" ? minItems : 0;
+  const elements = prefix.map((s, i) => {
+    const type = convert(s, root, refs);
+    return i < required ? type : `${group(type)}?`;
+  });
+  if (rest !== false) elements.push(`...${group(convert(rest, root, refs))}[]`);
+  return `[${elements.join(", ")}]`;
 }
 
 function objectType(

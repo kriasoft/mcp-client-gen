@@ -50,15 +50,29 @@ export function hasOutputSchema(tool: Tool): boolean {
   return tool.outputSchema !== undefined;
 }
 
-/** Whether the tool can be called without arguments (no required input). */
+/**
+ * Whether `{}` is provably valid input, so the parameter can default to it. Any keyword
+ * that may reject `{}` (required names, a minimum size, compositions, refs, literals,
+ * conditionals) keeps the argument required.
+ */
 export function hasOptionalInput(tool: Tool): boolean {
   const schema = tool.inputSchema as Record<string, unknown>;
-  const required = schema.required;
+  const { required, minProperties } = schema;
   return (
     !(Array.isArray(required) && required.length > 0) &&
-    !schema.anyOf &&
-    !schema.oneOf &&
-    !schema.allOf &&
-    !schema.$ref
+    !(typeof minProperties === "number" && minProperties > 0) &&
+    !REJECTS_EMPTY.some((keyword) => keyword in schema)
   );
 }
+
+/** Keywords whose constraints aren't analyzed: `{}` may fail them. */
+const REJECTS_EMPTY = [
+  "anyOf",
+  "oneOf",
+  "allOf",
+  "not",
+  "if",
+  "$ref",
+  "const",
+  "enum",
+];
