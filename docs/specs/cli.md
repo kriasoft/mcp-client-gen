@@ -119,6 +119,7 @@ Usage (npm install @modelcontextprotocol/client oauth-callback):
   - `browserAuth(…).connect(client)` (and `oauth-callback` in the install line) only when requests carried OAuth tokens during generation;
   - otherwise `client.connect(new StreamableHTTPClientTransport(new URL(…)))`;
   - `SSEClientTransport` for legacy SSE servers, plus a note on how to use OAuth with SSE when needed.
+- **Typed tools:** when a tool declares an output schema, the snippet calls `client.listTools()` once, so the SDK validates `structuredContent` (ADR-003).
 - **URL:** URL mode prints the URL given on the command line. Config mode never prints a config URL (it may hold expanded secrets); it prints `"..."` and names the entry instead (SPEC-config).
 - **Protocol:** Streamable HTTP snippets opt into version negotiation (`versionNegotiation: { mode: "auto" }`), matching generation; the SDK's default is the legacy 2025 era.
 - **Import path:** relative to the working directory, `/`-separated, `.ts` → `.js`, JSON-quoted.

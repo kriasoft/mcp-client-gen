@@ -26,6 +26,7 @@
 - Throw a generated `ToolError` on `isError` — a class per generated file breaks `instanceof` across files, and makes an expected outcome (a tool saying no, which agent loops feed back to the model) an exception.
 - Class only (`new NotionClient(client)`) — nominal type; reads "client" twice.
 - Validate `structuredContent` in generated code — duplicates the SDK, which validates against the listed tool definitions.
+- Embed each typed tool's definition and pass it as `toolDefinition` — the SDK then validates without a prior `listTools()`, but an explicit definition disables its recovery from `Mcp-Param-*` header mismatches (it re-lists tools only when none was passed), so a server's later schema change would turn into hard failures; it also adds every schema to the module. The CLI's usage snippet calls `client.listTools()` once instead.
 - Keep a public connection helper — duplicates `browserAuth().connect()`, ties apps to the generator's dependencies, and its browser-only auth can't express the SDK's other providers.
 - Keep `/internal` as an unversioned extension point — exported paths become dependencies regardless of their name; add a small `/unstable` entry if a real need appears.
 

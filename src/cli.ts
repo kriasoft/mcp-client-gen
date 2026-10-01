@@ -167,7 +167,11 @@ async function writeModules(files: Array<{ file: string; code: string }>) {
  * Print how to connect and use a generated client: the SDK client, plus oauth-callback
  * when the server used OAuth during generation.
  */
-function printUsage(target: Target, authorized: boolean, fromConfig: boolean) {
+function printUsage(
+  target: Target,
+  { authorized, tools }: Introspection,
+  fromConfig: boolean,
+) {
   const { server, name, file } = target;
   const factory = `create${clientTypeName(name)}`;
   // `{name}Client`: never a reserved word, `client` or `auth`
@@ -218,6 +222,12 @@ function printUsage(target: Target, authorized: boolean, fromConfig: boolean) {
               ]
             : []),
         ]),
+    // The SDK validates typed results only against listed definitions (ADR-003)
+    ...(tools.some((tool) => tool.outputSchema)
+      ? [
+          `await client.listTools(); // lets the SDK validate typed tool results`,
+        ]
+      : []),
     `const ${variable} = ${factory}(client);`,
   ];
   console.log(
@@ -248,7 +258,7 @@ async function runUrlMode(mode: Extract<CliMode, { kind: "url" }>) {
   );
   await writeModules([{ file: target.file!, code }]);
   console.log(`\nGenerated ${target.file}`);
-  printUsage(target, introspection.authorized, false);
+  printUsage(target, introspection, false);
 }
 
 /**
@@ -307,7 +317,7 @@ async function runConfigMode(servers: McpServerConfig[], outputDir: string) {
     })),
   );
   console.log(`\nGenerated ${targets.map((t) => t.file).join(", ")}`);
-  printUsage(targets[0]!, results[0]!.introspection.authorized, true);
+  printUsage(targets[0]!, results[0]!.introspection, true);
 }
 
 async function main() {
