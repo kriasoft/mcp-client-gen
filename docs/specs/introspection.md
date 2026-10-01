@@ -21,7 +21,9 @@ interface ServerSnapshot {
 
 Types are the SDK's (`@modelcontextprotocol/client`). Over Streamable HTTP they come from the newest protocol era both sides speak, not the SDK's legacy default.
 
-Static endpoint `headers` are the MCP server's credentials: they go only to requests for its origin, never to OAuth discovery or token endpoints, which share the transport's fetch (the SDK's `requestInit` would apply to those too, so it isn't used).
+Static endpoint `headers` are the MCP server's credentials: they go only to requests for its origin, never to OAuth discovery or token endpoints, which share the transport's fetch (the SDK's `requestInit` would apply to those too, so it isn't used). Requests carrying them don't follow redirects, which would forward custom headers to the redirect's origin: a redirect fails with `MCP server redirected (HTTP 3xx)`, and the fix is configuring the final URL.
+
+Before any request, `connectMcp` rejects a URL that isn't `http:`/`https:` (`TypeError`) and a `timeout` that isn't a positive number of milliseconds up to 2³¹−1 (`RangeError`), so both transports fail alike.
 
 | Field               | Source                                                                                     |
 | ------------------- | ------------------------------------------------------------------------------------------ |
@@ -33,7 +35,7 @@ Static endpoint `headers` are the MCP server's credentials: they go only to requ
 | `resourceTemplates` | `listResourceTemplates()` if `capabilities.resources`; `[]` on a JSON-RPC method-not-found |
 | `prompts`           | `listPrompts()` if `capabilities.prompts`                                                  |
 
-List calls without a cursor return every page.
+List calls without a cursor return every page (the SDK follows `nextCursor`; a test pins it).
 
 ## Flow
 
@@ -54,7 +56,7 @@ introspectServer(endpoint, options)              // src/introspection.ts
 
 - **Sequential listing:** OAuth refreshes on a caller-owned SSE transport must not overlap.
 - **Step-up:** completing every flow a listing triggers means no callback listener outlives introspection. Exception: if `signal` aborts while a listing's step-up is pending, that flow's listener stays until the OAuth timeout (ADR-002 Impact), so the redirect port isn't free at once.
-- **Cleanup:** a connection failure closes the client in `connectMcp`; introspection closes it after listing, failed or not.
+- **Cleanup:** a connection failure closes the client in `connectMcp`; introspection always attempts to close it after listing. When listing failed, that error wins; otherwise a close failure surfaces instead of hiding.
 
 ## Transports
 

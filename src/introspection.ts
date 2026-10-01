@@ -5,8 +5,9 @@
  * Capability discovery - snapshots a server's tools/resources/templates/prompts for codegen.
  *
  * Contract: introspectServer(endpoint, options?) → ServerSnapshot
- * Invariant: Always closes its connection. Errors propagate unchanged (SDK error types
- * and causes intact); callers label them.
+ * Invariant: Always attempts to close its connection. Errors propagate unchanged (SDK
+ * error types and causes intact); callers label them. A close failure surfaces only
+ * when nothing else failed.
  */
 
 import {
@@ -73,6 +74,7 @@ export async function introspectServer(
     }
   };
 
+  let snapshot: ServerSnapshot;
   try {
     // Sequential: OAuth refreshes on a caller-owned (SSE) transport must not overlap.
     // List calls without a cursor return every page.
@@ -116,7 +118,7 @@ export async function introspectServer(
         ).prompts
       : [];
 
-    return {
+    snapshot = {
       // Both are set once connected
       protocolVersion: client.getNegotiatedProtocolVersion()!,
       protocolEra: client.getProtocolEra()!,
@@ -127,7 +129,11 @@ export async function introspectServer(
       prompts,
       authorized: await authorized(),
     };
-  } finally {
+  } catch (error) {
     await client.close().catch(() => {}); // don't mask the cause
+    throw error;
   }
+  // Nothing to mask: a failing close (e.g. a session DELETE) is worth knowing about
+  await client.close();
+  return snapshot;
 }

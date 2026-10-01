@@ -58,10 +58,12 @@ export interface ConnectOptions {
 }
 
 /**
- * Loopback redirect used when `oauth.redirectUri` is omitted. The port is fixed because
- * Dynamic Client Registration records the exact URI.
+ * Loopback redirect for the browser flow; `oauth.redirectUri` defaults to port 3000. The
+ * port is fixed because Dynamic Client Registration records the exact URI.
  */
-const DEFAULT_REDIRECT_URI = "http://127.0.0.1:3000/callback";
+export function oauthRedirectUri(port = 3000): string {
+  return `http://127.0.0.1:${port}/callback`;
+}
 
 /** Hosts where oauth-callback allows plain `http:` (bearer tokens stay on this machine). */
 const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]"]);
@@ -80,10 +82,18 @@ export interface McpSession {
   authorized: () => Promise<boolean>;
 }
 
+/** The largest delay `setTimeout` honors; longer ones fire at once. */
+const MAX_TIMEOUT = 2 ** 31 - 1;
+
 /**
  * Wrap fetch to add `headers` to requests for `origin`; a `Request`'s own headers win,
  * and `init.headers` over both. Other origins (OAuth discovery and token endpoints share
  * this fetch) never see them: they are the MCP server's credentials.
+ *
+ * Such requests don't follow redirects: fetch would carry custom headers (only
+ * `Authorization` is stripped) to whatever origin the redirect names. Faithfully
+ * re-implementing redirects isn't worth it; the fix is configuring the final URL.
+ * @throws When the server responds with a redirect
  */
 export function createFetchWithHeaders(
   baseFetch: typeof fetch | undefined,
@@ -91,7 +101,7 @@ export function createFetchWithHeaders(
   origin: string,
 ): typeof fetch {
   const originalFetch = baseFetch || globalThis.fetch;
-  return ((url: URL | string | Request, init?: RequestInit) => {
+  return (async (url: URL | string | Request, init?: RequestInit) => {
     const target = new URL(url instanceof Request ? url.url : url);
     if (target.origin !== origin) return originalFetch(url, init);
     // Headers instances don't spread, so merge through the Headers API
@@ -99,7 +109,22 @@ export function createFetchWithHeaders(
     const set = (value: string, key: string) => merged.set(key, value);
     if (url instanceof Request) url.headers.forEach(set);
     new Headers(init?.headers).forEach(set);
-    return originalFetch(url, { ...init, headers: merged });
+    const response = await originalFetch(url, {
+      ...init,
+      headers: merged,
+      redirect: "manual",
+    });
+    // Server runtimes expose the 3xx itself; browsers an opaque redirect (status 0)
+    if (
+      response.type === "opaqueredirect" ||
+      [301, 302, 303, 307, 308].includes(response.status)
+    ) {
+      await response.body?.cancel();
+      throw new Error(
+        `MCP server redirected (HTTP ${response.status}); configured headers aren't sent across redirects: use the final URL`,
+      );
+    }
+    return response;
   }) as typeof fetch;
 }
 
@@ -142,8 +167,9 @@ function createFetchWithTimeout(
     );
     try {
       const response = await originalFetch(url, { ...init, signal });
-      if (response.headers.get("content-type")?.startsWith("text/event-stream"))
-        return response;
+      // Media types are case-insensitive
+      const type = response.headers.get("content-type")?.toLowerCase();
+      if (type?.startsWith("text/event-stream")) return response;
       // Finite body (JSON, errors): read it within the same deadline
       const nullBody = [204, 205, 304].includes(response.status);
       return new Response(
@@ -159,22 +185,36 @@ function createFetchWithTimeout(
 /**
  * Connect to an MCP server: Streamable HTTP (negotiating the protocol era) or SSE, with
  * browser OAuth where tokens can't leak.
- * @throws On an unsupported transport or a connection failure
+ * @throws TypeError/RangeError on an invalid endpoint or timeout, before any request;
+ *   otherwise on a connection failure
  */
 export async function connectMcp(
   endpoint: McpEndpoint,
   options: ConnectOptions = {},
 ): Promise<McpSession> {
+  // Fail before any network, the same way for every transport
   const transport = endpoint.transport ?? "http";
   if (transport !== "http" && transport !== "sse") {
-    throw new Error(`Unsupported transport: ${transport}`);
+    throw new TypeError(`Unsupported transport: ${transport}`);
+  }
+  const url = URL.canParse(String(endpoint.url))
+    ? new URL(endpoint.url)
+    : undefined;
+  if (url?.protocol !== "http:" && url?.protocol !== "https:") {
+    // Not echoed: a URL may carry credentials
+    throw new TypeError("MCP server URL must be an http: or https: URL");
+  }
+  const { timeout } = options;
+  if (timeout !== undefined && !(timeout > 0 && timeout <= MAX_TIMEOUT)) {
+    throw new RangeError(
+      `timeout must be a positive number of milliseconds, at most ${MAX_TIMEOUT}`,
+    );
   }
 
   const clientInfo = { name: "mcp-client-gen", version };
 
   // OAuth only where tokens can't leak (https: or loopback http:); elsewhere, e.g. a
   // private-network http: server, connect unauthenticated (endpoint headers still apply).
-  const url = new URL(endpoint.url);
   const oauth = options.oauth ?? {};
   const auth =
     oauth !== false &&
@@ -182,7 +222,7 @@ export async function connectMcp(
       ? browserAuth({
           ...oauth,
           serverUrl: url,
-          redirectUri: oauth.redirectUri ?? DEFAULT_REDIRECT_URI,
+          redirectUri: oauth.redirectUri ?? oauthRedirectUri(),
           // clientName and clientInformation are exclusive; default the name only for DCR
           ...(!oauth.clientInformation && {
             clientName: oauth.clientName ?? clientInfo.name,

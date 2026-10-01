@@ -226,8 +226,10 @@ describe("introspectServer", () => {
 
       // The request timeout stops at an event stream's headers: the stream outlives it
       await Bun.sleep(300);
+      // A bare list call follows every cursor (the SDK aggregates pages)
       expect((await client.listTools()).tools.map((t) => t.name)).toEqual([
         "echo",
+        "echo-2",
       ]);
       await client.close();
       const get = sse.requests.filter((r) => r.method === "GET");
@@ -350,6 +352,52 @@ describe("introspectServer", () => {
     await expect(
       introspectServer({ transport: "stdio", url: "" } as never),
     ).rejects.toThrow("Unsupported transport: stdio");
+  });
+
+  test("rejects a non-http(s) URL or a bad timeout before any request", async () => {
+    const fetch = mock(() => Promise.reject(new Error("no network")));
+    const options = { fetch: fetch as unknown as typeof globalThis.fetch };
+    for (const url of ["ftp://mcp.example/", "not a url", "file:///mcp"])
+      await expect(introspectServer({ url }, options)).rejects.toThrow(
+        "MCP server URL must be an http: or https: URL",
+      );
+    for (const timeout of [0, -1, NaN, Infinity, 2 ** 31])
+      await expect(
+        introspectServer({ url: fixture.url }, { ...options, timeout }),
+      ).rejects.toThrow(RangeError);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  test("never follows a redirect with server headers, to any origin", async () => {
+    const other = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      fetch: (request) => {
+        received.push(request.headers);
+        return new Response("{}");
+      },
+    });
+    const received: Headers[] = [];
+    const redirecting = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      fetch: () => Response.redirect(new URL("/mcp", other.url).href, 307),
+    });
+    try {
+      // fetch would forward custom headers across origins (it drops only Authorization)
+      await expect(
+        introspectServer(
+          {
+            url: new URL("/mcp", redirecting.url),
+            headers: { "X-Api-Key": "secret" },
+          },
+          { oauth: false },
+        ),
+      ).rejects.toThrow("MCP server redirected (HTTP 307)");
+      expect(received).toEqual([]);
+    } finally {
+      await Promise.all([other.stop(true), redirecting.stop(true)]);
+    }
   });
 });
 

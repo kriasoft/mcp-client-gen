@@ -4,7 +4,8 @@
 /**
  * Minimal legacy HTTP+SSE MCP server (the SDK v2 server package no longer ships one):
  * GET /sse announces a POST endpoint, and JSON-RPC responses return over the stream.
- * Answers initialize and tools/list with one "echo" tool; records every request's headers.
+ * Answers initialize and tools/list, two pages ("echo", then "echo-2", so listing must
+ * follow the cursor); records every request's headers.
  */
 
 export function startLegacySseServer() {
@@ -38,7 +39,7 @@ export function startLegacySseServer() {
         const message = (await request.json()) as {
           id?: number;
           method: string;
-          params?: { protocolVersion?: string };
+          params?: { protocolVersion?: string; cursor?: string };
         };
         if ("id" in message) {
           const result =
@@ -49,7 +50,18 @@ export function startLegacySseServer() {
                   serverInfo: { name: "legacy-sse", version: "1.0.0" },
                 }
               : message.method === "tools/list"
-                ? { tools: [{ name: "echo", inputSchema: { type: "object" } }] }
+                ? message.params?.cursor === "page-2"
+                  ? {
+                      tools: [
+                        { name: "echo-2", inputSchema: { type: "object" } },
+                      ],
+                    }
+                  : {
+                      tools: [
+                        { name: "echo", inputSchema: { type: "object" } },
+                      ],
+                      nextCursor: "page-2",
+                    }
                 : undefined;
           send(
             "message",

@@ -64,7 +64,7 @@ Describes the server, not the generated code.
 
 ## Errors
 
-The promise rejects when the server can't be reached, authorized or listed. SDK errors (`UnauthorizedError`, `SdkHttpError`, …) pass through unchanged, causes intact. Invalid generator output or Prettier failures reject with `Failed to format generated code`.
+Invalid input rejects before any request: a non-`http(s)` URL or an unknown `transport` with a `TypeError`, a `timeout` that isn't a positive number of milliseconds (up to 2³¹−1) with a `RangeError`. With `headers`, a redirect rejects too (they'd follow it to any origin): configure the final URL. Otherwise the promise rejects when the server can't be reached, authorized or listed. SDK errors (`UnauthorizedError`, `SdkHttpError`, …) pass through unchanged, causes intact. Invalid generator output or Prettier failures reject with `Failed to format generated code`.
 
 ## Not Public
 
