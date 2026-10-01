@@ -80,6 +80,8 @@ export function parseJsonc(text: string): unknown {
  * Text the CLI must never print: values substituted from the environment (or fallbacks),
  * and the expanded config fields holding them. Labels, warnings and SDK errors embed
  * expanded URLs and headers, serialized in ways a single form can't anticipate.
+ * Module state is deliberate: config parsing serves one CLI process, and every message
+ * it prints, from any module, must pass through the same registry.
  */
 const secrets = new Set<string>();
 
