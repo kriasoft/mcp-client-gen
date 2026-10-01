@@ -6,37 +6,38 @@
  * Usage:
  *   bun capture:notion                  # Capture fixtures + generate example
  *   bun capture:notion --fixtures-only  # Capture fixtures only
+ *   bun capture:notion --from-fixtures  # Regenerate example from saved fixtures (offline)
  *
  * Outputs:
  *   test/fixtures/notion/introspection.json  - Real Notion server data
  *   examples/notion-client.ts                - Generated TypeScript client
  */
 
-import { mkdir, writeFile } from "node:fs/promises";
-import { resolve } from "node:path";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { dirname, resolve } from "node:path";
 import { format as prettierFormat, resolveConfig } from "prettier";
 import { generateClientFile } from "../../src/codegen";
-import type { IntrospectionSuccess } from "../../src/introspection";
-import { createMcpConnection } from "../../src/mcp-client";
+import { introspectServer, type ServerSnapshot } from "../../src/introspection";
 import { formatTypeScript } from "../../src/pipeline";
-import type { McpServerConfig } from "../../src/types";
+import type { McpEndpoint } from "../../src/connect";
 
 // Parse CLI arguments
 const fixturesOnly = process.argv.includes("--fixtures-only");
+const fromFixtures = process.argv.includes("--from-fixtures");
+const fixturePath = resolve(
+  import.meta.dir,
+  "../fixtures/notion/introspection.json",
+);
 
 console.log("Capturing Notion MCP Server Capabilities");
 console.log(
-  `   Mode: ${fixturesOnly ? "fixtures only" : "fixtures + example"}`,
+  `   Mode: ${fromFixtures ? "example from saved fixtures" : fixturesOnly ? "fixtures only" : "fixtures + example"}`,
 );
 console.log("=".repeat(50));
 
-const server: McpServerConfig = {
-  name: "notion",
-  type: "http",
-  url: "https://mcp.notion.com/mcp",
-};
+const endpoint: McpEndpoint = { url: "https://mcp.notion.com/mcp" };
 
-async function captureCapabilities(): Promise<IntrospectionSuccess> {
+async function captureCapabilities(): Promise<ServerSnapshot> {
   console.log("\nStep 1: Connecting to Notion MCP server...");
   console.log("   URL: https://mcp.notion.com/mcp");
   console.log("\n   The OAuth flow will:");
@@ -45,64 +46,48 @@ async function captureCapabilities(): Promise<IntrospectionSuccess> {
   console.log("   3. Capture and exchange the authorization code");
   console.log("\n   Please complete the authorization in your browser...\n");
 
-  const connection = await createMcpConnection(server, {
+  const result = await introspectServer(endpoint, {
     oauth: {
       clientMetadata: { scope: "read:page:metadata read:database:metadata" },
       timeout: 120000,
     },
   });
 
-  console.log("Connected successfully!");
-
-  console.log("\nStep 2: Introspecting server capabilities...");
-  console.log(`   Tools discovered: ${connection.tools.length}`);
-  console.log(`   Resources discovered: ${connection.resources.length}`);
-  console.log(`   Prompts discovered: ${connection.prompts.length}`);
-
-  const result: IntrospectionSuccess = {
-    ok: true,
-    server,
-    capabilities: connection.capabilities,
-    tools: connection.tools,
-    resources: connection.resources,
-    prompts: connection.prompts,
-  };
-
-  await connection.client.close();
+  console.log("Connected and introspected successfully!");
+  console.log(`   Tools discovered: ${result.tools.length}`);
+  console.log(`   Resources discovered: ${result.resources.length}`);
+  console.log(`   Prompts discovered: ${result.prompts.length}`);
 
   return result;
 }
 
-async function generateClient(introspectionResult: IntrospectionSuccess) {
+async function generateClient(introspectionResult: ServerSnapshot) {
   console.log("\nStep 3: Generating TypeScript client...");
 
-  const servers = new Map<string, IntrospectionSuccess>();
-  servers.set("notion", introspectionResult);
-
-  const { code: generatedCode } = generateClientFile(servers);
+  const generatedCode = generateClientFile("notion", introspectionResult);
 
   console.log("   Client code generated successfully!");
   console.log(`   Total size: ${(generatedCode.length / 1024).toFixed(2)} KB`);
 
   const toolCount = introspectionResult.tools.length;
   const resourceCount = introspectionResult.resources.length;
+  // Upper bound: only templates whose expressions are all {var} get a method
+  const templateCount = introspectionResult.resourceTemplates.length;
   const promptCount = introspectionResult.prompts.length;
 
   console.log("\n   Generated client includes:");
   console.log(`   - ${toolCount} tool method(s)`);
-  console.log(`   - ${resourceCount > 0 ? 1 : 0} resource method(s)`);
+  console.log(
+    `   - ${resourceCount + templateCount} resource method(s), plus resources.read(uri)`,
+  );
   console.log(`   - ${promptCount} prompt method(s)`);
 
   return generatedCode;
 }
 
-async function saveFixtures(introspectionResult: IntrospectionSuccess) {
-  const projectRoot = resolve(import.meta.dir, "../..");
-  const fixturesDir = resolve(projectRoot, "test/fixtures/notion");
+async function saveFixtures(introspectionResult: ServerSnapshot) {
+  await mkdir(dirname(fixturePath), { recursive: true });
 
-  await mkdir(fixturesDir, { recursive: true });
-
-  const fixturePath = resolve(fixturesDir, "introspection.json");
   const json = JSON.stringify(introspectionResult, null, 2);
   const prettierConfig = (await resolveConfig(fixturePath)) ?? {};
   const formatted = await prettierFormat(json, {
@@ -126,6 +111,20 @@ async function saveExample(clientCode: string) {
 }
 
 async function runCapture() {
+  if (fromFixtures) {
+    const saved = JSON.parse(await readFile(fixturePath, "utf8"));
+    // Fixtures captured before template listing have none. Those captured with SDK 1.x
+    // (which offered 2025-11-25) predate protocol fields: legacy era.
+    await saveExample(
+      await generateClient({
+        resourceTemplates: [],
+        protocolVersion: "2025-11-25",
+        protocolEra: "legacy",
+        ...saved,
+      }),
+    );
+    return;
+  }
   try {
     const introspectionResult = await captureCapabilities();
 

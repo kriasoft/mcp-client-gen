@@ -4,35 +4,64 @@
 /**
  * Config discovery & parsing - finds and normalizes MCP server definitions.
  *
- * Contract: getMcpServers(paths) → McpServerConfig[]
- * Invariant: Only returns http/sse servers; first URL occurrence wins (dedup).
+ * Contract: getMcpServers(paths) → { servers: ConfiguredServer[], warnings }
+ * Invariant: Only returns http/sse servers; the first usable entry claims its name and its connection.
  */
 
 import { existsSync, readFileSync } from "node:fs";
-import { basename } from "node:path";
-import { resolve } from "node:path";
-import type {
-  ConfigWarning,
-  McpServerConfig,
-  ParseServersResult,
-} from "./types.js";
+import { relative, resolve } from "node:path";
+
+/** A usable config entry: its key names the client. Header values are strings, as in JSON. */
+export interface ConfiguredServer {
+  name: string;
+  url: string;
+  transport: "http" | "sse";
+  headers?: Record<string, string>;
+}
 
 /**
- * Format a config warning for display.
+ * Why a config file or entry was skipped; names placeholders, never values. Reasons are
+ * the generator's own words: parser messages may quote the file, secrets included.
  */
-export function formatConfigWarning(warning: ConfigWarning): string {
-  const file = basename(warning.path);
+export type ConfigWarning =
+  | { kind: "invalid_file"; path: string; reason: string }
+  | { kind: "invalid_server"; path: string; name: string; reason: string }
+  | { kind: "skipped_stdio"; path: string; name: string }
+  | { kind: "missing_url"; path: string; name: string }
+  | { kind: "invalid_url"; path: string; name: string }
+  | { kind: "unknown_type"; path: string; name: string; type: string }
+  /** Placeholders in url/headers with no value (e.g. `API_KEY`, `input:key`) */
+  | {
+      kind: "unresolved_placeholder";
+      path: string;
+      name: string;
+      placeholders: string[];
+    };
+
+/**
+ * Format a config warning for display, its file relative to `cwd`: `.cursor/mcp.json`
+ * and `.vscode/mcp.json` share a base name.
+ */
+export function formatConfigWarning(
+  warning: ConfigWarning,
+  cwd: string = process.cwd(),
+): string {
+  const file = relative(cwd, warning.path);
   switch (warning.kind) {
-    case "malformed_json":
-      return `${file}: Invalid JSON - ${warning.error}`;
+    case "invalid_file":
+      return `${file}: Skipped the file (${warning.reason})`;
+    case "invalid_server":
+      return `${file}: Skipped "${warning.name}" (${warning.reason})`;
     case "skipped_stdio":
       return `${file}: Skipped "${warning.name}" (stdio servers not supported)`;
     case "missing_url":
       return `${file}: Skipped "${warning.name}" (missing url)`;
+    case "invalid_url":
+      return `${file}: Skipped "${warning.name}" (url is not an http(s) URL)`;
     case "unknown_type":
       return `${file}: Skipped "${warning.name}" (unknown type "${warning.type}")`;
-    case "unresolved_env":
-      return `${file}: Skipped "${warning.name}" (unset environment variable ${warning.variables.join(", ")})`;
+    case "unresolved_placeholder":
+      return `${file}: Skipped "${warning.name}" (unresolved placeholder ${warning.placeholders.join(", ")})`;
   }
 }
 
@@ -80,6 +109,8 @@ export function parseJsonc(text: string): unknown {
  * Text the CLI must never print: values substituted from the environment (or fallbacks),
  * and the expanded config fields holding them. Labels, warnings and SDK errors embed
  * expanded URLs and headers, serialized in ways a single form can't anticipate.
+ * Module state is deliberate: config parsing serves one CLI process, and every message
+ * it prints, from any module, must pass through the same registry.
  */
 const secrets = new Set<string>();
 
@@ -114,6 +145,26 @@ export function redactSecrets(text: string): string {
     pos = end;
   }
   return out + text.slice(pos);
+}
+
+/**
+ * An error's message, or any text, made safe for the terminal as one line: line breaks
+ * and tabs become spaces (a server's error can't fake output lines), other control and
+ * bidi characters are stripped (escape sequences, reordered text), and secrets are
+ * masked before and after, since a secret may contain them or be split by them. Callers
+ * compose multi-line output around printable values.
+ */
+export function printable(value: unknown): string {
+  const text = value instanceof Error ? value.message : String(value);
+  return redactSecrets(
+    redactSecrets(text)
+      .replace(/[\t\n\v\f\r\u2028\u2029]/g, " ")
+      .replace(
+        /[\x00-\x1f\x7f-\x9f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/g,
+        "",
+      )
+      .trim(),
+  );
 }
 
 /**
@@ -180,6 +231,36 @@ function registerSecretUrl(expanded: string): void {
     url.password,
   ])
     registerSecret(piece);
+}
+
+/**
+ * Credentials a literal URL (in a config, or on the command line) carries: userinfo and
+ * query values, as written (still encoded) and decoded once, since errors may echo either.
+ */
+export function registerUrlCredentials(url: string): void {
+  if (!URL.canParse(url)) return;
+  const { username, password, search, searchParams } = new URL(url);
+  const rawQueryValues = search
+    .slice(1)
+    .split("&")
+    .map((pair) => pair.slice(pair.indexOf("=") + 1));
+  for (const piece of [
+    username,
+    password,
+    decodeURIComponentSafe(username),
+    decodeURIComponentSafe(password),
+    ...rawQueryValues,
+    ...searchParams.values(),
+  ])
+    registerSecret(piece);
+}
+
+function isPlainObject(value: unknown): value is Record<string, any> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isHttpUrl(url: string): boolean {
+  return URL.canParse(url) && /^https?:$/.test(new URL(url).protocol);
 }
 
 function decodeURIComponentSafe(text: string): string {
@@ -296,131 +377,172 @@ export async function findMcpConfigFiles(
 
 /**
  * Parse MCP configs and extract unique server definitions.
+ *
+ * The first usable entry (in `paths` order) claims its name and its connection (type,
+ * URL and headers); later entries with either are dropped. By name, so `.mcp.local.json`
+ * overrides `.mcp.json` even with a different URL; by connection, so a server listed by
+ * several tools is generated once, while one URL with different credentials (two
+ * accounts) stays two servers. Skipped entries claim nothing: a broken override falls
+ * back to the shared entry.
  * @param paths Config file paths to parse (in priority order)
  * @returns Deduplicated servers and any warnings encountered
  * @invariant Only returns http/sse servers, skips stdio/command servers
  * @supports Claude (.mcp.json), Cursor (.cursor/), VSCode (.vscode/) formats
  */
-export function getMcpServers(paths: string[]): ParseServersResult {
-  const servers: McpServerConfig[] = [];
+export function getMcpServers(paths: string[]): {
+  servers: ConfiguredServer[];
+  warnings: ConfigWarning[];
+} {
+  const servers: ConfiguredServer[] = [];
   const warnings: ConfigWarning[] = [];
-  const seenUrls = new Set<string>();
+  const seenNames = new Set<string>();
+  const seenConnections = new Set<string>();
 
   for (const path of paths) {
-    let config: unknown;
+    let config: any;
     try {
       config = parseJsonc(readFileSync(path, "utf8"));
-    } catch (error) {
+    } catch {
+      warnings.push({ kind: "invalid_file", path, reason: "invalid JSON" });
+      continue;
+    }
+
+    if (!isPlainObject(config)) {
       warnings.push({
-        kind: "malformed_json",
+        kind: "invalid_file",
         path,
-        error: (error as Error).message,
+        reason: "expected an object at the root",
       });
       continue;
     }
 
-    if (!config || typeof config !== "object" || Array.isArray(config)) {
-      warnings.push({
-        kind: "malformed_json",
-        path,
-        error: "Expected an object at the root",
-      });
-      continue;
-    }
-
-    // Claude/Cursor: mcpServers, VSCode: servers or mcp.servers
+    // Claude/Cursor: mcpServers, VSCode: servers or mcp.servers. The first present one
+    // is the file's server map, even if empty: sections aren't merged.
     const serverConfigs =
-      (config as any).mcpServers ||
-      (config as any).servers ||
-      (config as any).mcp?.servers;
+      config.mcpServers ??
+      config.servers ??
+      (isPlainObject(config.mcp) ? config.mcp.servers : undefined);
+    if (serverConfigs === undefined) continue;
+    if (!isPlainObject(serverConfigs)) {
+      warnings.push({
+        kind: "invalid_file",
+        path,
+        reason: "expected the server map to be an object",
+      });
+      continue;
+    }
 
-    if (serverConfigs && typeof serverConfigs === "object") {
-      for (const [name, serverConfig] of Object.entries(serverConfigs)) {
-        if (typeof serverConfig === "object" && serverConfig !== null) {
-          const server = serverConfig as any;
+    for (const [name, server] of Object.entries(serverConfigs)) {
+      if (!isPlainObject(server)) {
+        warnings.push({
+          kind: "invalid_server",
+          path,
+          name,
+          reason: "not an object",
+        });
+        continue;
+      }
+      // Check for stdio servers (unsupported)
+      if (server.type === "stdio" || server.command) {
+        warnings.push({ kind: "skipped_stdio", path, name });
+        continue;
+      }
 
-          // Check for stdio servers (unsupported)
-          if (server.type === "stdio" || server.command) {
-            warnings.push({ kind: "skipped_stdio", path, name });
-            continue;
-          }
-
-          const missing = new Set<string>();
-          const trimmedUrl =
-            typeof server.url === "string"
-              ? expandEnv(server.url, missing).trim()
-              : "";
-          if (typeof server.url === "string" && server.url.includes("${"))
-            registerSecretUrl(trimmedUrl);
-          let headers: Record<string, string> | undefined;
-          if (
-            server.headers &&
-            typeof server.headers === "object" &&
-            !Array.isArray(server.headers)
-          ) {
-            headers = {};
-            for (const [key, value] of Object.entries(server.headers)) {
-              headers[key] =
-                typeof value === "string"
-                  ? expandEnv(value, missing)
-                  : String(value);
-              // The whole value: printed errors show headers as sent (trimmed, joined)
-              if (typeof value === "string" && value.includes("${"))
-                registerSecret(headers[key]!);
-            }
-          }
-
-          // Skip rather than send a literal placeholder as a URL or credential
-          if (missing.size > 0) {
-            warnings.push({
-              kind: "unresolved_env",
-              path,
-              name,
-              variables: [...missing],
-            });
-            continue;
-          }
-
-          // Check for missing URL
-          if (!trimmedUrl) {
-            warnings.push({ kind: "missing_url", path, name });
-            continue;
-          }
-
-          // Skip duplicates silently (first URL wins is expected behavior)
-          if (seenUrls.has(trimmedUrl)) {
-            continue;
-          }
-
-          // Determine server type
-          let serverType: "http" | "sse";
-          if (server.type === "http" || server.type === "sse") {
-            serverType = server.type;
-          } else if (!server.type) {
-            // Missing type defaults to http for URL-based servers
-            serverType = "http";
-          } else {
-            warnings.push({
-              kind: "unknown_type",
-              path,
-              name,
-              type: String(server.type),
-            });
-            continue;
-          }
-
-          seenUrls.add(trimmedUrl);
-          const result: McpServerConfig = {
-            type: serverType,
-            url: trimmedUrl,
-            name,
-          };
-
-          if (headers) result.headers = headers;
-
-          servers.push(result);
+      const missing = new Set<string>();
+      const trimmedUrl =
+        typeof server.url === "string"
+          ? expandEnv(server.url, missing).trim()
+          : "";
+      if (typeof server.url === "string" && server.url.includes("${"))
+        registerSecretUrl(trimmedUrl);
+      else registerUrlCredentials(trimmedUrl);
+      // Coercing a malformed value (`[object Object]`) would send a broken credential
+      if (
+        server.headers !== undefined &&
+        !(
+          isPlainObject(server.headers) &&
+          Object.values(server.headers).every((v) => typeof v === "string")
+        )
+      ) {
+        warnings.push({
+          kind: "invalid_server",
+          path,
+          name,
+          reason: "headers must be an object of strings",
+        });
+        continue;
+      }
+      let headers: Record<string, string> | undefined;
+      if (server.headers) {
+        headers = {};
+        for (const [key, value] of Object.entries<string>(server.headers)) {
+          headers[key] = expandEnv(value, missing);
+          // Any header value may be a credential, written literally or not; the
+          // whole value, since printed errors show headers as sent (trimmed, joined)
+          registerSecret(headers[key]!);
         }
       }
+
+      // Skip rather than send a literal placeholder as a URL or credential
+      if (missing.size > 0) {
+        warnings.push({
+          kind: "unresolved_placeholder",
+          path,
+          name,
+          placeholders: [...missing],
+        });
+        continue;
+      }
+
+      // Check for missing URL
+      if (!trimmedUrl) {
+        warnings.push({ kind: "missing_url", path, name });
+        continue;
+      }
+
+      if (!isHttpUrl(trimmedUrl)) {
+        warnings.push({ kind: "invalid_url", path, name });
+        continue;
+      }
+
+      // Determine server type
+      let serverType: "http" | "sse";
+      if (server.type === "http" || server.type === "sse") {
+        serverType = server.type;
+      } else if (!server.type) {
+        // Missing type defaults to http for URL-based servers
+        serverType = "http";
+      } else {
+        warnings.push({
+          kind: "unknown_type",
+          path,
+          name,
+          type: String(server.type),
+        });
+        continue;
+      }
+
+      // Overridden or listed twice (see above): skip silently
+      const connection = JSON.stringify([
+        serverType,
+        // As fetch sends it: a default port or host case isn't another server
+        new URL(trimmedUrl).href,
+        // Header names are case-insensitive (not `new Headers()`: it throws on
+        // values fetch would reject, which must fail that server, not parsing)
+        Object.entries(headers ?? {})
+          .map(([key, value]) => [key.toLowerCase(), value] as const)
+          .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)),
+      ]);
+      if (seenNames.has(name) || seenConnections.has(connection)) continue;
+
+      seenNames.add(name);
+      seenConnections.add(connection);
+      servers.push({
+        name,
+        url: trimmedUrl,
+        transport: serverType,
+        ...(headers && { headers }),
+      });
     }
   }
 

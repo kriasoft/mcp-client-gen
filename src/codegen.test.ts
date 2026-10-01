@@ -18,60 +18,56 @@ import {
   generateClientFile,
   jsonSchemaToTypeScript,
   pascalCase,
+  schemaTypeAliases,
 } from "./codegen/index.js";
-import type { IntrospectionSuccess } from "./introspection.js";
-import { extractServerName } from "./pipeline.js";
+import type { ServerSnapshot } from "./introspection.js";
+import { extractServerName, formatTypeScript } from "./pipeline.js";
 
 describe("extractServerName", () => {
+  const name = (url: string, explicit?: string) =>
+    extractServerName({ url, name: explicit });
+
   test("uses explicit name when provided", () => {
-    expect(
-      extractServerName(
-        { type: "http", url: "https://example.com", name: "myServer" },
-        0,
-      ),
-    ).toBe("myServer");
+    expect(name("https://example.com", "myServer")).toBe("myServer");
+    // An empty config key never falls back to the (possibly secret-bearing) URL
+    expect(name("https://notion.com", "")).toBe("server");
   });
 
   test("extracts domain name from URL", () => {
-    expect(
-      extractServerName({ type: "http", url: "https://notion.com/mcp" }, 0),
-    ).toBe("notion");
-    expect(
-      extractServerName(
-        { type: "http", url: "https://api.github.com/v1/mcp" },
-        0,
-      ),
-    ).toBe("github");
+    expect(name("https://notion.com/mcp")).toBe("notion");
+    expect(name("https://api.github.com/v1/mcp")).toBe("github");
   });
 
   test("handles subdomains correctly", () => {
-    expect(
-      extractServerName({ type: "http", url: "https://api.notion.com" }, 0),
-    ).toBe("notion");
-    expect(
-      extractServerName({ type: "http", url: "https://www.example.com" }, 0),
-    ).toBe("example");
+    expect(name("https://api.notion.com")).toBe("notion");
+    expect(name("https://www.example.com")).toBe("example");
   });
 
   test("falls back to path segment", () => {
-    expect(
-      extractServerName({ type: "http", url: "https://api.com/notion/v1" }, 0),
-    ).toBe("notion");
+    expect(name("https://api.com/notion/v1")).toBe("notion");
+  });
+
+  test("skips a country second-level suffix", () => {
+    expect(name("https://api.example.co.uk/mcp")).toBe("example");
+    expect(name("https://example.com.au")).toBe("example");
   });
 
   test("ignores IP and localhost hosts", () => {
-    const name = (url: string) => extractServerName({ type: "http", url }, 0);
-    expect(name("http://127.0.0.1:8080/mcp")).toBe("server1");
+    expect(name("http://127.0.0.1:8080/mcp")).toBe("server");
     expect(name("http://localhost:3000/github")).toBe("github");
-    expect(name("http://[::1]:3000/mcp")).toBe("server1");
+    expect(name("http://[::1]:3000/mcp")).toBe("server");
   });
 
-  test("falls back to index for unresolvable URLs", () => {
-    expect(extractServerName({ type: "http", url: "https://api.com" }, 0)).toBe(
-      "server1",
-    );
-    expect(extractServerName({ type: "http", url: "invalid-url" }, 5)).toBe(
-      "server6",
+  test('falls back to "server" for unresolvable URLs', () => {
+    expect(name("https://api.com")).toBe("server");
+    expect(name("invalid-url")).toBe("server");
+  });
+});
+
+describe("formatTypeScript", () => {
+  test("fails on code it can't parse instead of returning it", async () => {
+    await expect(formatTypeScript("export const = ;")).rejects.toThrow(
+      "Failed to format generated code",
     );
   });
 });
@@ -120,9 +116,98 @@ describe("jsonSchemaToTypeScript", () => {
         items: { anyOf: [{ type: "string" }, { type: "number" }] },
       }),
     ).toBe("(string | number)[]");
-    expect(ts({ type: "array", items: [{ type: "string" }] })).toBe(
+  });
+
+  test("tuples follow the declared dialect's keyword", () => {
+    const pair = [{ type: "string" }, { type: "number" }];
+    const draft07 = "http://json-schema.org/draft-07/schema#";
+    const v2020 = "https://json-schema.org/draft/2020-12/schema";
+    // prefixItems isn't a draft-07 keyword: any array
+    expect(ts({ $schema: draft07, type: "array", prefixItems: pair })).toBe(
       "unknown[]",
     );
+    expect(
+      ts({ $schema: draft07, type: "array", items: pair, minItems: 2 }),
+    ).toBe("[string, number, ...unknown[]]");
+    // A pointer into a nested resource takes that resource's dialect
+    expect(
+      ts({
+        $schema: "https://json-schema.org/draft/2019-09/schema",
+        $ref: "#/$defs/child/$defs/tuple",
+        $defs: {
+          child: {
+            $id: "child",
+            $schema: v2020,
+            $defs: {
+              tuple: {
+                prefixItems: [{ type: "string" }],
+                items: false,
+                minItems: 1,
+              },
+            },
+          },
+        },
+      }),
+    ).toBe("[string]");
+    // An items array isn't a 2020-12 tuple
+    expect(ts({ $schema: v2020, type: "array", items: pair })).toBe(
+      "unknown[]",
+    );
+    // A nested resource without $schema keeps its parent's dialect, inline or by ref
+    const child = { $id: "child", type: "array", prefixItems: pair };
+    expect(
+      ts({ $schema: draft07, type: "object", properties: { child } }),
+    ).toBe("{\nchild?: unknown[];\n}");
+    expect(
+      ts({
+        $schema: draft07,
+        $ref: "#/definitions/child",
+        definitions: { child },
+      }),
+    ).toBe("unknown[]");
+  });
+
+  test("hostile schemas widen instead of resolving the prototype or crashing", () => {
+    // Pointers address own members only
+    expect(ts({ $ref: "#/constructor" })).toBe("unknown");
+    expect(ts({ $ref: "#/properties/toString", properties: {} })).toBe(
+      "unknown",
+    );
+    // As a server sends it: JSON.parse makes `__proto__` an own member
+    const schema = JSON.parse(`{
+      "type": "object",
+      "properties": {
+        "constructor": { "type": "string", "description": 42 },
+        "__proto__": { "type": "number" }
+      },
+      "required": ["constructor", "toString", 7]
+    }`);
+    expect(ts(schema)).toBe(
+      "{\nconstructor: string;\n__proto__?: number;\ntoString: unknown;\n}",
+    );
+    expect(ts({ type: "object", properties: "x", required: "abc" })).toBe(
+      "Record<string, unknown>",
+    );
+  });
+
+  test("tuples: positions past minItems are optional, rest from items", () => {
+    const pair = [
+      { type: "string" },
+      { anyOf: [{ type: "number" }, { type: "null" }] },
+    ];
+    expect(ts({ type: "array", prefixItems: pair })).toBe(
+      "[string?, (number | null)?, ...unknown[]]",
+    );
+    expect(
+      ts({ type: "array", prefixItems: pair, minItems: 2, items: false }),
+    ).toBe("[string, number | null]");
+    expect(
+      ts({ prefixItems: pair, minItems: 1, items: { type: "boolean" } }),
+    ).toBe("[string, (number | null)?, ...boolean[]]");
+    // Draft-07 form: items array + additionalItems
+    expect(
+      ts({ type: "array", items: pair, minItems: 2, additionalItems: false }),
+    ).toBe("[string, number | null]");
   });
 
   test("type arrays keep sibling keywords per branch", () => {
@@ -194,6 +279,87 @@ describe("jsonSchemaToTypeScript", () => {
     expect(ts({ $ref: "https://example.com/schema" })).toBe("unknown");
   });
 
+  test("names recursive refs instead of widening them", () => {
+    const tree = {
+      type: "object",
+      properties: {
+        children: { type: "array", items: { $ref: "#" } },
+        first: { $ref: "#/$defs/Node" },
+      },
+      $defs: {
+        Node: {
+          type: "object",
+          properties: { next: { $ref: "#/$defs/Node" } },
+          required: ["next"],
+        },
+      },
+    };
+    const taken = new Set(["TreeNode"]); // e.g. another tool's type
+    expect(schemaTypeAliases(tree, "Tree", taken)).toEqual([
+      { name: "Tree", type: "{\nchildren?: Tree[];\nfirst?: TreeNode2;\n}" },
+      { name: "TreeNode2", type: "{\nnext: TreeNode2;\n}" },
+    ]);
+    expect(taken).toContain("TreeNode2");
+    // Without names, the cycle widens
+    expect(ts(tree)).toContain("children?: {\nchildren?: unknown[];");
+  });
+
+  test("widens aliases TypeScript rejects as circular", () => {
+    const aliases = (schema: object) =>
+      schemaTypeAliases(schema, "A", new Set());
+    const self = { $ref: "#" };
+    const string = { type: "string" };
+    const types = (schema: object) => aliases(schema).map((a) => a.type);
+
+    expect(types({ anyOf: [self, string] })).toEqual(["unknown"]);
+    // Parentheses don't defer: (A | string) & {...} is circular
+    expect(
+      types({ allOf: [{ anyOf: [self, string] }, { type: "object" }] }),
+    ).toEqual(["unknown"]);
+    // A tuple rest spreads eagerly
+    expect(
+      types({
+        anyOf: [
+          {
+            type: "array",
+            prefixItems: [],
+            items: { type: "array", items: self },
+          },
+          string,
+        ],
+      }),
+    ).toEqual(["unknown"]);
+    // Mutual top-level references between named aliases
+    const ref = (def: string) => ({ $ref: `#/$defs/${def}` });
+    const mutual = aliases({
+      type: "object",
+      properties: { x: ref("P") },
+      $defs: {
+        P: ref("Q"),
+        Q: { anyOf: [ref("P"), { type: "array", items: ref("Q") }] },
+      },
+    });
+    expect(
+      typecheck(
+        mutual.map((a) => `export type ${a.name} = ${a.type};`).join("\n"),
+      ),
+    ).toEqual([]);
+
+    // Recursion through arrays, tuples and objects is deferred: kept
+    const kept = [
+      types({ anyOf: [{ type: "array", items: self }, string] }),
+      types({ type: "array", items: { anyOf: [self, string] } }),
+      types({ type: "array", prefixItems: [self] }),
+      types({ type: "object", additionalProperties: self }),
+    ].flat();
+    expect(kept).toEqual([
+      "A[] | string",
+      "(A | string)[]",
+      "[A?, ...unknown[]]",
+      "{\n[key: string]: A;\n}",
+    ]);
+  });
+
   test("scopes refs to the nearest $id and decodes pointers first", () => {
     const type = ts({
       type: "object",
@@ -223,73 +389,138 @@ describe("jsonSchemaToTypeScript", () => {
         additionalProperties: false,
       }),
     ).toBe("{\n[key: string]: string;\n}");
+    // Unmatched keys stay open unless additionalProperties says otherwise
+    expect(
+      ts({ type: "object", patternProperties: { "^x": { type: "string" } } }),
+    ).toBe("{\n[key: string]: unknown;\n}");
+  });
+
+  test("an unsupported dialect constrains nothing", () => {
+    // draft-04 has no `const`, and isn't one the SDK validates
+    const draft04 = "http://json-schema.org/draft-04/schema#";
+    expect(ts({ $schema: draft04, type: "number", const: 1 })).toBe("unknown");
+    expect(
+      ts({
+        type: "object",
+        properties: { a: { $ref: "#/$defs/a" } },
+        required: ["a"],
+        $defs: { a: { $id: "a", $schema: draft04, type: "string" } },
+      }),
+    ).toBe("{\na: unknown;\n}");
+    expect(
+      ts({
+        $schema: "https://json-schema.org/draft/2020-12/schema#",
+        const: 1,
+      }),
+    ).toBe("1");
   });
 });
 
-/** Every naming and escaping hazard the generator must survive, on two servers. */
+/** Every naming and escaping hazard the generator must survive. */
 const tool = (name: string, extra: Partial<Tool> = {}): Tool => ({
   name,
   inputSchema: { type: "object" },
   ...extra,
 });
-const edgeCases = new Map<string, IntrospectionSuccess>([
-  [
-    "alpha",
-    {
-      ok: true,
-      server: { type: "http", url: "https://alpha.test/mcp" },
-      capabilities: { tools: {}, prompts: {}, resources: {} },
-      tools: [
-        tool("get-user", {
-          description: "Ends a comment */ early",
-          inputSchema: {
-            type: "object",
-            properties: { "user-id": { type: "string" } },
-            required: ["user-id"],
+const alpha: ServerSnapshot = {
+  protocolVersion: "2026-07-28",
+  protocolEra: "modern",
+  authorized: false,
+  capabilities: { tools: {}, prompts: {}, resources: {} },
+  tools: [
+    tool("get-user", {
+      description: "Ends a comment */ early",
+      inputSchema: {
+        type: "object",
+        properties: { "user-id": { type: "string" } },
+        required: ["user-id"],
+      },
+    }),
+    tool("get_user"),
+    tool("move", {
+      inputSchema: {
+        type: "object",
+        properties: {
+          to: {
+            type: "array",
+            prefixItems: [{ type: "number" }, { type: "number" }],
+            minItems: 2,
+            items: false,
           },
-        }),
-        tool("get_user"),
-        tool("client"),
-        tool("constructor"),
-        tool("then"),
-        tool('say"hi\\n'),
-        tool("search", {
-          outputSchema: {
-            type: "object",
-            properties: { total: { type: "number" } },
-            required: ["total"],
-          },
-        }),
-      ],
-      resources: [],
-      prompts: [
-        {
-          name: "summarize",
-          arguments: [{ name: "page-id", required: true }, { name: "tone" }],
         },
-      ],
-    },
-  ],
-  [
-    "beta",
-    {
-      ok: true,
-      server: { type: "http", url: "https://beta.test/mcp" },
-      capabilities: { tools: {} },
-      tools: [
-        tool("search", {
-          inputSchema: {
+        minProperties: 1,
+      },
+    }),
+    // Recursive input: a named alias, compiled by the typecheck below
+    tool("tree", {
+      inputSchema: {
+        type: "object",
+        properties: { node: { $ref: "#/$defs/Node" } },
+        $defs: {
+          Node: {
             type: "object",
-            properties: { limit: { type: "number" } },
-            required: ["limit"],
+            properties: {
+              children: { type: "array", items: { $ref: "#/$defs/Node" } },
+            },
           },
-        }),
-      ],
-      resources: [],
-      prompts: [],
+        },
+      },
+    }),
+    tool("client"),
+    tool("constructor"),
+    tool("then"),
+    tool('say"hi\\n'),
+    // Its input type must not clash with search's output type
+    tool("search_output"),
+    tool("search", {
+      outputSchema: {
+        type: "object",
+        properties: { total: { type: "number" } },
+        required: ["total"],
+      },
+    }),
+  ],
+  resources: [],
+  resourceTemplates: [
+    {
+      name: "issue",
+      description: "An issue",
+      uriTemplate: "repo://{owner}/{repo}/issues/{number}?v={1st}",
+    },
+    // Literal hazards in a template literal: backtick, backslash, `$` before `{`
+    { name: "odd", uriTemplate: "x://a`b\\c$/{id}" },
+    // RFC 6570 varnames may hold dots and pct-encoded octets
+    { name: "user", uriTemplate: "u://{user.name}/{%69d}" },
+    // Operators aren't expanded inline: readResource(uri) covers them
+    { name: "search", uriTemplate: "search://{?q}" },
+  ],
+  prompts: [
+    {
+      name: "summarize",
+      arguments: [{ name: "page-id", required: true }, { name: "tone" }],
     },
   ],
-]);
+};
+
+/** Tools only: no prompt or resource imports. */
+const beta: ServerSnapshot = {
+  protocolVersion: "2026-07-28",
+  protocolEra: "modern",
+  authorized: false,
+  capabilities: { tools: {} },
+  tools: [
+    tool("search", {
+      inputSchema: {
+        type: "object",
+        properties: { limit: { type: "number" } },
+        required: ["limit"],
+      },
+    }),
+  ],
+  resources: [],
+  resourceTemplates: [],
+  prompts: [],
+};
 
 /** Strict typecheck of generated code against the real SDK types. */
 function typecheck(code: string): string[] {
@@ -297,8 +528,6 @@ function typecheck(code: string): string[] {
     compilerOptions: {
       strict: true,
       noUnusedLocals: true,
-      // Resolve to source: package exports point at dist, absent before a build
-      paths: { "mcp-client-gen": [resolve(import.meta.dir, "index.ts")] },
       noEmit: true,
       skipLibCheck: true,
       target: ScriptTarget.ESNext,
@@ -306,7 +535,7 @@ function typecheck(code: string): string[] {
       moduleResolution: ModuleResolutionKind.Bundler,
     },
   });
-  // In src/ so imports resolve from this package (incl. its "mcp-client-gen" self-reference)
+  // In src/ so the SDK import resolves from this package's node_modules
   const file = project.createSourceFile(
     resolve(import.meta.dir, "__generated__.ts"),
     code,
@@ -336,26 +565,195 @@ async function load(code: string): Promise<Record<string, any>> {
 }
 
 describe("generateClientFile", () => {
-  const { code, exports } = generateClientFile(edgeCases);
+  const code = generateClientFile("alpha", alpha);
 
   test("output typechecks strictly despite hostile names", () => {
     expect(typecheck(code)).toEqual([]);
   });
 
+  test("typed results narrow on isError", () => {
+    const usage = `
+export async function use(alpha: AlphaClient) {
+  const result = await alpha.search();
+  // @ts-expect-error structuredContent is unknown until isError is ruled out
+  result.structuredContent.total;
+  if (!result.isError) return result.structuredContent.total satisfies number;
+}`;
+    expect(typecheck(code + usage)).toEqual([]);
+  });
+
+  test("each method takes its SDK call's options type", () => {
+    const usage = `
+export async function use(alpha: AlphaClient) {
+  await alpha.resources.read("file:///a", { cacheMode: "refresh" });
+  await alpha.resources.issue({ owner: "o", repo: "r", number: "1", "1st": "x" }, { cacheMode: "bypass" });
+  // @ts-expect-error prompts aren't cached
+  await alpha.prompts.summarize({ "page-id": "p" }, { cacheMode: "refresh" });
+}`;
+    expect(typecheck(code + usage)).toEqual([]);
+  });
+
+  test("imports only SDK types", () => {
+    expect(code).not.toContain('mcp-client-gen"');
+    expect(code).toMatch(
+      /^import type \{[^}]+\} from "@modelcontextprotocol\/client";$/m,
+    );
+    expect(code.match(/^import /gm)).toHaveLength(1);
+  });
+
   test("allocates collision-free member and type names", () => {
     expect(code).toContain(
-      "async getUser(input: GetUserInput, options?: RequestOptions)",
+      "getUser(input: GetUserInput, options?: CallToolRequestOptions)",
     );
     expect(code).toContain(
-      "async getUser2(input: GetUser2Input = {}, options?: RequestOptions)",
+      "getUser2(input: GetUser2Input = {}, options?: CallToolRequestOptions)",
     );
-    expect(code).toContain("async client2(");
-    expect(code).toContain("async constructor2(");
-    expect(code).toContain("async then2(");
-    // Same tool on two servers: the second server's types get its prefix
-    expect(code).toContain("export type SearchInput =");
-    expect(code).toContain("export type BetaSearchInput =");
-    expect(exports).toEqual(["createAlphaClient", "createBetaClient"]);
+    // minProperties rejects {}: no default
+    expect(code).toContain(
+      "move(input: MoveInput, options?: CallToolRequestOptions)",
+    );
+    expect(code).toContain("to?: [number, number];");
+    expect(code).toContain("export type TreeInputNode = {");
+    expect(code).toContain("children?: TreeInputNode[];");
+    // Object-literal members: only `then`, `toJSON` and the namespaces are reserved
+    expect(code).toContain("client(input: ClientInput");
+    expect(code).toContain("constructor(input: ConstructorInput");
+    expect(code).toContain("then2(input: Then2Input");
+    expect(code).toContain("export type SearchOutput =");
+    expect(code).toContain("export type SearchOutputInput =");
+    expect(code).toContain(
+      "export type AlphaClient = ReturnType<typeof createAlphaClient>;",
+    );
+  });
+
+  test("documents a tool once, on its method", () => {
+    expect(code.split("Ends a comment *\\/ early")).toHaveLength(2);
+    expect(code).toContain("/** Arguments of the `get-user` tool. */");
+  });
+
+  test("strips the server name from tool names, per tool", () => {
+    const tools = ["notion-search", "notion_fetch", "Notion-create-pages"].map(
+      (name) => tool(name),
+    );
+    const module = generateClientFile("notion", { ...beta, tools });
+    expect(module).toContain("search(input: SearchInput");
+    expect(module).toContain("fetch(input: FetchInput");
+    expect(module).toContain("createPages(input: CreatePagesInput");
+    expect(module).toContain('name: "notion-search"'); // wire names unchanged
+
+    // A new unprefixed tool renames nothing; one it collides with keeps its prefix
+    const grown = generateClientFile("notion", {
+      ...beta,
+      tools: [...tools, tool("health"), tool("search")],
+    });
+    expect(grown).toContain("fetch(input: FetchInput");
+    expect(grown).toContain("health(input: HealthInput");
+    expect(grown).toContain("search(input: SearchInput");
+    expect(grown).toContain("notionSearch(input: NotionSearchInput");
+  });
+
+  test("output doesn't depend on the listing order", () => {
+    const catalog = {
+      ...beta,
+      capabilities: { tools: {}, prompts: {}, resources: {} },
+      tools: [tool("get_user"), tool("get-user"), tool("get.user")],
+      prompts: [{ name: "a-b" }, { name: "a_b" }],
+      resources: [
+        { name: "doc", uri: "file:///b" },
+        { name: "doc", uri: "file:///a" },
+      ],
+      resourceTemplates: [
+        { name: "page", uriTemplate: "p://{id}" },
+        { name: "doc", uriTemplate: "d://{id}" },
+      ],
+    };
+    const forward = generateClientFile("x", catalog);
+    const reversed = generateClientFile("x", {
+      ...catalog,
+      tools: catalog.tools.toReversed(),
+      prompts: catalog.prompts.toReversed(),
+      resources: catalog.resources.toReversed(),
+      resourceTemplates: catalog.resourceTemplates.toReversed(),
+    });
+    expect(reversed).toBe(forward);
+    // Duplicate wire names (a server bug) too
+    const dup = (type: string) =>
+      tool("dup", {
+        inputSchema: { type: "object", properties: { v: { type } } },
+      });
+    const dups = [dup("string"), dup("number")];
+    expect(generateClientFile("x", { ...beta, tools: dups })).toBe(
+      generateClientFile("x", { ...beta, tools: dups.toReversed() }),
+    );
+    // Code-point order: `-` < `.` < `_`; listed resources are named before templates
+    const names = [
+      ...forward.matchAll(/^\s*(\w+)\(.*\n.*(?:name|uri): ("[^"]*"|`[^`]*`)/gm),
+    ].map(([, method, wire]) => `${method}=${wire}`);
+    expect(names).toEqual([
+      'getUser="get-user"',
+      'getUser2="get.user"',
+      'getUser3="get_user"',
+      'aB="a-b"',
+      'aB2="a_b"',
+      'doc="file:///a"',
+      'doc2="file:///b"',
+      "doc3=`d://${encodeURIComponent(params.id)}`",
+      "page=`p://${encodeURIComponent(params.id)}`",
+    ]);
+  });
+
+  test("prompt methods: duplicate arguments merged", () => {
+    const module = generateClientFile("x", {
+      ...beta,
+      tools: [],
+      capabilities: { prompts: {} },
+      prompts: [
+        {
+          name: "summarize-prompt",
+          arguments: [
+            { name: "tone", required: true },
+            { name: "tone" },
+            { name: "page", required: true },
+          ],
+        },
+      ],
+    });
+    expect(module).toContain(
+      "summarizePrompt(args: { tone?: string; page: string; }",
+    );
+    expect(typecheck(module)).toEqual([]);
+  });
+
+  test("records the protocol revision in the header", () => {
+    expect(code).toStartWith(
+      "/* Generated by mcp-client-gen from MCP 2026-07-28.",
+    );
+  });
+
+  test("rejects a client of the other era only when output types depend on it", () => {
+    const stringOutput = tool("count", {
+      outputSchema: { type: "number" } as never,
+    });
+    const modern = generateClientFile("x", { ...beta, tools: [stringOutput] });
+    expect(modern).toContain('if (client.getProtocolEra() !== "modern") throw');
+    expect(typecheck(modern)).toEqual([]);
+    // Legacy snapshot: the SDK's `{ result }` wrapper
+    const wrapped = tool("count", {
+      outputSchema: {
+        type: "object",
+        properties: { result: { type: "number" } },
+        required: ["result"],
+      },
+    });
+    const legacy = generateClientFile("x", {
+      ...beta,
+      protocolVersion: "2025-11-25",
+      protocolEra: "legacy",
+      tools: [wrapped],
+    });
+    expect(legacy).toContain('if (client.getProtocolEra() !== "legacy") throw');
+    // Object outputs look the same in both eras
+    expect(code).not.toContain("getProtocolEra");
   });
 
   test("escapes wire names, keys and comments", () => {
@@ -365,35 +763,58 @@ describe("generateClientFile", () => {
   });
 
   test("is deterministic", () => {
-    expect(generateClientFile(edgeCases).code).toBe(code);
+    expect(generateClientFile("alpha", alpha)).toBe(code);
   });
 
-  test("rejects servers whose names map to the same class", () => {
-    const servers = new Map([
-      ["foo-bar", edgeCases.get("beta")!],
-      ["foo_bar", edgeCases.get("beta")!],
-    ]);
-    expect(() => generateClientFile(servers)).toThrow(
-      'Servers "foo-bar" and "foo_bar" both generate FooBarClient',
-    );
-  });
-
-  test("emits resource readers only for servers with resources", () => {
+  test("reads simple resource templates with typed parameters", () => {
     expect(code).toContain(
-      "async readResource(uri: string, options?: RequestOptions)",
+      'issue(params: { owner: string; repo: string; number: string; "1st": string; }, options?: CacheableRequestOptions)',
     );
-    const onlyBeta = generateClientFile(
-      new Map([["beta", edgeCases.get("beta")!]]),
-    ).code;
-    expect(onlyBeta).not.toContain("readResource");
-    expect(onlyBeta).not.toContain("ReadResourceResult");
+    expect(code).toContain(
+      'user(params: { "user.name": string; "%69d": string; }',
+    );
+    expect(code).not.toMatch(/search\(params/);
+  });
+
+  test("emits namespaces and imports only where used", () => {
+    expect(code).toContain("prompts: {");
+    expect(code).toContain("resources: {");
+    expect(code).toContain(
+      "read(uri: string, options?: CacheableRequestOptions): Promise<ReadResourceResult>",
+    );
+    const onlyBeta = generateClientFile("beta", beta);
+    for (const unused of [
+      "prompts:",
+      "resources:",
+      "readResource",
+      "ReadResourceResult",
+      "GetPromptResult",
+      /\bRequestOptions\b/,
+      "CacheableRequestOptions",
+      "ToolResult<",
+    ])
+      expect(onlyBeta).not.toMatch(unused);
     expect(typecheck(onlyBeta)).toEqual([]);
+  });
+
+  test("takes only the Client methods it calls, so a plain object can stand in", () => {
+    expect(code).toContain(
+      'createAlphaClient(client: Pick<Client, "callTool" | "getPrompt" | "readResource">)',
+    );
+    const onlyBeta = generateClientFile("beta", beta);
+    expect(onlyBeta).toContain('client: Pick<Client, "callTool">');
+    const fake = `
+export const beta = createBetaClient({ callTool: async () => ({ content: [] }) });`;
+    expect(typecheck(onlyBeta + fake)).toEqual([]);
+    const empty = generateClientFile("e", { ...beta, tools: [] });
+    expect(empty).toContain("client: Pick<Client, never>");
+    expect(typecheck(empty)).toEqual([]);
   });
 });
 
 describe("generated client at runtime", () => {
-  /** Fake connection whose client returns canned results and records calls. */
-  const fakeConnection = (results: Record<string, unknown>) => {
+  /** Fake SDK client that returns canned results and records calls. */
+  const fakeClient = (results: Record<string, unknown>) => {
     const calls: unknown[] = [];
     const respond =
       (method: string) => async (params: unknown, options?: unknown) => {
@@ -405,33 +826,27 @@ describe("generated client at runtime", () => {
       readResource: respond("readResource"),
       getPrompt: respond("getPrompt"),
     };
-    return { connection: { client }, calls };
+    return { client, calls };
   };
 
-  test("typed tools return structuredContent; untyped return the whole result", async () => {
-    const mod = await load(generateClientFile(edgeCases).code);
+  test("tools return the SDK result unchanged, errors included", async () => {
+    const mod = await load(code());
     const structured = {
-      content: [{ type: "text", text: "ignored" }],
+      content: [{ type: "text", text: "kept" }],
       structuredContent: { total: 3 },
     };
-    const alpha = mod.createAlphaClient(
-      fakeConnection({ callTool: structured }).connection,
-    );
-    expect(await alpha.search()).toEqual({ total: 3 });
-
-    const multi = {
-      content: [
-        { type: "text", text: "a" },
-        { type: "image", data: "AA==", mimeType: "image/png" },
-      ],
-    };
-    const { connection, calls } = fakeConnection({ callTool: multi });
-    const options = { timeout: 5 };
     expect(
       await mod
-        .createAlphaClient(connection)
-        .getUser({ "user-id": "1" }, options),
-    ).toEqual(multi);
+        .createAlphaClient(fakeClient({ callTool: structured }).client)
+        .search(),
+    ).toEqual(structured);
+
+    const failed = { isError: true, content: [{ type: "text", text: "boom" }] };
+    const { client, calls } = fakeClient({ callTool: failed });
+    const options = { timeout: 5 };
+    expect(
+      await mod.createAlphaClient(client).getUser({ "user-id": "1" }, options),
+    ).toEqual(failed);
     expect(calls).toEqual([
       {
         method: "callTool",
@@ -441,55 +856,81 @@ describe("generated client at runtime", () => {
     ]);
   });
 
-  test("tool errors throw with their text; missing structured content throws", async () => {
-    const mod = await load(generateClientFile(edgeCases).code);
-    const failing = mod.createAlphaClient(
-      fakeConnection({
-        callTool: { isError: true, content: [{ type: "text", text: "boom" }] },
-      }).connection,
-    );
-    await expect(failing.getUser2()).rejects.toThrow(
-      "Tool 'get_user' failed: boom",
-    );
-
-    const empty = mod.createAlphaClient(
-      fakeConnection({ callTool: { content: [] } }).connection,
-    );
-    await expect(empty.search()).rejects.toThrow(
-      "Tool 'search' returned no structured content",
-    );
-    expect(await empty.getUser2()).toEqual({ content: [] });
-  });
-
-  test("resources return every content entry; prompts pass arguments", async () => {
-    const mod = await load(generateClientFile(edgeCases).code);
-    const contents = [
-      { uri: "file:///a", text: "a" },
-      { uri: "file:///a", blob: "AA==" },
-    ];
-    const { connection, calls } = fakeConnection({
-      readResource: { contents },
-      getPrompt: {
-        messages: [{ role: "user", content: { type: "text", text: "hi" } }],
-      },
+  test("resources and prompts return the SDK result; prompts pass arguments", async () => {
+    const mod = await load(code());
+    const read = {
+      contents: [
+        { uri: "file:///a", text: "a" },
+        { uri: "file:///a", blob: "AA==" },
+      ],
+    };
+    const prompt = {
+      description: "kept",
+      messages: [{ role: "user", content: { type: "text", text: "hi" } }],
+    };
+    const { client, calls } = fakeClient({
+      readResource: read,
+      getPrompt: prompt,
     });
-    const alpha = mod.createAlphaClient(connection);
-    expect(await alpha.readResource("file:///a")).toEqual(contents);
-    expect(await alpha.summarizePrompt({ "page-id": "p1" })).toHaveLength(1);
+    const alpha = mod.createAlphaClient(client);
+    expect(await alpha.resources.read("file:///a")).toEqual(read);
+    expect(await alpha.prompts.summarize({ "page-id": "p1" })).toEqual(prompt);
     expect(calls.at(-1)).toEqual({
       method: "getPrompt",
       params: { name: "summarize", arguments: { "page-id": "p1" } },
     });
-  });
-});
 
-describe("generated Notion client", () => {
-  // Real fixture + real SDK types: catches SDK type drift that string assertions can't
-  test("typechecks against @modelcontextprotocol/client", async () => {
-    const fixture = await Bun.file(
-      resolve(import.meta.dir, "../test/fixtures/notion/introspection.json"),
-    ).json();
-    const { code } = generateClientFile(new Map([["notion", fixture]]));
-    expect(typecheck(code)).toEqual([]);
+    await alpha.resources.issue({
+      owner: "a b",
+      repo: "r/x",
+      number: "1",
+      // !'()* stay unencoded, as the SDK's UriTemplate sends them (not strict RFC 6570)
+      "1st": "?!'()*",
+    });
+    // Detached from its object: methods close over the client, not `this`
+    const { odd } = alpha.resources;
+    await odd({ id: "7" });
+    expect(calls.slice(-2)).toEqual([
+      {
+        method: "readResource",
+        params: { uri: "repo://a%20b/r%2Fx/issues/1?v=%3F!'()*" },
+      },
+      { method: "readResource", params: { uri: "x://a`b\\c$/7" } },
+    ]);
   });
+
+  test("reserves members JavaScript calls implicitly, and the namespaces", async () => {
+    const mod = await load(
+      generateClientFile("x", {
+        ...beta,
+        capabilities: { tools: {}, prompts: {} },
+        tools: [tool("toJSON"), tool("then"), tool("prompts")],
+        prompts: [{ name: "then" }, { name: "toJSON" }],
+      }),
+    );
+    const { client, calls } = fakeClient({});
+    const x = mod.createXClient(client);
+    expect(JSON.stringify(x)).toBe('{"prompts":{}}'); // no tool or prompt call
+    expect(await x).toBe(x); // not a thenable
+    expect(await x.prompts).toBe(x.prompts);
+    expect(calls).toEqual([]);
+    expect(Object.keys(x)).toEqual(["prompts2", "then2", "toJSON2", "prompts"]);
+    expect(Object.keys(x.prompts)).toEqual(["then2", "toJSON2"]);
+  });
+
+  test("an era-bound client rejects a client of the other era", async () => {
+    const mod = await load(
+      generateClientFile("x", {
+        ...beta,
+        tools: [tool("count", { outputSchema: { type: "number" } as never })],
+      }),
+    );
+    const client = (era?: string) => ({ getProtocolEra: () => era });
+    expect(() => mod.createXClient(client("legacy"))).toThrow(
+      'createXClient: generated for MCP 2026-07-28 (modern era); connect the Client with versionNegotiation: { mode: "auto" }',
+    );
+    expect(mod.createXClient(client("modern")).count).toBeFunction();
+  });
+
+  const code = () => generateClientFile("alpha", alpha);
 });

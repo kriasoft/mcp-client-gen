@@ -5,63 +5,107 @@
 [![Discord](https://img.shields.io/discord/643523529131950086?label=Chat)](https://discord.gg/bSsv7XM)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-Generate type-safe TypeScript clients from [MCP](https://modelcontextprotocol.io) servers.
+Generate a typed TypeScript client for a remote [MCP](https://modelcontextprotocol.io) server (Streamable HTTP or SSE): point it at a URL, get a module with one method per tool.
+
+```typescript
+await notion.search({ query: "Meeting Notes" }); // instead of client.callTool({ name: "notion-search", arguments: … })
+```
+
+- **Typed** — inputs and outputs come from the server's JSON Schemas
+- **Thin** — each method calls the official MCP SDK and returns its result unchanged
+- **No lock-in** — generated code imports only SDK types, never this package
+- **OAuth handled** — if the server asks, approve in the browser and generation continues
 
 ## Quick Start
 
-```bash
-# Generate client from URL
-npx mcp-client-gen https://mcp.notion.com/mcp -o notion.ts
+**1. Generate** a module from the server's URL:
 
-# Use the generated client
+```bash
+npx mcp-client-gen https://mcp.notion.com/mcp -o src/notion.ts
 ```
+
+**2. Install** the MCP SDK (and `oauth-callback` if the server uses OAuth):
+
+```bash
+npm install @modelcontextprotocol/client oauth-callback
+```
+
+**3. Connect** an SDK `Client` and wrap it:
 
 ```typescript
-import { createNotionClient } from "./notion";
-import { createMcpConnection } from "mcp-client-gen";
+import { Client } from "@modelcontextprotocol/client";
+import { browserAuth } from "oauth-callback/mcp";
+import { createNotionClient } from "./notion.js";
 
-const connection = await createMcpConnection({
-  type: "http",
-  url: "https://mcp.notion.com/mcp",
+const client = new Client(
+  { name: "my-app", version: "1.0.0" },
+  { versionNegotiation: { mode: "auto" } }, // use the newest protocol the server speaks
+);
+const auth = browserAuth({
+  serverUrl: "https://mcp.notion.com/mcp",
+  redirectUri: "http://127.0.0.1:3000/callback",
+  clientName: "my-app",
 });
+await auth.connect(client); // opens the browser when needed
+await client.listTools(); // once: lets the SDK validate typed results
 
-const notion = createNotionClient(connection);
-
-// Fully typed based on server schema
-const pages = await notion.notionSearch({ query: "Meeting Notes" });
+const notion = createNotionClient(client);
+const result = await notion.search({ query: "Meeting Notes" });
 ```
 
-## Features
+No OAuth? Connect with the SDK alone: `await client.connect(new StreamableHTTPClientTransport(new URL(url)))`. The CLI prints the right snippet for your server after writing the file.
 
-- **Type-safe** — Generated TypeScript types from server schemas
-- **Zero config auth** — OAuth 2.1 with PKCE, just approve in browser
-- **Tree-shakable** — One class per server; bundles include only the clients you use
+## Using the Client
 
-## Installation
+Tools are methods. Results are the SDK's `CallToolResult`; when a tool declares an output schema, `structuredContent` is typed once you've checked `isError`:
 
-Generated clients import types from this package and the MCP SDK, so install both in the project that uses them:
+```typescript
+const result = await github.searchIssues({ query: "is:open" });
+if (result.isError) throw new Error("search failed");
+result.structuredContent.items; // typed
+```
+
+Prompts and resources, when the server has them, live in namespaces:
+
+```typescript
+await github.prompts.summarizePr({ number: "42" });
+await github.resources.read("repo://octo/app/README.md"); // any URI
+await github.resources.issue({ owner: "octo", number: "42" }); // a URI template, filled in
+```
+
+In tests, pass a plain object instead of a real `Client`: the factory needs only the methods it calls.
+
+```typescript
+const notion = createNotionClient({
+  callTool: async () => ({ content: [{ type: "text", text: "stub" }] }),
+  getPrompt: async () => ({ messages: [] }),
+  readResource: async () => ({ contents: [] }),
+});
+```
+
+## Keeping It in Sync
+
+A generated module is a snapshot of the server's tools, prompts and resources. Regenerate when they change. Re-running on an unchanged server produces an identical file, so diffs show exactly what changed.
+
+Connect your app the way generation did (`versionNegotiation: { mode: "auto" }` above). In the rare case where result types depend on the protocol version, the factory throws a clear error for a `Client` that negotiated a different one.
+
+## CLI
 
 ```bash
-npm install mcp-client-gen @modelcontextprotocol/client
+npx mcp-client-gen <url>                     # print the module to stdout
+npx mcp-client-gen <url> -o src/notion.ts    # write it to a file
+npx mcp-client-gen <url> --name notion       # name it: createNotionClient (default: from the URL)
+
+npx mcp-client-gen                           # pick servers from your MCP config files
+npx mcp-client-gen -y                        # all of them → src/mcp/ (or mcp/)
+npx mcp-client-gen -o <dir>                  # all of them → <dir>
+npx mcp-client-gen --config <file>           # read this config file instead
+
+npx mcp-client-gen ... --no-oauth            # never open a browser; fail instead (e.g. in CI)
+npx mcp-client-gen ... --oauth-port 8080     # OAuth redirect port, if 3000 is taken
 ```
 
-The CLI runs without installing (`npx mcp-client-gen`). Requires Node.js 22+ (or Bun).
-
-## CLI Usage
-
-```bash
-# URL mode (primary)
-npx mcp-client-gen <url>              # Output to stdout
-npx mcp-client-gen <url> -o <file>    # Output to file
-npx mcp-client-gen <url> <file>       # Shorthand
-
-# Config mode (reads .mcp.json, .cursor/, .vscode/)
-npx mcp-client-gen                    # Interactive
-npx mcp-client-gen -y                 # Accept defaults
-npx mcp-client-gen -o <file>          # All servers → <file> (implies -y)
-```
-
-### Config File Format
+Without a URL, the CLI reads `.mcp.json`, `.cursor/mcp.json` and `.vscode/mcp.json` (a `.local.json` beside each takes precedence; [details](docs/specs/config.md)), skips local stdio servers, and writes one module per server. Files are written only if every server succeeds.
 
 ```jsonc
 // .mcp.json
@@ -76,40 +120,50 @@ npx mcp-client-gen -o <file>          # All servers → <file> (implies -y)
 }
 ```
 
-Config files may contain comments and trailing commas. `${NAME}`, `${NAME:-default}` and `${env:NAME}` in `url` and `headers` expand from the environment; a server with an unset variable is skipped with a warning.
+`${NAME}`, `${NAME:-default}` and `${env:NAME}` expand from the environment. A server with a missing variable is skipped with a warning.
 
 ## Authentication
 
-No credentials required. OAuth-protected servers trigger automatic browser authentication via Dynamic Client Registration (RFC 7591) and PKCE, using the loopback redirect `http://127.0.0.1:3000/callback`.
+**While generating,** an OAuth server opens your browser to approve access (redirect: `http://127.0.0.1:3000/callback`). Credentials are kept in memory for that run only.
 
-Credentials live in memory by default. To persist them, give each server its own file:
-
-```typescript
-import { createMcpConnection, fileStore } from "mcp-client-gen";
-
-const connection = await createMcpConnection(server, {
-  oauth: {
-    store: (server) =>
-      fileStore(
-        `/home/me/.config/my-app/${encodeURIComponent(server.url)}.json`,
-      ),
-  },
-});
-```
-
-If a server later demands authorization again, e.g. more scopes (step-up, Streamable HTTP only), the request fails with `UnauthorizedError`. Call `connection.authorize()` to finish the browser flow, then retry:
+**In your app,** auth belongs to the `Client` you connect. With `browserAuth()`, pass a `store` to remember credentials. If a server later asks for more permissions, the call throws `UnauthorizedError`; run `auth.connect(client)` again, then retry:
 
 ```typescript
 import { UnauthorizedError } from "@modelcontextprotocol/client";
+import { browserAuth, fileStore } from "oauth-callback/mcp";
+
+const auth = browserAuth({
+  serverUrl: "https://mcp.notion.com/mcp",
+  redirectUri: "http://127.0.0.1:3000/callback",
+  clientName: "my-app",
+  store: fileStore("/home/me/.config/my-app/notion.json"),
+});
+await auth.connect(client);
 
 try {
-  await notion.notionSearch({ query: "Meeting Notes" });
+  await notion.search({ query: "Meeting Notes" });
 } catch (error) {
   if (!(error instanceof UnauthorizedError)) throw error;
-  await connection.authorize();
-  await notion.notionSearch({ query: "Meeting Notes" });
+  await auth.connect(client);
+  await notion.search({ query: "Meeting Notes" });
 }
 ```
+
+## Programmatic API
+
+```typescript
+import { generateClientModule } from "mcp-client-gen";
+
+const source = await generateClientModule("https://mcp.notion.com/mcp", {
+  name: "notion",
+});
+```
+
+It returns the module's source and writes nothing. Pass `{ url, transport, headers }` instead of a URL for headers or legacy SSE. Options: `name`, `oauth` (`false` to never open a browser), `fetch`, `timeout`, `signal`. Details: [docs/specs/api.md](docs/specs/api.md).
+
+## Requirements
+
+Node.js 22+ (or Bun) to generate. Generated modules need `@modelcontextprotocol/client` ^2.2; with TypeScript 6+, add `"types": ["node"]` to your `tsconfig.json` (the SDK's types use Node's `Buffer`).
 
 ## License
 

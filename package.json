@@ -1,6 +1,6 @@
 {
   "name": "mcp-client-gen",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Generate type-safe TypeScript clients from MCP (Model Context Protocol) servers",
   "type": "module",
   "main": "./dist/index.js",
@@ -9,10 +9,6 @@
     ".": {
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
-    },
-    "./internal": {
-      "types": "./dist/internal.d.ts",
-      "default": "./dist/internal.js"
     }
   },
   "bin": {
@@ -58,15 +54,12 @@
   },
   "dependencies": {
     "@clack/prompts": "^1.8.1",
-    "oauth-callback": "^3.0.0",
+    "@modelcontextprotocol/client": "~2.2.0",
+    "oauth-callback": "^3.1.0",
     "prettier": "^3.9.9",
     "ts-morph": "^28.0.0"
   },
-  "peerDependencies": {
-    "@modelcontextprotocol/client": "^2.2.0"
-  },
   "devDependencies": {
-    "@modelcontextprotocol/client": "^2.2.0",
     "@modelcontextprotocol/server": "^2.2.0",
     "@types/bun": "1.4.2",
     "dotenv": "^18.0.5",
@@ -81,7 +74,7 @@
     "endOfLine": "lf"
   },
   "scripts": {
-    "build": "bun build src/cli.ts src/index.ts src/internal.ts --outdir dist --target node --packages external --sourcemap=linked && tsc -p tsconfig.build.json",
+    "build": "rm -rf dist && bun build src/cli.ts src/index.ts --outdir dist --target node --packages external --sourcemap=linked && tsc -p tsconfig.build.json",
     "clean": "rm -rf dist",
     "test": "bun test --isolate src",
     "test:e2e": "bun test --isolate test/e2e",
@@ -93,6 +86,7 @@
     "capture:notion": "bun run test/manual/capture-notion.ts",
     "smoke:notion": "bun run test/manual/smoke-notion.ts",
     "e2e:notion": "bun run test/manual/e2e-notion.ts",
-    "prepublishOnly": "bun run build"
+    "smoke:package": "bun run test/package-smoke.ts",
+    "prepublishOnly": "bun run validate && bun run build && bun run smoke:package"
   }
 }

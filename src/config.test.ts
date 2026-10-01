@@ -18,7 +18,9 @@ import {
   getMcpServers,
   MCP_CONFIG_PATHS,
   parseJsonc,
+  printable,
   redactSecrets,
+  registerUrlCredentials,
   resolveConfigFiles,
 } from "./config";
 
@@ -35,57 +37,108 @@ afterAll(() => {
 });
 
 describe("config", () => {
+  describe("printable", () => {
+    test("strips terminal controls without unmasking secrets", () => {
+      // Unique to this test: the registry is process-wide
+      registerUrlCredentials("https://printable.test/?key=ctrl%1Bsecret");
+      expect(printable("key ctrl\x1bsecret")).toBe("key ***");
+      expect(printable("\x1b[2Jclear\x07")).toBe("[2Jclear");
+      expect(printable(new Error("boom\r"))).toBe("boom");
+      // One line: an untrusted value can't fake output lines or reorder text
+      expect(printable("bad\nError: fake\tline\u2028x")).toBe(
+        "bad Error: fake line x",
+      );
+      // Linear: a huge server error can't stall error reporting
+      const start = performance.now();
+      printable("x" + " \n".repeat(200_000) + "y");
+      expect(performance.now() - start).toBeLessThan(1000);
+      expect(printable("name\u202Egnp.exe\u2066")).toBe("namegnp.exe");
+      expect(printable({ toString: () => "thrown object" })).toBe(
+        "thrown object",
+      );
+    });
+  });
+
   describe("formatConfigWarning", () => {
-    test("formats malformed JSON warning", () => {
-      const msg = formatConfigWarning({
-        kind: "malformed_json",
-        path: "/path/to/.mcp.json",
-        error: "Unexpected token",
-      });
-      expect(msg).toBe(".mcp.json: Invalid JSON - Unexpected token");
+    test("formats invalid file warning", () => {
+      const msg = formatConfigWarning(
+        {
+          kind: "invalid_file",
+          path: "/path/to/.mcp.json",
+          reason: "invalid JSON",
+        },
+        "/path/to",
+      );
+      expect(msg).toBe(".mcp.json: Skipped the file (invalid JSON)");
+    });
+
+    test("shows the path relative to cwd, telling apart same-named files", () => {
+      const warning = (path: string) =>
+        formatConfigWarning(
+          { kind: "missing_url", path, name: "a" },
+          "/project",
+        );
+      expect(warning("/project/.cursor/mcp.json")).toBe(
+        '.cursor/mcp.json: Skipped "a" (missing url)',
+      );
+      expect(warning("/project/.vscode/mcp.json")).toBe(
+        '.vscode/mcp.json: Skipped "a" (missing url)',
+      );
     });
 
     test("formats skipped stdio warning", () => {
-      const msg = formatConfigWarning({
-        kind: "skipped_stdio",
-        path: "/path/to/.mcp.json",
-        name: "local-server",
-      });
+      const msg = formatConfigWarning(
+        {
+          kind: "skipped_stdio",
+          path: "/path/to/.mcp.json",
+          name: "local-server",
+        },
+        "/path/to",
+      );
       expect(msg).toBe(
         '.mcp.json: Skipped "local-server" (stdio servers not supported)',
       );
     });
 
     test("formats missing URL warning", () => {
-      const msg = formatConfigWarning({
-        kind: "missing_url",
-        path: "/path/to/.mcp.json",
-        name: "broken-server",
-      });
+      const msg = formatConfigWarning(
+        {
+          kind: "missing_url",
+          path: "/path/to/.mcp.json",
+          name: "broken-server",
+        },
+        "/path/to",
+      );
       expect(msg).toBe('.mcp.json: Skipped "broken-server" (missing url)');
     });
 
     test("formats unknown type warning", () => {
-      const msg = formatConfigWarning({
-        kind: "unknown_type",
-        path: "/path/to/.mcp.json",
-        name: "custom-server",
-        type: "grpc",
-      });
+      const msg = formatConfigWarning(
+        {
+          kind: "unknown_type",
+          path: "/path/to/.mcp.json",
+          name: "custom-server",
+          type: "grpc",
+        },
+        "/path/to",
+      );
       expect(msg).toBe(
         '.mcp.json: Skipped "custom-server" (unknown type "grpc")',
       );
     });
 
     test("formats unresolved env warning", () => {
-      const msg = formatConfigWarning({
-        kind: "unresolved_env",
-        path: "/path/to/.mcp.json",
-        name: "api",
-        variables: ["API_KEY", "API_HOST"],
-      });
+      const msg = formatConfigWarning(
+        {
+          kind: "unresolved_placeholder",
+          path: "/path/to/.mcp.json",
+          name: "api",
+          placeholders: ["API_KEY", "API_HOST"],
+        },
+        "/path/to",
+      );
       expect(msg).toBe(
-        '.mcp.json: Skipped "api" (unset environment variable API_KEY, API_HOST)',
+        '.mcp.json: Skipped "api" (unresolved placeholder API_KEY, API_HOST)',
       );
     });
   });
@@ -180,12 +233,12 @@ describe("config", () => {
       expect(servers).toHaveLength(2);
       expect(warnings).toHaveLength(0);
       expect(servers).toContainEqual({
-        type: "http",
+        transport: "http",
         url: "https://mcp.notion.com/mcp",
         name: "notion",
       });
       expect(servers).toContainEqual({
-        type: "sse",
+        transport: "sse",
         url: "https://api.githubcopilot.com/mcp/",
         name: "github",
       });
@@ -212,7 +265,7 @@ describe("config", () => {
 
       expect(servers).toHaveLength(1);
       expect(servers[0]).toEqual({
-        type: "http",
+        transport: "http",
         url: "https://example.com",
         name: "valid",
       });
@@ -231,8 +284,57 @@ describe("config", () => {
 
       expect(servers).toEqual([]);
       expect(warnings).toHaveLength(1);
-      expect(warnings[0]?.kind).toBe("malformed_json");
-      expect(warnings[0]?.path).toBe(configPath);
+      // Not the parser's message: it may quote the file, secrets included
+      expect(warnings).toEqual([
+        { kind: "invalid_file", path: configPath, reason: "invalid JSON" },
+      ]);
+    });
+
+    test("skips malformed server maps, entries and headers with warnings", () => {
+      const listPath = resolve(TEST_DIR, "array-map.json");
+      const entriesPath = resolve(TEST_DIR, "bad-entries.json");
+      writeFileSync(listPath, JSON.stringify({ mcpServers: [] }));
+      writeFileSync(
+        entriesPath,
+        JSON.stringify({
+          servers: {
+            list: ["https://a.dev"],
+            object: { url: "https://b.dev", headers: { "X-Key": { a: 1 } } },
+            array: { url: "https://c.dev", headers: ["X-Key: 1"] },
+            ok: { url: "https://d.dev", headers: { "X-Key": "abcd" } },
+          },
+        }),
+      );
+
+      const { servers, warnings } = getMcpServers([listPath, entriesPath]);
+
+      expect(servers.map((s) => s.name)).toEqual(["ok"]);
+      const headersReason = "headers must be an object of strings";
+      expect(warnings).toEqual([
+        {
+          kind: "invalid_file",
+          path: listPath,
+          reason: "expected the server map to be an object",
+        },
+        {
+          kind: "invalid_server",
+          path: entriesPath,
+          name: "list",
+          reason: "not an object",
+        },
+        {
+          kind: "invalid_server",
+          path: entriesPath,
+          name: "object",
+          reason: headersReason,
+        },
+        {
+          kind: "invalid_server",
+          path: entriesPath,
+          name: "array",
+          reason: headersReason,
+        },
+      ]);
     });
 
     test("handles missing mcpServers property", () => {
@@ -271,59 +373,120 @@ describe("config", () => {
 
       expect(servers).toHaveLength(2);
       expect(servers).toContainEqual({
-        type: "http",
+        transport: "http",
         url: "https://server1.com",
         name: "server1",
       });
       expect(servers).toContainEqual({
-        type: "sse",
+        transport: "sse",
         url: "https://server2.com",
         name: "server2",
       });
     });
 
-    test("deduplicates servers by URL (first wins)", () => {
-      const config1Path = resolve(TEST_DIR, "duplicate1.json");
-      const config2Path = resolve(TEST_DIR, "duplicate2.json");
-
+    test("deduplicates identical connections, keeps other accounts", () => {
+      const configPath = resolve(TEST_DIR, "duplicates.json");
+      const url = "https://mcp.example.com";
       writeFileSync(
-        config1Path,
+        configPath,
         JSON.stringify({
           mcpServers: {
-            server1: { type: "http", url: "https://example.com" },
-            server2: { type: "sse", url: "https://other.com" },
+            work: { url, headers: { Authorization: "Bearer WORK" } },
+            personal: { url, headers: { Authorization: "Bearer PERSONAL" } },
+            // Same connection as "work" under another name (e.g. another tool's config)
+            copy: {
+              type: "http",
+              url,
+              headers: { authorization: "Bearer WORK" }, // names are case-insensitive
+            },
+            // The same URL as fetch sends it
+            canonical: {
+              url: "https://MCP.example.com:443",
+              headers: { Authorization: "Bearer PERSONAL" },
+            },
+            legacy: { type: "sse", url },
           },
         }),
       );
 
+      const { servers } = getMcpServers([configPath]);
+
+      expect(servers.map((s) => s.name)).toEqual([
+        "work",
+        "personal",
+        "legacy",
+      ]);
+    });
+
+    test("an invalid URL is skipped before it can claim an override", () => {
+      const localPath = resolve(TEST_DIR, "invalid.local.json");
+      const sharedPath = resolve(TEST_DIR, "invalid.json");
       writeFileSync(
-        config2Path,
+        localPath,
+        JSON.stringify({ mcpServers: { notion: { url: "broken" } } }),
+      );
+      writeFileSync(
+        sharedPath,
+        JSON.stringify({
+          mcpServers: { notion: { url: "https://mcp.notion.com/mcp" } },
+        }),
+      );
+
+      const { servers, warnings } = getMcpServers([localPath, sharedPath]);
+
+      expect(servers).toEqual([
+        {
+          transport: "http",
+          url: "https://mcp.notion.com/mcp",
+          name: "notion",
+        },
+      ]);
+      expect(warnings).toEqual([
+        { kind: "invalid_url", path: localPath, name: "notion" },
+      ]);
+    });
+
+    test("an earlier entry overrides a later one with the same name", () => {
+      const localPath = resolve(TEST_DIR, "override.local.json");
+      const sharedPath = resolve(TEST_DIR, "override.json");
+      writeFileSync(
+        localPath,
         JSON.stringify({
           mcpServers: {
-            server3: { type: "sse", url: "https://example.com" }, // Duplicate URL
-            server4: { type: "http", url: "https://new.com" },
+            api: { url: "http://127.0.0.1:3000/mcp" },
+            docs: { url: "${UNSET_OVERRIDE_URL}" },
+          },
+        }),
+      );
+      writeFileSync(
+        sharedPath,
+        JSON.stringify({
+          mcpServers: {
+            api: { url: "https://prod.example.com/mcp" },
+            docs: { url: "https://docs.example.com/mcp" },
           },
         }),
       );
 
-      const { servers } = getMcpServers([config1Path, config2Path]);
+      const { servers, warnings } = getMcpServers([localPath, sharedPath]);
 
-      expect(servers).toHaveLength(3);
-      expect(servers).toContainEqual({
-        type: "http", // First occurrence wins
-        url: "https://example.com",
-        name: "server1",
-      });
-      expect(servers).toContainEqual({
-        type: "sse",
-        url: "https://other.com",
-        name: "server2",
-      });
-      expect(servers).toContainEqual({
-        type: "http",
-        url: "https://new.com",
-        name: "server4",
-      });
+      expect(servers).toEqual([
+        { transport: "http", url: "http://127.0.0.1:3000/mcp", name: "api" },
+        // A skipped override claims nothing: the shared entry is used
+        {
+          transport: "http",
+          url: "https://docs.example.com/mcp",
+          name: "docs",
+        },
+      ]);
+      expect(warnings).toEqual([
+        {
+          kind: "unresolved_placeholder",
+          path: localPath,
+          name: "docs",
+          placeholders: ["UNSET_OVERRIDE_URL"],
+        },
+      ]);
     });
 
     test("handles URLs with whitespace", () => {
@@ -350,12 +513,12 @@ describe("config", () => {
 
       expect(servers).toHaveLength(2);
       expect(servers).toContainEqual({
-        type: "http",
+        transport: "http",
         url: "https://example.com", // Whitespace trimmed
         name: "trimmed",
       });
       expect(servers).toContainEqual({
-        type: "http",
+        transport: "http",
         url: "https://normal.com",
         name: "normal",
       });
@@ -394,17 +557,17 @@ describe("config", () => {
 
       expect(servers).toHaveLength(3);
       expect(servers).toContainEqual({
-        type: "http",
+        transport: "http",
         url: "https://example.com",
         name: "validHttp",
       });
       expect(servers).toContainEqual({
-        type: "sse",
+        transport: "sse",
         url: "https://sse.com",
         name: "validSse",
       });
       expect(servers).toContainEqual({
-        type: "http", // noType defaults to HTTP for mcpServers format
+        transport: "http", // noType defaults to HTTP for mcpServers format
         url: "https://notype.com",
         name: "noType",
       });
@@ -440,12 +603,12 @@ describe("config", () => {
 
       expect(servers).toHaveLength(2);
       expect(servers).toContainEqual({
-        type: "http", // Default for VSCode HTTP servers
+        transport: "http", // Default for VSCode HTTP servers
         url: "https://api.githubcopilot.com/mcp/",
         name: "Github",
       });
       expect(servers).toContainEqual({
-        type: "sse",
+        transport: "sse",
         url: "https://custom.example.com/mcp",
         name: "Custom",
       });
@@ -479,13 +642,13 @@ describe("config", () => {
 
       expect(servers).toHaveLength(2);
       expect(servers).toContainEqual({
-        type: "http", // Default for Cursor format
+        transport: "http", // Default for Cursor format
         url: "http://localhost:3000/mcp",
         name: "server-name",
         headers: { API_KEY: "value" },
       });
       expect(servers).toContainEqual({
-        type: "http",
+        transport: "http",
         url: "https://explicit.example.com",
         name: "explicit-http",
       });
@@ -516,7 +679,7 @@ describe("config", () => {
         });
         expect(warnings).toEqual([]);
         expect(servers[0]).toEqual({
-          type: "sse",
+          transport: "sse",
           url: "https://api.example.com/mcp",
           name: "api",
           headers: { Authorization: "Bearer secret" },
@@ -552,8 +715,8 @@ describe("config", () => {
         expect(servers).toEqual([]);
         expect(JSON.stringify(warnings)).not.toContain("super-secret");
         expect(warnings[0]).toMatchObject({
-          kind: "unresolved_env",
-          variables: ["API-KEY", "MCP_TEST_KEY"],
+          kind: "unresolved_placeholder",
+          placeholders: ["API-KEY", "MCP_TEST_KEY"],
         });
       });
 
@@ -572,6 +735,31 @@ describe("config", () => {
           "fallback-secret", // fallback value
         ])
           expect(redactSecrets(`x ${form} y`)).toBe("x *** y");
+      });
+
+      test("literal credentials in headers and URLs are masked too", () => {
+        const configPath = resolve(TEST_DIR, "literal.json");
+        writeFileSync(
+          configPath,
+          JSON.stringify({
+            mcpServers: {
+              api: {
+                url: "https://%61lice:hunter22@literal-host.test/path?key=literal-key&enc=abcd%252Fefgh",
+                headers: { "X-API-Key": "literal-header-key" },
+              },
+            },
+          }),
+        );
+        getMcpServers([configPath]);
+        expect(
+          redactSecrets(
+            "401 for literal-header-key, hunter22, key=literal-key, %61lice, abcd%252Fefgh",
+          ),
+        ).toBe("401 for ***, ***, key=***, ***, ***");
+        // The host and path of a literal URL stay readable
+        expect(redactSecrets("literal-host.test/path")).toBe(
+          "literal-host.test/path",
+        );
       });
 
       test("masks trimmed values, canonical URLs and overlapping secrets", () => {
@@ -631,7 +819,7 @@ describe("config", () => {
           }),
         );
         const [server] = getMcpServers([configPath]).servers;
-        expect(extractServerName(server!, 0)).toBe("server1");
+        expect(extractServerName(server!)).toBe("server");
       });
 
       test("skips a server with unset variables and names them", () => {
@@ -647,10 +835,10 @@ describe("config", () => {
         expect(servers).toEqual([]);
         expect(warnings).toEqual([
           {
-            kind: "unresolved_env",
+            kind: "unresolved_placeholder",
             path: resolve(TEST_DIR, "env.json"),
             name: "api",
-            variables: ["MCP_TEST_HOST", "MCP_TEST_MISSING", "input:token"],
+            placeholders: ["MCP_TEST_HOST", "MCP_TEST_MISSING", "input:token"],
           },
         ]);
       });
@@ -674,7 +862,7 @@ describe("config", () => {
         const { servers, warnings } = getMcpServers([configPath]);
         expect(warnings).toEqual([]);
         expect(servers).toEqual([
-          { type: "http", url: "https://a.dev/mcp", name: "a" },
+          { transport: "http", url: "https://a.dev/mcp", name: "a" },
         ]);
       });
 
@@ -718,9 +906,9 @@ describe("config", () => {
         const { servers, warnings } = getMcpServers([badPath, goodPath]);
         expect(warnings).toEqual([
           {
-            kind: "malformed_json",
+            kind: "invalid_file",
             path: badPath,
-            error: "Expected an object at the root",
+            reason: "expected an object at the root",
           },
         ]);
         expect(servers).toHaveLength(1);
@@ -747,7 +935,7 @@ describe("config", () => {
 
       expect(servers).toHaveLength(1);
       expect(servers[0]).toEqual({
-        type: "http",
+        transport: "http",
         url: "https://http.example.com",
         name: "HttpServer",
       });
@@ -779,7 +967,7 @@ describe("config", () => {
 
       expect(servers).toHaveLength(1);
       expect(servers[0]).toEqual({
-        type: "http",
+        transport: "http",
         url: "https://api.web-mcp.com/mcp",
         name: "web",
         headers: { "X-API-Key": "static-key" },
@@ -812,12 +1000,12 @@ describe("config", () => {
 
       expect(servers).toHaveLength(2);
       expect(servers).toContainEqual({
-        type: "http",
+        transport: "http",
         url: "https://vscode.example.com",
         name: "VSCodeServer",
       });
       expect(servers).toContainEqual({
-        type: "sse",
+        transport: "sse",
         url: "https://claude.example.com",
         name: "ClaudeServer",
       });

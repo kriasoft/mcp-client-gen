@@ -42,15 +42,9 @@ export default defineConfig({
       "+AGENTS.local.md",
     ],
 
-    // Core library: entry point, types, config loading, MCP client
+    // Core library: public entry point, config loading, connection
     // Essential modules for understanding how the library works
-    core: [
-      "src/index.ts",
-      "src/types.ts",
-      "src/config.ts",
-      "src/mcp-client.ts",
-      "src/utils.ts",
-    ],
+    core: ["src/index.ts", "src/config.ts", "src/connect.ts"],
 
     // Code generation: TypeScript AST building, file generation
     // Modules responsible for generating the client code

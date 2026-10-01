@@ -10,24 +10,34 @@
  */
 
 import type { Tool } from "@modelcontextprotocol/client";
-import type { SourceFile, TypeAliasDeclaration } from "ts-morph";
-import { jsonSchemaToTypeScript } from "./schema-to-typescript.js";
+import type { SourceFile } from "ts-morph";
+import { schemaTypeAliases, type TypeAlias } from "./schema-to-typescript.js";
 import { commentText } from "./utils.js";
 
-/** Emit `export type {name} = …` for a tool's input schema. */
+/**
+ * Emit `export type {name} = …` for a tool's input schema, plus aliases for its
+ * recursive `$ref`s. Allocated names join `taken`.
+ */
 export function generateToolInputType(
   sourceFile: SourceFile,
   tool: Tool,
   name: string,
-): TypeAliasDeclaration {
-  const type = jsonSchemaToTypeScript(tool.inputSchema);
-  return sourceFile.addTypeAlias({
-    name,
-    isExported: true,
-    // Tool arguments are always an object, even when the schema can't say which
-    type: type === "unknown" ? "Record<string, unknown>" : type,
-    docs: tool.description ? [commentText(tool.description)] : [],
-  });
+  taken: Set<string>,
+): void {
+  const [root, ...recursive] = schemaTypeAliases(tool.inputSchema, name, taken);
+  addAliases(
+    sourceFile,
+    [
+      {
+        ...root!,
+        // Tool arguments are always an object, even when the schema can't say which
+        type: root!.type === "unknown" ? "Record<string, unknown>" : root!.type,
+      },
+      ...recursive,
+    ],
+    // The tool's description lives on its method, where IntelliSense shows it
+    `Arguments of the \`${tool.name}\` tool.`,
+  );
 }
 
 /** Emit `export type {name} = …` for a tool's output schema, if it declares one. */
@@ -35,14 +45,29 @@ export function generateToolOutputType(
   sourceFile: SourceFile,
   tool: Tool,
   name: string,
-): TypeAliasDeclaration | undefined {
-  if (!hasOutputSchema(tool)) return undefined;
-  return sourceFile.addTypeAlias({
-    name,
-    isExported: true,
-    type: jsonSchemaToTypeScript(tool.outputSchema),
-    docs: [commentText(`Structured result of the \`${tool.name}\` tool.`)],
-  });
+  taken: Set<string>,
+): void {
+  if (!hasOutputSchema(tool)) return;
+  addAliases(
+    sourceFile,
+    schemaTypeAliases(tool.outputSchema, name, taken),
+    `Structured result of the \`${tool.name}\` tool.`,
+  );
+}
+
+/** Exported aliases; `docs` describes the first. */
+function addAliases(
+  sourceFile: SourceFile,
+  aliases: TypeAlias[],
+  docs: string | undefined,
+): void {
+  for (const [i, { name, type }] of aliases.entries())
+    sourceFile.addTypeAlias({
+      name,
+      isExported: true,
+      type,
+      docs: i === 0 && docs ? [commentText(docs)] : [],
+    });
 }
 
 /** Whether a tool declares an outputSchema (its result is typed structuredContent). */
@@ -50,15 +75,29 @@ export function hasOutputSchema(tool: Tool): boolean {
   return tool.outputSchema !== undefined;
 }
 
-/** Whether the tool can be called without arguments (no required input). */
+/**
+ * Whether `{}` is provably valid input, so the parameter can default to it. Any keyword
+ * that may reject `{}` (required names, a minimum size, compositions, refs, literals,
+ * conditionals) keeps the argument required.
+ */
 export function hasOptionalInput(tool: Tool): boolean {
   const schema = tool.inputSchema as Record<string, unknown>;
-  const required = schema.required;
+  const { required, minProperties } = schema;
   return (
     !(Array.isArray(required) && required.length > 0) &&
-    !schema.anyOf &&
-    !schema.oneOf &&
-    !schema.allOf &&
-    !schema.$ref
+    !(typeof minProperties === "number" && minProperties > 0) &&
+    !REJECTS_EMPTY.some((keyword) => Object.hasOwn(schema, keyword))
   );
 }
+
+/** Keywords whose constraints aren't analyzed: `{}` may fail them. */
+const REJECTS_EMPTY = [
+  "anyOf",
+  "oneOf",
+  "allOf",
+  "not",
+  "if",
+  "$ref",
+  "const",
+  "enum",
+];

@@ -27,10 +27,8 @@ jobs:
       - run: bun run test
       - run: bun run build
 
-      - name: Verify dist output
-        run: |
-          if [ ! -f "dist/cli.js" ]; then
-            echo "Error: dist/cli.js not found"
-            exit 1
-          fi
-          echo "Build output verified"
+      # The published contract: the packed tarball, under the oldest supported Node
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+      - run: bun run smoke:package

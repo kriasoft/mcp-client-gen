@@ -1,63 +1,50 @@
 #!/usr/bin/env bun
 /**
- * End-to-end test for generated Notion client.
+ * End-to-end test for the generated Notion client.
  *
- * Connects to real Notion MCP server and makes actual API calls.
- * Requires OAuth authentication (browser will open on first run).
+ * Connects to the real Notion MCP server the way an app would (SDK Client +
+ * oauth-callback) and makes an actual call. The browser opens on first run.
  *
  * Usage: bun run test/manual/e2e-notion.ts
  */
 
-import { createNotionClient } from "../../examples/notion-client";
+import { Client } from "@modelcontextprotocol/client";
+import { browserAuth, fileStore } from "oauth-callback/mcp";
 import { resolve } from "node:path";
-import { createMcpConnection, fileStore } from "../../src/index";
+import { createNotionClient } from "../../examples/notion-client";
 
 async function main() {
   console.log("E2E test: Generated Notion client\n");
 
-  // Step 1: Connect to Notion MCP server
   console.log("1. Connecting to Notion MCP server...");
   console.log(
     "   (Browser will open for OAuth if not already authenticated)\n",
   );
-  const connection = await createMcpConnection(
-    { type: "http", url: "https://mcp.notion.com/mcp" },
-    {
-      oauth: {
-        // fileStore() needs an absolute path; the file is gitignored
-        store: () => fileStore(resolve(".oauth-credentials.json")),
-        timeout: 120000,
-      },
-    },
+  const client = new Client(
+    { name: "mcp-client-gen-e2e", version: "1.0.0" },
+    { versionNegotiation: { mode: "auto" } }, // speak MCP 2026-07-28 when the server does
   );
+  await browserAuth({
+    serverUrl: "https://mcp.notion.com/mcp",
+    redirectUri: "http://127.0.0.1:3000/callback",
+    clientName: "mcp-client-gen-e2e",
+    // fileStore() needs an absolute path; the file is gitignored
+    store: fileStore(resolve(".oauth-credentials.json")),
+    timeout: 120_000,
+  }).connect(client);
   console.log("   Connected successfully");
-  console.log(
-    `   Server capabilities: ${Object.keys(connection.capabilities).join(", ") || "(none)"}`,
-  );
 
-  // Step 2: Create typed client
-  console.log("\n2. Creating typed Notion client...");
-  const notion = createNotionClient(connection);
-  console.log("   Client created");
-
-  // Step 3: Make actual API call
-  console.log("\n3. Calling notionGetUsers({ user_id: 'self' })...");
   try {
-    const result = await notion.notionGetUsers({ user_id: "self" });
-    console.log("   Response received:");
+    const notion = createNotionClient(client);
+    console.log("\n2. Calling getUsers({ user_id: 'self' })...");
+    const result = await notion.getUsers({ user_id: "self" });
+    if (result.isError) throw new Error(JSON.stringify(result.content));
     console.log(
-      `   ${JSON.stringify(result, null, 2).split("\n").join("\n   ")}`,
+      `   ${JSON.stringify(result.content, null, 2).split("\n").join("\n   ")}`,
     );
-  } catch (error) {
-    console.error(
-      `   Error: ${error instanceof Error ? error.message : error}`,
-    );
-    await connection.client.close();
-    process.exit(1);
+  } finally {
+    await client.close(); // allow process exit
   }
-
-  // Close connection to allow process exit
-  await connection.client.close();
 
   console.log("\nE2E test passed!");
 }

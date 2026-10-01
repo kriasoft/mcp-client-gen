@@ -1,23 +1,29 @@
 # Examples
 
-- `notion-client.ts`: the client generated for the [Notion MCP server](https://mcp.notion.com/mcp) (`npx mcp-client-gen https://mcp.notion.com/mcp -o notion-client.ts`). It's regenerated from `test/fixtures/notion/introspection.json` by `bun capture:notion`.
+- `notion-client.ts`: the client generated for the [Notion MCP server](https://mcp.notion.com/mcp) (`npx mcp-client-gen https://mcp.notion.com/mcp -o notion-client.ts`). Regenerate it from `test/fixtures/notion/introspection.json` with `bun capture:notion --from-fixtures`, or capture fresh fixtures with `bun capture:notion`.
 
 ```typescript
-import { createMcpConnection } from "mcp-client-gen";
+import { Client } from "@modelcontextprotocol/client";
+import { browserAuth } from "oauth-callback/mcp";
 import { createNotionClient } from "./notion-client";
 
-const connection = await createMcpConnection({
-  type: "http",
-  url: "https://mcp.notion.com/mcp",
-});
-const notion = createNotionClient(connection);
+const client = new Client(
+  { name: "my-app", version: "1.0.0" },
+  { versionNegotiation: { mode: "auto" } }, // speak MCP 2026-07-28 when the server does
+);
+await browserAuth({
+  serverUrl: "https://mcp.notion.com/mcp",
+  redirectUri: "http://127.0.0.1:3000/callback",
+  clientName: "my-app",
+}).connect(client);
+const notion = createNotionClient(client);
 
-const result = await notion.notionSearch({ query: "meeting notes" });
+const result = await notion.search({ query: "meeting notes" });
 for (const block of result.content) {
   if (block.type === "text") console.log(block.text);
 }
 
-await connection.client.close();
+await client.close();
 ```
 
-Generated clients import types from `@modelcontextprotocol/client` 2.x, so projects using them need it installed.
+Generated clients import types from `@modelcontextprotocol/client` 2.x only, so projects using them need it installed.
