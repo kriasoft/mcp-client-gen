@@ -25,21 +25,30 @@ const connection = await createMcpConnection({
   url: "https://mcp.notion.com/mcp",
 });
 
-const notion = createNotionClient(connection);
+const notion = createNotionClient(connection.client);
 
-// Fully typed based on server schema
-const pages = await notion.notionSearch({ query: "Meeting Notes" });
+// Typed input; the result is the SDK's CallToolResult
+const result = await notion.notionSearch({ query: "Meeting Notes" });
+```
+
+Tools that declare an output schema return a typed `structuredContent` once `isError` is ruled out:
+
+```typescript
+const result = await github.searchIssues({ query: "is:open" });
+if (result.isError) throw new Error("search failed");
+result.structuredContent.items; // typed from the tool's outputSchema
 ```
 
 ## Features
 
 - **Type-safe** — Generated TypeScript types from server schemas
 - **Zero config auth** — OAuth 2.1 with PKCE, just approve in browser
-- **Tree-shakable** — One class per server; bundles include only the clients you use
+- **Thin** — Generated methods delegate to the official SDK `Client` and return its results unchanged
+- **Tree-shakable** — One factory per server; bundles include only the clients you use
 
 ## Installation
 
-Generated clients import types from this package and the MCP SDK, so install both in the project that uses them:
+Generated clients import types from the MCP SDK only; `createMcpConnection()` comes from this package:
 
 ```bash
 npm install mcp-client-gen @modelcontextprotocol/client

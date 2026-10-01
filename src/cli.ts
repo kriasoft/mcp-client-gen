@@ -164,7 +164,7 @@ function printUsage(
     console.log(`    url: ${JSON.stringify(server.url)},`);
   }
   console.log(`  });`);
-  console.log(`  const client = ${factoryName}(connection);`);
+  console.log(`  const client = ${factoryName}(connection.client);`);
 }
 
 /**

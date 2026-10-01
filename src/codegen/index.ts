@@ -9,7 +9,7 @@
  */
 
 // Re-export all public APIs
-export { clientClassName, generateClientClass } from "./class-generator.js";
+export { clientTypeName, generateServerClient } from "./client-generator.js";
 export { generateClientFile, type CodegenResult } from "./file-builder.js";
 export { jsonSchemaToTypeScript } from "./schema-to-typescript.js";
 export {

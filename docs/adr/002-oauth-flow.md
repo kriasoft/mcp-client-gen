@@ -20,7 +20,7 @@
   - `store` is a factory `(server) => CredentialStore`: a store is bound to one server, and one config is shared by every server in `generateClient()`. Default: memory.
 - Streamable HTTP connects via `auth.connect(client)`, which also handles step-up re-authorization. SSE (deprecated in MCP) connects on its own transport; on `UnauthorizedError` it calls `auth.completeAuthorization(transport)` and reconnects on a fresh transport. That transport's fetch bounds the wait for response headers (the provider can't interrupt its token exchange), and listings run sequentially so OAuth refreshes on it never overlap.
 - An authorization demanded after connecting (`UnauthorizedError`: a 403 `insufficient_scope` step-up over Streamable HTTP, or a 401 over SSE, whose transport doesn't turn 403s into authorizations) is completed on the live connection: `auth.connect(client)` for Streamable HTTP, `auth.completeAuthorization(transport)` for SSE. oauth-callback can't cancel a pending flow short of signing out, so capability listing completes every one it triggers (up to three), and no browser flow outlives the connection. Afterwards callers use `McpConnection.authorize()` and retry. Concurrent calls share one completion.
-- Generated clients import SDK types only (`import type`), so they carry no runtime SDK dependency.
+- Generated clients take the SDK `Client` and import SDK types only (ADR-003); auth stays with whoever connected that client.
 
 ```typescript
 const connection = await createMcpConnection(server, {

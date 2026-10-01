@@ -6,14 +6,15 @@
  * Usage:
  *   bun capture:notion                  # Capture fixtures + generate example
  *   bun capture:notion --fixtures-only  # Capture fixtures only
+ *   bun capture:notion --from-fixtures  # Regenerate example from saved fixtures (offline)
  *
  * Outputs:
  *   test/fixtures/notion/introspection.json  - Real Notion server data
  *   examples/notion-client.ts                - Generated TypeScript client
  */
 
-import { mkdir, writeFile } from "node:fs/promises";
-import { resolve } from "node:path";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { dirname, resolve } from "node:path";
 import { format as prettierFormat, resolveConfig } from "prettier";
 import { generateClientFile } from "../../src/codegen";
 import type { IntrospectionSuccess } from "../../src/introspection";
@@ -23,10 +24,15 @@ import type { McpServerConfig } from "../../src/types";
 
 // Parse CLI arguments
 const fixturesOnly = process.argv.includes("--fixtures-only");
+const fromFixtures = process.argv.includes("--from-fixtures");
+const fixturePath = resolve(
+  import.meta.dir,
+  "../fixtures/notion/introspection.json",
+);
 
 console.log("Capturing Notion MCP Server Capabilities");
 console.log(
-  `   Mode: ${fixturesOnly ? "fixtures only" : "fixtures + example"}`,
+  `   Mode: ${fromFixtures ? "example from saved fixtures" : fixturesOnly ? "fixtures only" : "fixtures + example"}`,
 );
 console.log("=".repeat(50));
 
@@ -97,12 +103,8 @@ async function generateClient(introspectionResult: IntrospectionSuccess) {
 }
 
 async function saveFixtures(introspectionResult: IntrospectionSuccess) {
-  const projectRoot = resolve(import.meta.dir, "../..");
-  const fixturesDir = resolve(projectRoot, "test/fixtures/notion");
+  await mkdir(dirname(fixturePath), { recursive: true });
 
-  await mkdir(fixturesDir, { recursive: true });
-
-  const fixturePath = resolve(fixturesDir, "introspection.json");
   const json = JSON.stringify(introspectionResult, null, 2);
   const prettierConfig = (await resolveConfig(fixturePath)) ?? {};
   const formatted = await prettierFormat(json, {
@@ -126,6 +128,11 @@ async function saveExample(clientCode: string) {
 }
 
 async function runCapture() {
+  if (fromFixtures) {
+    const saved = JSON.parse(await readFile(fixturePath, "utf8"));
+    await saveExample(await generateClient(saved));
+    return;
+  }
   try {
     const introspectionResult = await captureCapabilities();
 

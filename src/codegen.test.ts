@@ -328,8 +328,6 @@ function typecheck(code: string): string[] {
     compilerOptions: {
       strict: true,
       noUnusedLocals: true,
-      // Resolve to source: package exports point at dist, absent before a build
-      paths: { "mcp-client-gen": [resolve(import.meta.dir, "index.ts")] },
       noEmit: true,
       skipLibCheck: true,
       target: ScriptTarget.ESNext,
@@ -337,7 +335,7 @@ function typecheck(code: string): string[] {
       moduleResolution: ModuleResolutionKind.Bundler,
     },
   });
-  // In src/ so imports resolve from this package (incl. its "mcp-client-gen" self-reference)
+  // In src/ so the SDK import resolves from this package's node_modules
   const file = project.createSourceFile(
     resolve(import.meta.dir, "__generated__.ts"),
     code,
@@ -373,24 +371,47 @@ describe("generateClientFile", () => {
     expect(typecheck(code)).toEqual([]);
   });
 
+  test("typed results narrow on isError", () => {
+    const usage = `
+export async function use(alpha: AlphaClient) {
+  const result = await alpha.search();
+  // @ts-expect-error structuredContent is unknown until isError is ruled out
+  result.structuredContent.total;
+  if (!result.isError) return result.structuredContent.total satisfies number;
+}`;
+    expect(typecheck(code + usage)).toEqual([]);
+  });
+
+  test("imports only SDK types", () => {
+    expect(code).not.toContain('mcp-client-gen"');
+    expect(code).toMatch(
+      /^import type \{[^}]+\} from "@modelcontextprotocol\/client";$/m,
+    );
+    expect(code.match(/^import /gm)).toHaveLength(1);
+  });
+
   test("allocates collision-free member and type names", () => {
     expect(code).toContain(
-      "async getUser(input: GetUserInput, options?: RequestOptions)",
+      "getUser(input: GetUserInput, options?: CallToolRequestOptions)",
     );
     expect(code).toContain(
-      "async getUser2(input: GetUser2Input = {}, options?: RequestOptions)",
+      "getUser2(input: GetUser2Input = {}, options?: CallToolRequestOptions)",
     );
     // minProperties rejects {}: no default
     expect(code).toContain(
-      "async move(input: MoveInput, options?: RequestOptions)",
+      "move(input: MoveInput, options?: CallToolRequestOptions)",
     );
     expect(code).toContain("to?: [number, number];");
-    expect(code).toContain("async client2(");
-    expect(code).toContain("async constructor2(");
-    expect(code).toContain("async then2(");
+    // Object-literal members: only `then` (thenable) and the generic reader are reserved
+    expect(code).toContain("client(input: ClientInput");
+    expect(code).toContain("constructor(input: ConstructorInput");
+    expect(code).toContain("then2(input: Then2Input");
     // Same tool on two servers: the second server's types get its prefix
     expect(code).toContain("export type SearchInput =");
     expect(code).toContain("export type BetaSearchInput =");
+    expect(code).toContain(
+      "export type AlphaClient = ReturnType<typeof createAlphaClient>;",
+    );
     expect(exports).toEqual(["createAlphaClient", "createBetaClient"]);
   });
 
@@ -404,7 +425,7 @@ describe("generateClientFile", () => {
     expect(generateClientFile(edgeCases).code).toBe(code);
   });
 
-  test("rejects servers whose names map to the same class", () => {
+  test("rejects servers whose names map to the same client", () => {
     const servers = new Map([
       ["foo-bar", edgeCases.get("beta")!],
       ["foo_bar", edgeCases.get("beta")!],
@@ -414,22 +435,28 @@ describe("generateClientFile", () => {
     );
   });
 
-  test("emits resource readers only for servers with resources", () => {
+  test("emits resource readers and imports only where used", () => {
     expect(code).toContain(
-      "async readResource(uri: string, options?: RequestOptions)",
+      "readResource(uri: string, options?: RequestOptions): Promise<ReadResourceResult>",
     );
     const onlyBeta = generateClientFile(
       new Map([["beta", edgeCases.get("beta")!]]),
     ).code;
-    expect(onlyBeta).not.toContain("readResource");
-    expect(onlyBeta).not.toContain("ReadResourceResult");
+    for (const unused of [
+      "readResource",
+      "ReadResourceResult",
+      "GetPromptResult",
+      /\bRequestOptions\b/,
+      "ToolResult<",
+    ])
+      expect(onlyBeta).not.toMatch(unused);
     expect(typecheck(onlyBeta)).toEqual([]);
   });
 });
 
 describe("generated client at runtime", () => {
-  /** Fake connection whose client returns canned results and records calls. */
-  const fakeConnection = (results: Record<string, unknown>) => {
+  /** Fake SDK client that returns canned results and records calls. */
+  const fakeClient = (results: Record<string, unknown>) => {
     const calls: unknown[] = [];
     const respond =
       (method: string) => async (params: unknown, options?: unknown) => {
@@ -441,33 +468,27 @@ describe("generated client at runtime", () => {
       readResource: respond("readResource"),
       getPrompt: respond("getPrompt"),
     };
-    return { connection: { client }, calls };
+    return { client, calls };
   };
 
-  test("typed tools return structuredContent; untyped return the whole result", async () => {
-    const mod = await load(generateClientFile(edgeCases).code);
+  test("tools return the SDK result unchanged, errors included", async () => {
+    const mod = await load(code());
     const structured = {
-      content: [{ type: "text", text: "ignored" }],
+      content: [{ type: "text", text: "kept" }],
       structuredContent: { total: 3 },
     };
-    const alpha = mod.createAlphaClient(
-      fakeConnection({ callTool: structured }).connection,
-    );
-    expect(await alpha.search()).toEqual({ total: 3 });
-
-    const multi = {
-      content: [
-        { type: "text", text: "a" },
-        { type: "image", data: "AA==", mimeType: "image/png" },
-      ],
-    };
-    const { connection, calls } = fakeConnection({ callTool: multi });
-    const options = { timeout: 5 };
     expect(
       await mod
-        .createAlphaClient(connection)
-        .getUser({ "user-id": "1" }, options),
-    ).toEqual(multi);
+        .createAlphaClient(fakeClient({ callTool: structured }).client)
+        .search(),
+    ).toEqual(structured);
+
+    const failed = { isError: true, content: [{ type: "text", text: "boom" }] };
+    const { client, calls } = fakeClient({ callTool: failed });
+    const options = { timeout: 5 };
+    expect(
+      await mod.createAlphaClient(client).getUser({ "user-id": "1" }, options),
+    ).toEqual(failed);
     expect(calls).toEqual([
       {
         method: "callTool",
@@ -477,55 +498,30 @@ describe("generated client at runtime", () => {
     ]);
   });
 
-  test("tool errors throw with their text; missing structured content throws", async () => {
-    const mod = await load(generateClientFile(edgeCases).code);
-    const failing = mod.createAlphaClient(
-      fakeConnection({
-        callTool: { isError: true, content: [{ type: "text", text: "boom" }] },
-      }).connection,
-    );
-    await expect(failing.getUser2()).rejects.toThrow(
-      "Tool 'get_user' failed: boom",
-    );
-
-    const empty = mod.createAlphaClient(
-      fakeConnection({ callTool: { content: [] } }).connection,
-    );
-    await expect(empty.search()).rejects.toThrow(
-      "Tool 'search' returned no structured content",
-    );
-    expect(await empty.getUser2()).toEqual({ content: [] });
-  });
-
-  test("resources return every content entry; prompts pass arguments", async () => {
-    const mod = await load(generateClientFile(edgeCases).code);
-    const contents = [
-      { uri: "file:///a", text: "a" },
-      { uri: "file:///a", blob: "AA==" },
-    ];
-    const { connection, calls } = fakeConnection({
-      readResource: { contents },
-      getPrompt: {
-        messages: [{ role: "user", content: { type: "text", text: "hi" } }],
-      },
+  test("resources and prompts return the SDK result; prompts pass arguments", async () => {
+    const mod = await load(code());
+    const read = {
+      contents: [
+        { uri: "file:///a", text: "a" },
+        { uri: "file:///a", blob: "AA==" },
+      ],
+    };
+    const prompt = {
+      description: "kept",
+      messages: [{ role: "user", content: { type: "text", text: "hi" } }],
+    };
+    const { client, calls } = fakeClient({
+      readResource: read,
+      getPrompt: prompt,
     });
-    const alpha = mod.createAlphaClient(connection);
-    expect(await alpha.readResource("file:///a")).toEqual(contents);
-    expect(await alpha.summarizePrompt({ "page-id": "p1" })).toHaveLength(1);
+    const alpha = mod.createAlphaClient(client);
+    expect(await alpha.readResource("file:///a")).toEqual(read);
+    expect(await alpha.summarizePrompt({ "page-id": "p1" })).toEqual(prompt);
     expect(calls.at(-1)).toEqual({
       method: "getPrompt",
       params: { name: "summarize", arguments: { "page-id": "p1" } },
     });
   });
-});
 
-describe("generated Notion client", () => {
-  // Real fixture + real SDK types: catches SDK type drift that string assertions can't
-  test("typechecks against @modelcontextprotocol/client", async () => {
-    const fixture = await Bun.file(
-      resolve(import.meta.dir, "../test/fixtures/notion/introspection.json"),
-    ).json();
-    const { code } = generateClientFile(new Map([["notion", fixture]]));
-    expect(typecheck(code)).toEqual([]);
-  });
+  const code = () => generateClientFile(edgeCases).code;
 });

@@ -37,7 +37,7 @@ async function main() {
 
   // Step 2: Create typed client
   console.log("\n2. Creating typed Notion client...");
-  const notion = createNotionClient(connection);
+  const notion = createNotionClient(connection.client);
   console.log("   Client created");
 
   // Step 3: Make actual API call

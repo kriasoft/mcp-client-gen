@@ -2,17 +2,17 @@
 /* SPDX-License-Identifier: MIT */
 
 /**
- * File builder - assembles the complete TS file: imports, helpers, per-server tool types,
- * client classes and factories.
+ * File builder - assembles the complete TS file: imports, per-server tool types,
+ * factories and client types.
  *
- * Output is deterministic (no timestamps) and emits only the imports and helpers it uses,
- * so it compiles under `noUnusedLocals`. Each server is a separate class, so bundlers drop
- * the clients you don't use; methods of a used class stay.
+ * Output is deterministic (no timestamps) and emits only the imports it uses, so it
+ * compiles under `noUnusedLocals`. Imports are type-only, from the SDK alone (ADR-003).
+ * Each server is a separate factory, so bundlers drop the clients you don't use.
  */
 
-import { Project, ts } from "ts-morph";
+import { Node, Project, ts } from "ts-morph";
 import type { IntrospectionSuccess } from "../introspection.js";
-import { clientClassName, generateClientClass } from "./class-generator.js";
+import { clientTypeName, generateServerClient } from "./client-generator.js";
 import { hasOutputSchema } from "./tool-input-generator.js";
 
 /** Generated source plus metadata for usage instructions. */
@@ -25,20 +25,20 @@ export interface CodegenResult {
 
 /**
  * Generate the client file for successfully introspected servers (keyed by server name).
- * @throws When two server names map to the same class name
+ * @throws When two server names map to the same client type name
  */
 export function generateClientFile(
   servers: Map<string, IntrospectionSuccess>,
 ): CodegenResult {
-  const classes = new Map<string, string>();
+  const clients = new Map<string, string>();
   for (const name of servers.keys()) {
-    const className = clientClassName(name);
-    const other = classes.get(className);
+    const typeName = clientTypeName(name);
+    const other = clients.get(typeName);
     if (other !== undefined)
       throw new Error(
-        `Servers "${other}" and "${name}" both generate ${className}; give one a different name`,
+        `Servers "${other}" and "${name}" both generate ${typeName}; give one a different name`,
       );
-    classes.set(className, name);
+    clients.set(typeName, name);
   }
 
   const results = [...servers.values()];
@@ -60,52 +60,40 @@ export function generateClientFile(
     "",
   ]);
 
-  // Type-only: generated code has no runtime dependency on the SDK or this package
   sourceFile.addImportDeclaration({
     moduleSpecifier: "@modelcontextprotocol/client",
     namedImports: [
-      ...(usesTools ? ["CallToolResult"] : []),
+      ...(usesTools ? ["CallToolRequestOptions", "CallToolResult"] : []),
       "Client",
-      ...(usesPrompts ? ["PromptMessage"] : []),
+      ...(usesPrompts ? ["GetPromptResult"] : []),
       ...(usesResources ? ["ReadResourceResult"] : []),
-      ...(usesTools || usesPrompts || usesResources ? ["RequestOptions"] : []),
+      ...(usesPrompts || usesResources ? ["RequestOptions"] : []),
     ],
     isTypeOnly: true,
   });
-  sourceFile.addImportDeclaration({
-    moduleSpecifier: "mcp-client-gen",
-    namedImports: ["McpConnection"],
-    isTypeOnly: true,
-  });
 
-  if (usesTools) addToolHelpers(sourceFile, usesStructured);
+  if (usesStructured)
+    sourceFile.addTypeAlias({
+      name: "ToolResult",
+      typeParameters: ["T"],
+      docs: [
+        "Result of a tool with an output schema: `structuredContent` is typed once `isError` is ruled out.",
+      ],
+      type: "| (CallToolResult & { isError: true }) | (CallToolResult & { isError?: false; structuredContent: T })",
+    });
 
-  // Names tool types must avoid: imports, helpers, classes and factories
-  const typeNames = new Set([
-    "CallToolResult",
-    "Client",
-    "McpConnection",
-    "PromptMessage",
-    "ReadResourceResult",
-    "RequestOptions",
-    ...classes.keys(),
-  ]);
-
+  // Tool types end in Input/Output, so they only need to avoid each other
+  const typeNames = new Set<string>();
   const exports: string[] = [];
   for (const [serverName, result] of servers) {
-    const className = clientClassName(serverName);
-    generateClientClass(sourceFile, serverName, result, typeNames);
-
-    const factoryName = `create${className}`;
-    exports.push(factoryName);
-    sourceFile.addFunction({
-      name: factoryName,
-      isExported: true,
-      parameters: [{ name: "connection", type: "McpConnection" }],
-      returnType: className,
-      statements: [`return new ${className}(connection);`],
-    });
+    generateServerClient(sourceFile, serverName, result, typeNames);
+    exports.push(`create${clientTypeName(serverName)}`);
   }
+
+  // Separate consecutive type aliases (ts-morph already spaces other declarations)
+  for (const alias of sourceFile.getTypeAliases())
+    if (Node.isTypeAliasDeclaration(alias.getPreviousSibling()))
+      alias.prependWhitespace("\n");
 
   sourceFile.formatText({
     indentSize: 2,
@@ -113,34 +101,4 @@ export function generateClientFile(
   });
 
   return { code: sourceFile.getFullText(), exports };
-}
-
-function addToolHelpers(
-  sourceFile: ReturnType<Project["createSourceFile"]>,
-  structured: boolean,
-): void {
-  sourceFile.addStatements([
-    "",
-    "/** Throws when a tool reports failure (`isError`), with its text content as the message. */",
-    "function toolResult(result: CallToolResult, toolName: string): CallToolResult {",
-    "  if (!result.isError) return result;",
-    "  const message = result.content",
-    '    .flatMap((block) => (block.type === "text" ? [block.text] : []))',
-    '    .join("\\n");',
-    "  throw new Error(`Tool '${toolName}' failed: ${message || \"no details\"}`);",
-    "}",
-    ...(structured
-      ? [
-          "",
-          "/** Typed `structuredContent` of a tool that declares an output schema. */",
-          "function structuredResult<T>(result: CallToolResult, toolName: string): T {",
-          "  toolResult(result, toolName);",
-          "  if (result.structuredContent === undefined)",
-          "    throw new Error(`Tool '${toolName}' returned no structured content`);",
-          "  return result.structuredContent as T;",
-          "}",
-        ]
-      : []),
-    "",
-  ]);
 }

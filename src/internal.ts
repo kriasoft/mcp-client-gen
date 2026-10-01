@@ -12,7 +12,7 @@
 export { introspectServer, introspectServers } from "./introspection.js";
 
 export {
-  generateClientClass,
+  generateServerClient,
   generateClientFile,
   generateToolInputType,
   generateToolOutputType,

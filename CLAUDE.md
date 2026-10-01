@@ -66,7 +66,7 @@ mcp-client-gen/
 │   ├── codegen/
 │   │   ├── index.ts           # Codegen module exports
 │   │   ├── file-builder.ts    # Assembles complete TypeScript file
-│   │   ├── class-generator.ts # Client class with tool/resource methods
+│   │   ├── client-generator.ts # Per-server factory with tool/prompt/resource methods
 │   │   ├── tool-input-generator.ts # Tool input/output types
 │   │   ├── schema-to-typescript.ts # JSON Schema → TypeScript types
 │   │   └── utils.ts           # camelCase, pascalCase helpers
@@ -101,7 +101,7 @@ Keep module DAG clean: lower modules must not import from higher ones.
 
 - Runtime: Always use Bun (not Node.js/NPM). Bun auto-loads .env files
 - MCP SDK: `@modelcontextprotocol/client` 2.x (single entry point). The SDK owns OAuth; `oauth-callback/mcp` supplies the browser + loopback provider (ADR-002)
-- Generated Client: Type-only SDK imports, one class per server (unused servers tree-shake), valid under `strict` + `noUnusedLocals` (SPEC-generated-client)
+- Generated Client: a factory per server taking the SDK `Client`, returning full SDK results; type-only SDK imports only (ADR-003), valid under `strict` + `noUnusedLocals` (SPEC-generated-client)
 - Design Philosophy: Prioritize ideal design over backward compatibility
 
 ## Error Handling
@@ -169,5 +169,5 @@ import {
 Not covered by semver — use for custom pipelines:
 
 - `introspectServer()`, `introspectServers()`
-- `generateClientFile()`, `generateClientClass()`, `generateToolInputType()`, `generateToolOutputType()`
+- `generateClientFile()`, `generateServerClient()`, `generateToolInputType()`, `generateToolOutputType()`
 - `jsonSchemaToTypeScript()`, `hasOutputSchema()`, `MCP_CONFIG_PATHS`, `extractServerName()`

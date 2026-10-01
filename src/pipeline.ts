@@ -11,7 +11,7 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import { format as prettierFormat, resolveConfig } from "prettier";
-import { clientClassName, generateClientFile } from "./codegen/index.js";
+import { clientTypeName, generateClientFile } from "./codegen/index.js";
 import {
   introspectServers,
   type IntrospectionFailure,
@@ -123,14 +123,14 @@ export async function generateClient(
     throw new Error("No servers provided");
   }
 
-  // Names must map to distinct classes; check before introspecting (it may run OAuth)
+  // Names must map to distinct clients; check before introspecting (it may run OAuth)
   const names = servers.map((server, i) => extractServerName(server, i));
-  const byClass = new Map<string, number[]>();
+  const byType = new Map<string, number[]>();
   names.forEach((name, i) => {
-    const className = clientClassName(name);
-    byClass.set(className, [...(byClass.get(className) ?? []), i]);
+    const typeName = clientTypeName(name);
+    byType.set(typeName, [...(byType.get(typeName) ?? []), i]);
   });
-  const collisions = [...byClass.values()].filter((ids) => ids.length > 1);
+  const collisions = [...byType.values()].filter((ids) => ids.length > 1);
   if (collisions.length > 0) {
     const details = collisions
       .map((ids) =>
