@@ -6,6 +6,9 @@
  * only `@modelcontextprotocol/client` at runtime and type-check time (ADR-003).
  */
 
-export { generateClient, type GenerateClientOptions } from "./pipeline.js";
-export type { McpOAuthOptions } from "./mcp-client.js";
-export type { McpServerConfig } from "./types.js";
+export { generateClient } from "./pipeline.js";
+export type {
+  GenerateClientOptions,
+  McpOAuthOptions,
+  McpServerConfig,
+} from "./types.js";

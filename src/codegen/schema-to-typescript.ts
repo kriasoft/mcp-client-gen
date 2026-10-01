@@ -107,6 +107,8 @@ function convert(schema: Schema, root: Schema, ctx: Context): string {
   if (typeof schema !== "object") return "unknown";
   // A nested $id starts a new resource: its `#/...` refs resolve within it
   if (typeof schema.$id === "string" && schema !== root) root = schema;
+  // Its keywords may mean anything else (draft-02 has no `const`): constrain nothing
+  if (dialect(root) === "unsupported") return "unknown";
 
   if (typeof schema.$ref === "string") {
     const { target, resource } = resolveRef(root, schema.$ref);
@@ -199,13 +201,13 @@ function arrayType(
   // Tuples: `prefixItems` + rest `items` (2020-12), or `items: [...]` + `additionalItems`
   // (draft-07 and earlier, 2019-09). A declared dialect ignores the other's keyword, so
   // the type is never stricter than that dialect's schema.
-  const dialect = tupleDialect(root);
+  const declared = dialect(root);
   const prefix =
-    dialect === "items"
-      ? schema.items
-      : dialect === "prefixItems"
-        ? schema.prefixItems
-        : (schema.prefixItems ?? schema.items);
+    declared === "2020-12"
+      ? schema.prefixItems
+      : declared === "undeclared"
+        ? (schema.prefixItems ?? schema.items)
+        : schema.items;
   if (Array.isArray(prefix)) {
     const rest =
       prefix === schema.items ? schema.additionalItems : schema.items;
@@ -217,16 +219,22 @@ function arrayType(
 }
 
 /**
- * Tuple keyword of the resource's declared `$schema`: `items` arrays before 2020-12,
- * `prefixItems` from 2020-12. Undeclared (MCP's default is 2020-12, but servers often
- * emit draft-07 output without saying so): either.
+ * Declared `$schema` of a resource, matched exactly like the SDK's validator: 2020-12
+ * uses `prefixItems` tuples, earlier dialects `items` arrays. Undeclared (MCP's default
+ * is 2020-12, but servers often emit draft-07 output without saying so): either tuple
+ * keyword.
  */
-function tupleDialect(root: Schema): "items" | "prefixItems" | "either" {
+function dialect(
+  root: Schema,
+): "2020-12" | "pre-2020" | "undeclared" | "unsupported" {
   const uri = isObject(root) ? root.$schema : undefined;
-  if (typeof uri !== "string") return "either";
-  if (/draft-0[3-7]|2019-09/.test(uri)) return "items";
-  if (/2020-12/.test(uri)) return "prefixItems";
-  return "either";
+  if (typeof uri !== "string") return "undeclared";
+  const match =
+    /^https?:\/\/json-schema\.org\/(draft\/2020-12|draft\/2019-09|draft-0[67])\/schema#?$/.exec(
+      uri,
+    );
+  if (!match) return "unsupported";
+  return match[1] === "draft/2020-12" ? "2020-12" : "pre-2020";
 }
 
 /** Positions past `minItems` may be absent, so they are optional elements. */
@@ -274,9 +282,11 @@ function objectType(
   }
 
   // Keys beyond `properties`: additionalProperties and patternProperties (patterns
-  // aren't modeled, so their value types join one string index signature)
-  const additional = schema.additionalProperties;
+  // aren't modeled, so their value types join one string index signature). Beside
+  // patterns, an omitted additionalProperties still admits any unmatched key.
   const patterns = Object.values(schema.patternProperties ?? {}) as Schema[];
+  const additional =
+    schema.additionalProperties ?? (patterns.length > 0 ? true : undefined);
   const extraTypes = [
     ...(additional !== undefined && additional !== false ? [additional] : []),
     ...patterns,

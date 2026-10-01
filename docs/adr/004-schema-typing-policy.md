@@ -19,7 +19,7 @@
 - **Whole-schema `type` aliases**, not interfaces: roots may be unions or dictionaries, and only aliases are assignable to the SDK's `Record<string, unknown>` arguments.
 - **Local `$ref`s are inlined**, except targets that recur: those become named aliases (`{Type}{last pointer segment}`; a `$ref` to the root is the type itself). Cycles are detected by target identity.
 - **Circularity is decided by the compiler.** Which recursions TypeScript defers is subtle, so when a schema recurses its aliases are compiled in memory (ts-morph). Each alias reported as circular (TS2456) is widened to `unknown`, one per pass.
-- **Dialect:** a declared `$schema` picks the tuple keyword (`items` arrays up to 2019-09, `prefixItems` from 2020-12), and the other is ignored. Undeclared schemas accept both: MCP defaults to 2020-12, but servers often emit draft-07 output without declaring it.
+- **Dialect:** a declared `$schema` picks the tuple keyword (`items` arrays up to 2019-09, `prefixItems` from 2020-12), and the other is ignored. Undeclared schemas accept both: MCP defaults to 2020-12, but servers often emit draft-07 output without declaring it. A resource declaring any other dialect (the SDK validates 2020-12, 2019-09, draft-07 and draft-06, matched exactly) is `unknown`: its keywords may mean something else (draft-04 has no `const`), and failing the whole server for one schema would be worse.
 - **Remote `$ref`s are never fetched.**
 - **A parameter defaults to `{}`** only when `{}` provably satisfies the input schema.
 
@@ -30,6 +30,7 @@
 - Name every `$defs` entry — larger output and diffs for no type-safety gain over inlining.
 - A textual circularity heuristic — it missed real cases (mutual top-level references, recursive tuple rests).
 - Resolve remote refs — turns generation into a network fetcher (SSRF, non-determinism).
+- Fail generation on an unsupported dialect — one tool's schema would block a whole server's client; `unknown` is honest and still compiles.
 
 ## Impact
 

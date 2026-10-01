@@ -36,10 +36,11 @@ import {
 } from "./utils.js";
 
 /**
- * Names tools/prompts/resources can't take: the generic reader, and `then`, which would
- * make the client a thenable (`await`-ing it would call that tool).
+ * Names tools/prompts/resources can't take: the generic reader; `then`, which would make
+ * the client a thenable (`await`-ing it would call that tool); and `toJSON`, which
+ * `JSON.stringify` would call.
  */
-const RESERVED_MEMBERS = ["readResource", "then"];
+const RESERVED_MEMBERS = ["readResource", "then", "toJSON"];
 
 /** Generate the factory, its client type and its tool types for one server. */
 export function generateServerClient(
@@ -52,29 +53,53 @@ export function generateServerClient(
   const members = new Set(RESERVED_MEMBERS);
   const methods: string[] = [];
 
-  // Tools are named first: they get the plainest names. Their type names are reserved
-  // before any is emitted, so aliases for recursive refs can't take a later tool's.
+  // Names are allocated in wire-name order, not listing order, so a reordered catalog
+  // renames nothing. Tools first: they get the plainest names. Unprefixed tools before
+  // prefixed ones, so `search` keeps its name beside `notion-search`. Type names are
+  // reserved before any is emitted, so aliases for recursive refs can't take a later
+  // tool's.
   const typeNames = new Set([typeName]);
-  const prefix = sharedServerPrefix(serverName, result.tools);
-  const tools = result.tools.map((tool) => {
-    const name = uniqueName(camelCase(tool.name.slice(prefix)), members);
+  const strip = serverPrefixStripper(serverName);
+  const toolNames = new Map<Tool, ToolNames>();
+  const [unprefixed, prefixed] = [false, true].map((isPrefixed) =>
+    byWireName(
+      result.tools.filter((tool) => !!strip(tool.name) === isPrefixed),
+      (tool) => tool.name,
+    ),
+  );
+  for (const tool of [...unprefixed!, ...prefixed!]) {
+    // `notion-search` → `search`, unless taken: then `notionSearch`
+    const stripped = strip(tool.name);
+    const preferred =
+      stripped && !members.has(camelCase(stripped)) ? stripped : tool.name;
+    const name = uniqueName(camelCase(preferred), members);
     const base = pascalCase(name);
-    const inputType = uniqueName(`${base}Input`, typeNames);
-    const outputType = hasOutputSchema(tool)
-      ? uniqueName(`${base}Output`, typeNames)
-      : undefined;
-    return { tool, name, inputType, outputType };
-  });
-  for (const { tool, name, inputType, outputType } of tools) {
+    toolNames.set(tool, {
+      name,
+      inputType: uniqueName(`${base}Input`, typeNames),
+      outputType: hasOutputSchema(tool)
+        ? uniqueName(`${base}Output`, typeNames)
+        : undefined,
+    });
+  }
+  for (const tool of result.tools) {
+    const { name, inputType, outputType } = toolNames.get(tool)!;
     generateToolInputType(sourceFile, tool, inputType, typeNames);
     if (outputType)
       generateToolOutputType(sourceFile, tool, outputType, typeNames);
     methods.push(toolMethod(tool, name, { inputType, outputType }));
   }
-  for (const prompt of result.prompts) {
-    const name = uniqueName(camelCase(prompt.name) + "Prompt", members);
-    methods.push(promptMethod(prompt, name));
-  }
+
+  const promptNames = allocate(
+    result.prompts,
+    (prompt) => prompt.name,
+    // Not `summarizePromptPrompt`
+    (prompt) => camelCase(prompt.name).replace(/(Prompt)?$/, "Prompt"),
+    members,
+  );
+  for (const prompt of result.prompts)
+    methods.push(promptMethod(prompt, promptNames.get(prompt)!));
+
   if (hasResources(result)) {
     methods.push(
       method(
@@ -83,34 +108,116 @@ export function generateServerClient(
         "return client.readResource({ uri }, options);",
       ),
     );
-    for (const resource of result.resources) {
-      const name = uniqueName("read" + pascalCase(resource.name), members);
-      methods.push(resourceMethod(resource, name));
-    }
-    for (const template of result.resourceTemplates) {
+    const resourceNames = allocate(
+      result.resources,
+      (resource) => `${resource.name}\0${resource.uri}`,
+      (resource) => "read" + pascalCase(resource.name),
+      members,
+    );
+    for (const resource of result.resources)
+      methods.push(resourceMethod(resource, resourceNames.get(resource)!));
+    // Operators like {?q} aren't expanded: readResource(uri) covers them
+    const templates = result.resourceTemplates.flatMap((template) => {
       const uri = expandSimpleTemplate(template.uriTemplate);
-      if (!uri) continue; // operators like {?q}: readResource(uri) covers them
-      const name = uniqueName("read" + pascalCase(template.name), members);
-      methods.push(templateMethod(template, name, uri));
-    }
+      return uri ? [{ template, uri }] : [];
+    });
+    const templateNames = allocate(
+      templates,
+      ({ template }) => `${template.name}\0${template.uriTemplate}`,
+      ({ template }) => "read" + pascalCase(template.name),
+      members,
+    );
+    for (const entry of templates)
+      methods.push(
+        templateMethod(entry.template, templateNames.get(entry)!, entry.uri),
+      );
   }
 
   sourceFile.addFunction({
     name: factoryName,
     isExported: true,
     parameters: [{ name: "client", type: "Client" }],
-    docs: [
-      commentText(
-        `Client for the \`${serverName}\` MCP server; \`client\` must be connected.`,
-      ),
+    docs: [commentText(factoryDoc(serverName, result))],
+    statements: [
+      ...(eraBound(result) ? [eraGuard(factoryName, result)] : []),
+      `return {\n${methods.join("\n\n")}\n};`,
     ],
-    statements: [`return {\n${methods.join("\n\n")}\n};`],
   });
   sourceFile.addTypeAlias({
     name: typeName,
     isExported: true,
     type: `ReturnType<typeof ${factoryName}>`,
   });
+}
+
+interface ToolNames {
+  name: string;
+  inputType: string;
+  outputType?: string;
+}
+
+/**
+ * Whether the output types hold only for a client of the generation's era. Toward legacy
+ * clients the SDK wraps a non-object `outputSchema` root, and its structured content, in
+ * `{ result }`: a modern snapshot is era-bound when a root isn't an object (the SDK's
+ * test), a legacy one when a schema has that wrapper's shape (genuine or not).
+ */
+function eraBound({ protocolEra, tools }: Introspection): boolean {
+  return tools.some(({ outputSchema: schema }) => {
+    if (!schema) return false;
+    if (protocolEra === "modern") return schema.type !== "object";
+    const keys = Object.keys(schema.properties ?? {});
+    return (
+      keys.length === 1 &&
+      keys[0] === "result" &&
+      Array.isArray(schema.required) &&
+      schema.required.includes("result")
+    );
+  });
+}
+
+/** Factory statement rejecting a client of the other era. */
+function eraGuard(factoryName: string, result: Introspection): string {
+  const remedy =
+    result.protocolEra === "modern"
+      ? 'connect the Client with versionNegotiation: { mode: "auto" }'
+      : "connect the Client without versionNegotiation, or regenerate";
+  const message = `${factoryName}: generated for MCP ${result.protocolVersion} (${result.protocolEra} era); ${remedy}`;
+  return `if (client.getProtocolEra() !== ${JSON.stringify(result.protocolEra)}) throw new Error(${JSON.stringify(message)});`;
+}
+
+function factoryDoc(serverName: string, result: Introspection): string {
+  const negotiation =
+    result.protocolEra === "modern"
+      ? ` with \`versionNegotiation: { mode: "auto" }\` (generated for MCP ${result.protocolVersion})`
+      : "";
+  return [
+    `Client for the \`${serverName}\` MCP server; \`client\` must be connected${negotiation}.`,
+    ...(result.tools.length > 0
+      ? [
+          "Call `client.listTools()` once before using tools: the SDK uses the definitions to validate typed results and to send `x-mcp-header` arguments as headers.",
+        ]
+      : []),
+  ].join("\n\n");
+}
+
+/** `item → name`, allocated in `key` order so the listing order can't change names. */
+function allocate<T>(
+  items: T[],
+  key: (item: T) => string,
+  name: (item: T) => string,
+  taken: Set<string>,
+): Map<T, string> {
+  return new Map(
+    byWireName(items, key).map((item) => [item, uniqueName(name(item), taken)]),
+  );
+}
+
+/** Sorted by code point: locale-independent, so output is the same everywhere. */
+function byWireName<T>(items: T[], key: (item: T) => string): T[] {
+  return items.toSorted((a, b) =>
+    key(a) < key(b) ? -1 : key(a) > key(b) ? 1 : 0,
+  );
 }
 
 /** Whether the client reads resources; servers may serve them only through templates. */
@@ -123,19 +230,20 @@ export function hasResources(result: Introspection): boolean {
 }
 
 /**
- * Length of `{server}-` / `{server}_` when every tool name starts with it (`notion-search`
- * → `search`): the client is the namespace already. Otherwise 0, keeping names as-is.
- * Wire names are never changed.
+ * Strips `{server}-` / `{server}_` from a tool name (`notion-search` → `search`): the
+ * client is the namespace already. Per tool, so adding an unprefixed tool renames none.
+ * Returns undefined when the name has no such prefix. Wire names are never changed.
  */
-function sharedServerPrefix(serverName: string, tools: Tool[]): number {
+function serverPrefixStripper(
+  serverName: string,
+): (toolName: string) => string | undefined {
   const server = serverName.toLowerCase();
-  const prefixed = (name: string) =>
+  return (name) =>
     name.length > server.length + 1 &&
     name.toLowerCase().startsWith(server) &&
-    "-_".includes(name[server.length]!);
-  return tools.length > 0 && tools.every((tool) => prefixed(tool.name))
-    ? server.length + 1
-    : 0;
+    "-_".includes(name[server.length]!)
+      ? name.slice(server.length + 1)
+      : undefined;
 }
 
 /** Client type name for a server; its factory is `create` + this. */
@@ -164,7 +272,11 @@ function toolMethod(
 }
 
 function promptMethod(prompt: Prompt, name: string): string {
-  const args = prompt.arguments ?? [];
+  // A name declared twice is one argument, required only if every declaration says so
+  // (a duplicate property wouldn't compile)
+  const args = [...Map.groupBy(prompt.arguments ?? [], (a) => a.name)].map(
+    ([arg, decls]) => ({ name: arg, required: decls.every((a) => a.required) }),
+  );
   const params = ["options?: RequestOptions"];
   if (args.length) {
     const argsType = `{ ${args

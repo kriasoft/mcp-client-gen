@@ -2,35 +2,25 @@
 /* SPDX-License-Identifier: MIT */
 
 /**
- * Generation-time MCP connection - creates the SDK client, selects transport, wires
- * OAuth, lists capabilities. Internal: generated clients take the caller's own SDK
- * `Client` (ADR-003).
+ * Generation-time MCP connection - creates the SDK client, selects the transport and
+ * wires OAuth. Listing capabilities is introspection's job. Internal: generated clients
+ * take the caller's own SDK `Client` (ADR-003).
  *
- * Contract: createMcpConnection(server, config?) → McpConnection
- * Invariant: Throws on connection failure.
+ * Contract: connectMcp(server, options?) → McpSession
+ * Invariant: Throws on connection failure, having closed the client.
  */
 
 import {
   Client,
   DEFAULT_REQUEST_TIMEOUT_MSEC,
-  ProtocolError,
-  ProtocolErrorCode,
   SSEClientTransport,
   StreamableHTTPClientTransport,
   UnauthorizedError,
-  type Prompt,
   type RequestOptions,
-  type Resource,
-  type ResourceTemplateType,
-  type ServerCapabilities,
-  type Tool,
 } from "@modelcontextprotocol/client";
-import {
-  browserAuth,
-  type BrowserAuth,
-  type BrowserAuthOptions,
-} from "oauth-callback/mcp";
-import type { McpServerConfig } from "./types.js";
+import { browserAuth, type BrowserAuth } from "oauth-callback/mcp";
+import { version } from "../package.json" with { type: "json" };
+import type { GenerateClientOptions, McpServerConfig } from "./types.js";
 
 /**
  * Loopback redirect used when `oauth.redirectUri` is omitted. The port is fixed because
@@ -38,55 +28,27 @@ import type { McpServerConfig } from "./types.js";
  */
 const DEFAULT_REDIRECT_URI = "http://127.0.0.1:3000/callback";
 
-/**
- * Browser flows one capability listing may complete. The last one only drains the flow
- * the failing request started (see withAuthorization), so it isn't retried.
- */
-const MAX_AUTHORIZATIONS = 3;
-
 /** Hosts where oauth-callback allows plain `http:` (bearer tokens stay on this machine). */
 const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]"]);
 
-/**
- * oauth-callback `browserAuth()` options. `serverUrl` comes from the server, and
- * `redirectUri` defaults to a fixed loopback URI. A `store` is bound to that one server
- * (default: memory).
- */
-export type McpOAuthOptions = Omit<
-  BrowserAuthOptions,
-  "serverUrl" | "redirectUri"
-> & { redirectUri?: BrowserAuthOptions["redirectUri"] };
-
-export interface McpClientConfig {
-  /**
-   * OAuth 2.1 browser authorization settings. `false` never opens a browser: a server
-   * demanding OAuth then fails generation (e.g. in CI).
-   */
-  oauth?: false | McpOAuthOptions;
-  /** Custom fetch for proxies/interceptors */
-  fetch?: typeof fetch;
-  /** Timeout in ms for each request while connecting and listing (SDK default: 60s) */
-  timeout?: number;
-  /** Aborts connecting and listing, including a pending browser authorization */
-  signal?: AbortSignal;
-}
-
-export interface McpConnection {
+/** A connected client, and what requests on it need. */
+export interface McpSession {
   client: Client;
-  /** Server-advertised capabilities (empty object if none advertised) */
-  capabilities: ServerCapabilities;
-  tools: Tool[];
-  resources: Resource[];
-  resourceTemplates: ResourceTemplateType[];
-  prompts: Prompt[];
-  /** Whether requests carried OAuth tokens (callers likely need OAuth too) */
-  authorized: boolean;
+  /** `timeout` and `signal` for each request */
+  requestOptions: RequestOptions;
+  /**
+   * Completes the browser flow an `UnauthorizedError` left pending (e.g. a step-up);
+   * absent without OAuth
+   */
+  completeAuthorization?: () => Promise<void>;
+  /** Whether requests carry OAuth tokens */
+  authorized: () => Promise<boolean>;
 }
 
 /**
- * Wrap fetch to add `headers` to requests for `origin`; request headers win. Other
- * origins (OAuth discovery and token endpoints share this fetch) never see them: they
- * are the MCP server's credentials.
+ * Wrap fetch to add `headers` to requests for `origin`; a `Request`'s own headers win,
+ * and `init.headers` over both. Other origins (OAuth discovery and token endpoints share
+ * this fetch) never see them: they are the MCP server's credentials.
  */
 export function createFetchWithHeaders(
   baseFetch: typeof fetch | undefined,
@@ -99,7 +61,9 @@ export function createFetchWithHeaders(
     if (target.origin !== origin) return originalFetch(url, init);
     // Headers instances don't spread, so merge through the Headers API
     const merged = new Headers(headers);
-    new Headers(init?.headers).forEach((value, key) => merged.set(key, value));
+    const set = (value: string, key: string) => merged.set(key, value);
+    if (url instanceof Request) url.headers.forEach(set);
+    new Headers(init?.headers).forEach(set);
     return originalFetch(url, { ...init, headers: merged });
   }) as typeof fetch;
 }
@@ -158,27 +122,25 @@ function createFetchWithTimeout(
 }
 
 /**
- * Establish MCP connection with capability discovery.
- * @param server Server config (http/sse with URL)
- * @param config Client options (auth, timeout, etc)
- * @returns Connected client with introspected capabilities
- * @throws On unsupported server type or connection failure
+ * Connect to an MCP server: Streamable HTTP (negotiating the protocol era) or SSE, with
+ * browser OAuth where tokens can't leak.
+ * @throws On an unsupported server type or a connection failure
  */
-export async function createMcpConnection(
+export async function connectMcp(
   server: McpServerConfig,
-  config: McpClientConfig = {},
-): Promise<McpConnection> {
+  options: GenerateClientOptions = {},
+): Promise<McpSession> {
   const type = server.type ?? "http";
   if (type !== "http" && type !== "sse") {
     throw new Error(`Unsupported server type: ${type}`);
   }
 
-  const clientInfo = { name: "mcp-client-gen", version: "1.0.0" };
+  const clientInfo = { name: "mcp-client-gen", version };
 
   // OAuth only where tokens can't leak (https: or loopback http:); elsewhere, e.g. a
   // private-network http: server, connect unauthenticated (server.headers still apply).
   const url = new URL(server.url);
-  const oauth = config.oauth ?? {};
+  const oauth = options.oauth ?? {};
   const auth =
     oauth !== false &&
     (url.protocol === "https:" || LOOPBACK_HOSTS.has(url.hostname))
@@ -194,8 +156,8 @@ export async function createMcpConnection(
       : undefined;
 
   const requestOptions: RequestOptions = {
-    ...(config.timeout !== undefined && { timeout: config.timeout }),
-    ...(config.signal && { signal: config.signal }),
+    ...(options.timeout !== undefined && { timeout: options.timeout }),
+    ...(options.signal && { signal: options.signal }),
   };
 
   // Server advertises its capabilities during the handshake. Over Streamable HTTP,
@@ -206,176 +168,94 @@ export async function createMcpConnection(
     ...(type === "http" && { versionNegotiation: { mode: "auto" } }),
   });
 
-  // One cleanup boundary: a failure anywhere after the client exists closes it
   try {
-    return await connectAndList(
+    const completeAuthorization =
+      type === "http"
+        ? await connectHttp(client, auth, url, server, options, requestOptions)
+        : await connectSse(client, auth, url, server, options, requestOptions);
+    return {
       client,
-      type,
-      url,
-      auth,
-      server,
-      config,
       requestOptions,
-    );
+      completeAuthorization,
+      // Tokens exist only once a browser flow (or a provided store) authorized us
+      authorized: async () => (await auth?.tokens()) !== undefined,
+    };
   } catch (error) {
     await client.close().catch(() => {}); // don't mask the cause
     throw error;
   }
 }
 
-async function connectAndList(
+/** Connect over Streamable HTTP; returns how to complete a later authorization. */
+async function connectHttp(
   client: Client,
-  type: "http" | "sse",
-  url: URL,
   auth: BrowserAuth | undefined,
+  url: URL,
   server: McpServerConfig,
-  config: McpClientConfig,
+  options: GenerateClientOptions,
   requestOptions: RequestOptions,
-): Promise<McpConnection> {
-  // Completes an authorization the server demands after connecting (e.g. a step-up)
-  let completeAuthorization: (() => Promise<void>) | undefined;
-  if (type === "http") {
-    // Not `requestInit`: the SDK applies it to OAuth discovery and token requests too
-    const signalled = config.signal
-      ? createFetchWithSignal(config.fetch, config.signal)
-      : config.fetch;
-    const transportOptions = {
-      fetch: server.headers
-        ? createFetchWithHeaders(signalled, server.headers, url.origin)
-        : signalled,
-    };
-    if (auth) {
-      // Runs the browser flow when the server demands it; on a connected client it
-      // completes a pending step-up instead of reconnecting
-      const connect = () =>
-        auth.connect(client, { ...requestOptions, transportOptions });
-      await connect();
-      completeAuthorization = connect;
-    } else {
-      await client.connect(
-        new StreamableHTTPClientTransport(url, transportOptions),
-        requestOptions,
-      );
-    }
-  } else {
-    const transport = await connectSse(
-      client,
-      auth,
-      url,
-      server,
-      config,
+): Promise<(() => Promise<void>) | undefined> {
+  // Not `requestInit`: the SDK applies it to OAuth discovery and token requests too
+  const signalled = options.signal
+    ? createFetchWithSignal(options.fetch, options.signal)
+    : options.fetch;
+  const transportOptions = {
+    fetch: server.headers
+      ? createFetchWithHeaders(signalled, server.headers, url.origin)
+      : signalled,
+  };
+  if (!auth) {
+    await client.connect(
+      new StreamableHTTPClientTransport(url, transportOptions),
       requestOptions,
     );
-    if (auth)
-      completeAuthorization = () =>
-        auth.completeAuthorization(transport, { signal: config.signal });
+    return undefined;
   }
-
-  // Every UnauthorizedError leaves a browser flow pending, and oauth-callback can't cancel
-  // a connect()-owned one short of signing out (which would clear the store): complete it
-  // (approval or timeout) so none outlives the connection. Bounded, since a server may
-  // keep demanding scopes; the last completion drains rather than retries.
-  const withAuthorization = async <T>(request: () => Promise<T>) => {
-    for (let attempt = 1; ; attempt++) {
-      try {
-        return await request();
-      } catch (error) {
-        if (!completeAuthorization || !(error instanceof UnauthorizedError))
-          throw error;
-        await completeAuthorization();
-        if (attempt === MAX_AUTHORIZATIONS) throw error;
-      }
-    }
-  };
-
-  // Fetch advertised capabilities; a listing failure is a connection error.
-  // Sequential: OAuth refreshes on a caller-owned (SSE) transport must not overlap.
-  // List calls without a cursor return every page.
-  const capabilities = client.getServerCapabilities() ?? {};
-  const tools = capabilities.tools
-    ? (
-        await withAuthorization(() =>
-          client.listTools(undefined, requestOptions),
-        )
-      ).tools
-    : [];
-  const resources = capabilities.resources
-    ? (
-        await withAuthorization(() =>
-          client.listResources(undefined, requestOptions),
-        )
-      ).resources
-    : [];
-  // Part of the resources capability, yet some servers don't implement it
-  const resourceTemplates = capabilities.resources
-    ? (
-        await withAuthorization(() =>
-          client
-            .listResourceTemplates(undefined, requestOptions)
-            .catch((error: unknown) => {
-              if (
-                error instanceof ProtocolError &&
-                error.code === ProtocolErrorCode.MethodNotFound
-              )
-                return { resourceTemplates: [] };
-              throw error;
-            }),
-        )
-      ).resourceTemplates
-    : [];
-  const prompts = capabilities.prompts
-    ? (
-        await withAuthorization(() =>
-          client.listPrompts(undefined, requestOptions),
-        )
-      ).prompts
-    : [];
-
-  // Tokens exist only once a browser flow (or a provided store) authorized us
-  const authorized = (await auth?.tokens()) !== undefined;
-  return {
-    client,
-    capabilities,
-    tools,
-    resources,
-    resourceTemplates,
-    prompts,
-    authorized,
-  };
+  // Runs the browser flow when the server demands it; on a connected client it
+  // completes a pending step-up instead of reconnecting
+  const connect = () =>
+    auth.connect(client, { ...requestOptions, transportOptions });
+  await connect();
+  return connect;
 }
 
 /**
  * SSE (deprecated in MCP, still supported): `auth.connect()` only speaks Streamable HTTP,
  * so complete the browser flow on the transport that got the 401, then reconnect.
+ * Returns how to complete a later authorization on the connected transport.
  */
 async function connectSse(
   client: Client,
   auth: BrowserAuth | undefined,
   url: URL,
   server: McpServerConfig,
-  config: McpClientConfig,
+  options: GenerateClientOptions,
   requestOptions: RequestOptions,
-): Promise<SSEClientTransport> {
+): Promise<(() => Promise<void>) | undefined> {
   const baseFetch = server.headers
-    ? createFetchWithHeaders(config.fetch, server.headers, url.origin)
-    : config.fetch;
+    ? createFetchWithHeaders(options.fetch, server.headers, url.origin)
+    : options.fetch;
   // completeAuthorization() can't interrupt this transport's token exchange: bound it here
   const fetch = createFetchWithTimeout(
     baseFetch,
-    config.timeout ?? DEFAULT_REQUEST_TIMEOUT_MSEC,
-    config.signal,
+    options.timeout ?? DEFAULT_REQUEST_TIMEOUT_MSEC,
+    options.signal,
   );
   const createTransport = () =>
     new SSEClientTransport(url, { authProvider: auth, fetch });
 
+  const completion = (transport: SSEClientTransport) =>
+    auth &&
+    (() => auth.completeAuthorization(transport, { signal: options.signal }));
+
   const transport = createTransport();
   try {
     await client.connect(transport, requestOptions);
-    return transport;
+    return completion(transport);
   } catch (error) {
     try {
       if (!auth || !(error instanceof UnauthorizedError)) throw error;
-      await auth.completeAuthorization(transport, { signal: config.signal });
+      await auth.completeAuthorization(transport, { signal: options.signal });
     } finally {
       await closeQuietly(transport);
     }
@@ -384,7 +264,7 @@ async function connectSse(
       await closeQuietly(retry);
       throw e;
     });
-    return retry;
+    return completion(retry);
   }
 }
 

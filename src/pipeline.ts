@@ -11,11 +11,7 @@
 import { format as prettierFormat, resolveConfig } from "prettier";
 import { generateClientFile } from "./codegen/index.js";
 import { introspectServer } from "./introspection.js";
-import type { McpClientConfig } from "./mcp-client.js";
-import type { McpServerConfig } from "./types.js";
-
-/** Connection settings used while introspecting the server. */
-export type GenerateClientOptions = McpClientConfig;
+import type { GenerateClientOptions, McpServerConfig } from "./types.js";
 
 /**
  * Generate a typed client module for one MCP server.

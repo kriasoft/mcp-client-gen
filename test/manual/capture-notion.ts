@@ -113,9 +113,15 @@ async function saveExample(clientCode: string) {
 async function runCapture() {
   if (fromFixtures) {
     const saved = JSON.parse(await readFile(fixturePath, "utf8"));
-    // Fixtures captured before template listing have none
+    // Fixtures captured before template listing have none. Those captured with SDK 1.x
+    // (which offered 2025-11-25) predate protocol fields: legacy era.
     await saveExample(
-      await generateClient({ resourceTemplates: [], ...saved }),
+      await generateClient({
+        resourceTemplates: [],
+        protocolVersion: "2025-11-25",
+        protocolEra: "legacy",
+        ...saved,
+      }),
     );
     return;
   }

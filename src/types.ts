@@ -2,8 +2,11 @@
 /* SPDX-License-Identifier: MIT */
 
 /**
- * Core type definitions - shared across all modules.
+ * Core type definitions - shared across all modules; the public ones are re-exported by
+ * `index.ts`.
  */
+
+import type { BrowserAuthOptions } from "oauth-callback/mcp";
 
 /** MCP server to connect to. */
 export type McpServerConfig = {
@@ -16,9 +19,37 @@ export type McpServerConfig = {
    * from the URL). Unrelated to the OAuth `clientName` the server sees.
    */
   name?: string;
-  /** Headers sent with every request, e.g. a static `Authorization` */
+  /**
+   * Headers added to requests to the server's origin, e.g. a static `Authorization`;
+   * never sent to OAuth endpoints elsewhere
+   */
   headers?: Record<string, string>;
 };
+
+/**
+ * oauth-callback `browserAuth()` options. `serverUrl` comes from the server, and
+ * `redirectUri` defaults to a fixed loopback URI. A `store` is bound to that one server
+ * (default: memory).
+ */
+export type McpOAuthOptions = Omit<
+  BrowserAuthOptions,
+  "serverUrl" | "redirectUri"
+> & { redirectUri?: BrowserAuthOptions["redirectUri"] };
+
+/** Connection settings used while introspecting a server. */
+export interface GenerateClientOptions {
+  /**
+   * OAuth 2.1 browser authorization settings. `false` never opens a browser: a server
+   * demanding OAuth then fails generation (e.g. in CI).
+   */
+  oauth?: false | McpOAuthOptions;
+  /** Custom fetch for proxies/interceptors */
+  fetch?: typeof fetch;
+  /** Timeout in ms for each request while connecting and listing (SDK default: 60s) */
+  timeout?: number;
+  /** Aborts connecting and listing, including a pending browser authorization */
+  signal?: AbortSignal;
+}
 
 /**
  * Warning emitted during config parsing.
