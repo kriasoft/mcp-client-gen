@@ -74,7 +74,7 @@
     "endOfLine": "lf"
   },
   "scripts": {
-    "build": "bun build src/cli.ts src/index.ts --outdir dist --target node --packages external --sourcemap=linked && tsc -p tsconfig.build.json",
+    "build": "rm -rf dist && bun build src/cli.ts src/index.ts --outdir dist --target node --packages external --sourcemap=linked && tsc -p tsconfig.build.json",
     "clean": "rm -rf dist",
     "test": "bun test --isolate src",
     "test:e2e": "bun test --isolate test/e2e",

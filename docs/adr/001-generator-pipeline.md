@@ -11,7 +11,7 @@
 
 ## Decision
 
-- `pipeline.ts` is a thin orchestrator for one server: introspect → generate AST → format. `generateClient(server)` returns the code; it writes nothing.
+- `pipeline.ts` is a thin orchestrator for one server: introspect → generate AST → format. `generateClientModule(endpoint)` returns the code; it writes nothing.
 - Server names: explicit name > URL hostname > URL path segment > `server`.
 - The CLI owns files. URL mode writes one file (or stdout). Config mode writes one module per server into a directory, only after every server succeeds: every server is introspected first, and a single failure changes no file and exits 1. Writes are staged as temp files and renamed into place; a failing rename (e.g. an immutable file) can still leave earlier modules replaced, which isn't worth a rollback mechanism. Servers whose names map to the same file are rejected before connecting.
 - Config servers are introspected one at a time: each may run a browser flow on the same loopback redirect port.

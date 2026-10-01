@@ -6,7 +6,7 @@
  * wires OAuth. Listing capabilities is introspection's job. Internal: generated clients
  * take the caller's own SDK `Client` (ADR-003).
  *
- * Contract: connectMcp(server, options?) → McpSession
+ * Contract: connectMcp(endpoint, options?) → McpSession
  * Invariant: Throws on connection failure, having closed the client.
  */
 
@@ -18,9 +18,44 @@ import {
   UnauthorizedError,
   type RequestOptions,
 } from "@modelcontextprotocol/client";
-import { browserAuth, type BrowserAuth } from "oauth-callback/mcp";
+import {
+  browserAuth,
+  type BrowserAuth,
+  type BrowserAuthOptions,
+} from "oauth-callback/mcp";
 import { version } from "../package.json" with { type: "json" };
-import type { GenerateClientOptions, McpServerConfig } from "./types.js";
+
+/** Where an MCP server listens, and how to reach it. */
+export interface McpEndpoint {
+  url: string | URL;
+  /** Streamable HTTP (default) or legacy SSE */
+  transport?: "http" | "sse";
+  /**
+   * Added to requests to the server's origin, e.g. a static `Authorization`; never sent
+   * to OAuth endpoints elsewhere
+   */
+  headers?: RequestInit["headers"];
+}
+
+/** How to connect: authorization, fetch, and limits on connecting and listing. */
+export interface ConnectOptions {
+  /**
+   * oauth-callback `browserAuth()` options (`serverUrl` comes from the endpoint,
+   * `redirectUri` defaults to a fixed loopback URI; a `store` serves this one server).
+   * `false` never opens a browser: a server demanding OAuth then fails (e.g. in CI).
+   */
+  oauth?:
+    | false
+    | (Omit<BrowserAuthOptions, "serverUrl" | "redirectUri"> & {
+        redirectUri?: BrowserAuthOptions["redirectUri"];
+      });
+  /** Custom fetch for proxies/interceptors */
+  fetch?: typeof fetch;
+  /** Timeout in ms for each request while connecting and listing (SDK default: 60s) */
+  timeout?: number;
+  /** Aborts connecting and listing, including a pending browser authorization */
+  signal?: AbortSignal;
+}
 
 /**
  * Loopback redirect used when `oauth.redirectUri` is omitted. The port is fixed because
@@ -52,7 +87,7 @@ export interface McpSession {
  */
 export function createFetchWithHeaders(
   baseFetch: typeof fetch | undefined,
-  headers: Record<string, string>,
+  headers: RequestInit["headers"],
   origin: string,
 ): typeof fetch {
   const originalFetch = baseFetch || globalThis.fetch;
@@ -124,22 +159,22 @@ function createFetchWithTimeout(
 /**
  * Connect to an MCP server: Streamable HTTP (negotiating the protocol era) or SSE, with
  * browser OAuth where tokens can't leak.
- * @throws On an unsupported server type or a connection failure
+ * @throws On an unsupported transport or a connection failure
  */
 export async function connectMcp(
-  server: McpServerConfig,
-  options: GenerateClientOptions = {},
+  endpoint: McpEndpoint,
+  options: ConnectOptions = {},
 ): Promise<McpSession> {
-  const type = server.type ?? "http";
-  if (type !== "http" && type !== "sse") {
-    throw new Error(`Unsupported server type: ${type}`);
+  const transport = endpoint.transport ?? "http";
+  if (transport !== "http" && transport !== "sse") {
+    throw new Error(`Unsupported transport: ${transport}`);
   }
 
   const clientInfo = { name: "mcp-client-gen", version };
 
   // OAuth only where tokens can't leak (https: or loopback http:); elsewhere, e.g. a
-  // private-network http: server, connect unauthenticated (server.headers still apply).
-  const url = new URL(server.url);
+  // private-network http: server, connect unauthenticated (endpoint headers still apply).
+  const url = new URL(endpoint.url);
   const oauth = options.oauth ?? {};
   const auth =
     oauth !== false &&
@@ -165,14 +200,28 @@ export async function connectMcp(
   // fallback): generated types must match what the server exposes today.
   const client = new Client(clientInfo, {
     capabilities: {},
-    ...(type === "http" && { versionNegotiation: { mode: "auto" } }),
+    ...(transport === "http" && { versionNegotiation: { mode: "auto" } }),
   });
 
   try {
     const completeAuthorization =
-      type === "http"
-        ? await connectHttp(client, auth, url, server, options, requestOptions)
-        : await connectSse(client, auth, url, server, options, requestOptions);
+      transport === "http"
+        ? await connectHttp(
+            client,
+            auth,
+            url,
+            endpoint,
+            options,
+            requestOptions,
+          )
+        : await connectSse(
+            client,
+            auth,
+            url,
+            endpoint,
+            options,
+            requestOptions,
+          );
     return {
       client,
       requestOptions,
@@ -191,8 +240,8 @@ async function connectHttp(
   client: Client,
   auth: BrowserAuth | undefined,
   url: URL,
-  server: McpServerConfig,
-  options: GenerateClientOptions,
+  endpoint: McpEndpoint,
+  options: ConnectOptions,
   requestOptions: RequestOptions,
 ): Promise<(() => Promise<void>) | undefined> {
   // Not `requestInit`: the SDK applies it to OAuth discovery and token requests too
@@ -200,8 +249,8 @@ async function connectHttp(
     ? createFetchWithSignal(options.fetch, options.signal)
     : options.fetch;
   const transportOptions = {
-    fetch: server.headers
-      ? createFetchWithHeaders(signalled, server.headers, url.origin)
+    fetch: endpoint.headers
+      ? createFetchWithHeaders(signalled, endpoint.headers, url.origin)
       : signalled,
   };
   if (!auth) {
@@ -228,12 +277,12 @@ async function connectSse(
   client: Client,
   auth: BrowserAuth | undefined,
   url: URL,
-  server: McpServerConfig,
-  options: GenerateClientOptions,
+  endpoint: McpEndpoint,
+  options: ConnectOptions,
   requestOptions: RequestOptions,
 ): Promise<(() => Promise<void>) | undefined> {
-  const baseFetch = server.headers
-    ? createFetchWithHeaders(options.fetch, server.headers, url.origin)
+  const baseFetch = endpoint.headers
+    ? createFetchWithHeaders(options.fetch, endpoint.headers, url.origin)
     : options.fetch;
   // completeAuthorization() can't interrupt this transport's token exchange: bound it here
   const fetch = createFetchWithTimeout(

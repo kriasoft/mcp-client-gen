@@ -7,7 +7,7 @@
 ```mermaid
 flowchart LR
   subgraph Public API
-    API["generateClient()<br/>index.ts → pipeline.ts"]
+    API["generateClientModule()<br/>index.ts → pipeline.ts"]
   end
   subgraph CLI
     CLI[cli.ts] --> PROMPTS[prompts.ts]
@@ -15,7 +15,7 @@ flowchart LR
   end
   API --> INTRO
   CLI --> INTRO[introspection.ts]
-  INTRO --> CONN[mcp-client.ts]
+  INTRO --> CONN[connect.ts]
   CONN --> SDK["@modelcontextprotocol/client"]
   CONN --> OAUTH["oauth-callback/mcp"]
   API --> CODEGEN[codegen/*]
@@ -28,7 +28,7 @@ flowchart LR
 
 One server flows through four steps:
 
-1. **Introspect:** connect (with OAuth when demanded), list capabilities, close → `Introspection` snapshot (SPEC-introspection, ADR-002).
+1. **Introspect:** connect (with OAuth when demanded), list capabilities, close → `ServerSnapshot` (SPEC-introspection, ADR-002).
 2. **Generate:** snapshot → one TypeScript module via the ts-morph AST (SPEC-generated-client, ADR-004).
 3. **Format:** Prettier.
 4. **Output:** the library returns the code. The CLI writes files: one per server in config mode, only after every server succeeds (SPEC-cli, ADR-001).
@@ -37,26 +37,25 @@ The library and the CLI compose the same internals. The CLI calls them directly,
 
 ## Modules
 
-| Module                                | Responsibility                                                                 | Depends on                                                              |
-| ------------------------------------- | ------------------------------------------------------------------------------ | ----------------------------------------------------------------------- |
-| `src/index.ts`                        | Public API: `generateClient` and its types; nothing else is exported           | pipeline; types (types)                                                 |
-| `src/pipeline.ts`                     | `generateClient`, server name derivation, Prettier formatting                  | codegen, introspection, prettier; types (types)                         |
-| `src/cli.ts`                          | Modes, staged writes, usage snippet, exit codes                                | codegen, config, introspection, pipeline, prompts; types (types)        |
-| `src/prompts.ts`                      | Interactive prompts, config loading for CLI modes, spinners                    | config, @clack/prompts; types (types)                                   |
-| `src/config.ts`                       | Config discovery and parsing, env expansion, secret redaction (CLI only)       | types (types)                                                           |
-| `src/introspection.ts`                | Connect → list (step-up retries) → close; returns the snapshot                 | mcp-client, SDK; types (types)                                          |
-| `src/mcp-client.ts`                   | SDK client, Streamable HTTP / SSE transports, generation-time OAuth, abort     | SDK, oauth-callback; types (types)                                      |
-| `src/codegen/file-builder.ts`         | One server's module: imports, `ToolResult<T>`, declarations                    | client-generator, tool-input-generator, ts-morph; introspection (types) |
-| `src/codegen/client-generator.ts`     | Factory with tool / prompt / resource / template methods; name allocation      | tool-input-generator, utils; introspection, SDK, ts-morph (types)       |
-| `src/codegen/tool-input-generator.ts` | Tool input/output type aliases                                                 | schema-to-typescript, utils; SDK, ts-morph (types)                      |
-| `src/codegen/schema-to-typescript.ts` | JSON Schema → TypeScript; recursive aliases and the circularity check          | utils, ts-morph                                                         |
-| `src/codegen/utils.ts`                | Casing, property keys, JSDoc sanitizing, `uniqueName`                          | —                                                                       |
-| `src/types.ts`                        | `McpServerConfig`, `GenerateClientOptions`, `McpOAuthOptions`, `ConfigWarning` | oauth-callback (types)                                                  |
+| Module                                | Responsibility                                                                       | Depends on                                                              |
+| ------------------------------------- | ------------------------------------------------------------------------------------ | ----------------------------------------------------------------------- |
+| `src/index.ts`                        | Public API (SPEC-api): `generateClientModule` and its two types; nothing else        | pipeline; connect (types)                                               |
+| `src/pipeline.ts`                     | `generateClientModule`, `GenerateClientOptions`, client naming, Prettier formatting  | codegen, introspection, prettier; connect (types)                       |
+| `src/cli.ts`                          | Modes, staged writes, usage snippet, exit codes                                      | codegen, config, introspection, pipeline, prompts; connect (types)      |
+| `src/prompts.ts`                      | Interactive prompts, config loading for CLI modes, spinners                          | config, @clack/prompts                                                  |
+| `src/config.ts`                       | Config discovery and parsing, env expansion, secret redaction, `ConfigWarning` (CLI) | —                                                                       |
+| `src/introspection.ts`                | Connect → list (step-up retries) → close; returns the `ServerSnapshot`               | connect, SDK                                                            |
+| `src/connect.ts`                      | `McpEndpoint`, SDK client, Streamable HTTP / SSE transports, generation-time OAuth   | SDK, oauth-callback                                                     |
+| `src/codegen/file-builder.ts`         | One server's module: imports, `ToolResult<T>`, declarations                          | client-generator, tool-input-generator, ts-morph; introspection (types) |
+| `src/codegen/client-generator.ts`     | Factory with tool / prompt / resource / template methods; name allocation            | tool-input-generator, utils; introspection, SDK, ts-morph (types)       |
+| `src/codegen/tool-input-generator.ts` | Tool input/output type aliases                                                       | schema-to-typescript, utils; SDK, ts-morph (types)                      |
+| `src/codegen/schema-to-typescript.ts` | JSON Schema → TypeScript; recursive aliases and the circularity check                | utils, ts-morph                                                         |
+| `src/codegen/utils.ts`                | Casing, property keys, JSDoc sanitizing, `uniqueName`                                | —                                                                       |
 
-**Dependency rule:** lower modules never import higher ones at runtime. Imports listed with "(types)" are type-only; codegen may import the `Introspection` snapshot type, but not the code that produces it.
+**Dependency rule:** lower modules never import higher ones at runtime. Imports listed with "(types)" are type-only; codegen may import the `ServerSnapshot` type, but not the code that produces it. Types live with the module that owns their meaning; there is no shared `types.ts`.
 
 - `codegen/*` knows nothing about connections, config or the CLI.
-- `mcp-client.ts` knows nothing about codegen.
+- `connect.ts` knows nothing about codegen.
 - `config.ts` serves only the CLI.
 
 ## Invariants
@@ -70,7 +69,7 @@ Changes must keep these true; each links to where it's defined and tested.
 | Generated methods return the SDK's results unchanged; tool failures are data (`isError`)                                                                                                                                                              | ADR-003                        |
 | Generated types are never stricter than the schema, except the two documented cases                                                                                                                                                                   | ADR-004                        |
 | Output is deterministic: an unchanged server (catalog and protocol revision) regenerates byte-identical code with the same installed dependencies; names never depend on the listing order (library output also ignores cwd)                          | SPEC-generated-client          |
-| The public API is `generateClient` and its option types; no other entry points                                                                                                                                                                        | ADR-003                        |
+| The public API is `generateClientModule` and its two types (SPEC-api); no other entry points                                                                                                                                                          | ADR-003                        |
 | Config mode changes no file unless every server succeeds; writes are staged; servers are introspected one at a time                                                                                                                                   | ADR-001, SPEC-cli              |
 | OAuth tokens are only sent to `https:` or loopback servers; no browser flow outlives generation, except a step-up that `signal` aborts mid-listing (ADR-002 Impact)                                                                                   | ADR-002                        |
 | Registered secrets (expanded config values, literal credentials, command-line URL credentials) are masked in every common serialization before CLI output, and config URLs are never printed; best effort, a transformed secret (e.g. base64) escapes | ADR-005, SPEC-config           |
@@ -112,6 +111,7 @@ Changes must keep these true; each links to where it's defined and tested.
 
 | Document                                   | Read when                                                               |
 | ------------------------------------------ | ----------------------------------------------------------------------- |
+| SPEC-api                                   | changing anything `mcp-client-gen` exports                              |
 | SPEC-generated-client                      | changing what generated code looks like: shape, naming, type mapping    |
 | SPEC-introspection                         | changing connection, listing, OAuth wiring or generation options        |
 | SPEC-cli                                   | changing modes, arguments, file writes, usage output or exit codes      |

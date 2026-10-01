@@ -1,13 +1,13 @@
 # Introspection Specification
 
-How a server's capabilities are captured for code generation. Code: `src/introspection.ts`, `src/mcp-client.ts`. OAuth: ADR-002.
+How a server's capabilities are captured for code generation. Code: `src/introspection.ts`, `src/connect.ts`. OAuth: ADR-002.
 
 Introspection is generation-time only and internal; generated clients never introspect.
 
 ## Snapshot
 
 ```typescript
-interface Introspection {
+interface ServerSnapshot {
   protocolVersion: string; // negotiated revision, e.g. "2026-07-28"
   protocolEra: ProtocolEra; // "modern" | "legacy": structured output shapes differ (ADR-003)
   capabilities: ServerCapabilities; // {} if none advertised
@@ -21,7 +21,7 @@ interface Introspection {
 
 Types are the SDK's (`@modelcontextprotocol/client`). Over Streamable HTTP they come from the newest protocol era both sides speak, not the SDK's legacy default.
 
-Static `server.headers` are the MCP server's credentials: they go only to requests for its origin, never to OAuth discovery or token endpoints, which share the transport's fetch (the SDK's `requestInit` would apply to those too, so it isn't used).
+Static endpoint `headers` are the MCP server's credentials: they go only to requests for its origin, never to OAuth discovery or token endpoints, which share the transport's fetch (the SDK's `requestInit` would apply to those too, so it isn't used).
 
 | Field               | Source                                                                                     |
 | ------------------- | ------------------------------------------------------------------------------------------ |
@@ -38,8 +38,8 @@ List calls without a cursor return every page.
 ## Flow
 
 ```
-introspectServer(server, options)                // src/introspection.ts
-  ├─ connectMcp(server, options)                 // src/mcp-client.ts
+introspectServer(endpoint, options)              // src/introspection.ts
+  ├─ connectMcp(endpoint, options)               // src/connect.ts
   │   ├─ OAuth provider (browserAuth) for https: or loopback http: URLs only
   │   └─ connect: http → auth.connect(client) or a plain StreamableHTTPClientTransport,
   │               negotiating the protocol era (2026-07-28 when the server speaks it)
@@ -50,7 +50,7 @@ introspectServer(server, options)                // src/introspection.ts
   └─ finally client.close(); return the snapshot
 ```
 
-`mcp-client.ts` owns transports and OAuth; `introspection.ts` owns listing, step-up retries and closing.
+`connect.ts` owns transports and OAuth; `introspection.ts` owns listing, step-up retries and closing.
 
 - **Sequential listing:** OAuth refreshes on a caller-owned SSE transport must not overlap.
 - **Step-up:** completing every flow a listing triggers means no callback listener outlives introspection. Exception: if `signal` aborts while a listing's step-up is pending, that flow's listener stays until the OAuth timeout (ADR-002 Impact), so the redirect port isn't free at once.
@@ -58,22 +58,15 @@ introspectServer(server, options)                // src/introspection.ts
 
 ## Transports
 
-| `type`           | Class                           | Notes                                                                                                                                  |
-| ---------------- | ------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
-| `http` (default) | `StreamableHTTPClientTransport` | `versionNegotiation: { mode: "auto" }`; `server.headers` only on requests to the server's origin                                       |
-| `sse`            | `SSEClientTransport`            | Deprecated in MCP; legacy era. `server.headers` (under request headers) only to the server's origin; each request bounded by `timeout` |
-| `stdio`          | not supported                   | Config entries with `command` are skipped (SPEC-config)                                                                                |
+| `transport`      | Class                           | Notes                                                                                                                           |
+| ---------------- | ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| `http` (default) | `StreamableHTTPClientTransport` | `versionNegotiation: { mode: "auto" }`; `headers` only on requests to the server's origin                                       |
+| `sse`            | `SSEClientTransport`            | Deprecated in MCP; legacy era. `headers` (under request headers) only to the server's origin; each request bounded by `timeout` |
+| `stdio`          | not supported                   | Config entries with `command` are skipped (SPEC-config)                                                                         |
 
 ## Options
 
-`GenerateClientOptions` (`src/types.ts`):
-
-| Option    | Effect                                                                                                                                      |
-| --------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
-| `oauth`   | `browserAuth()` options without `serverUrl` (ADR-002); `false` (CLI: `--no-oauth`) never opens a browser, so a server demanding OAuth fails |
-| `fetch`   | custom fetch for every request (proxies, interceptors, tests)                                                                               |
-| `timeout` | per request while connecting and listing (SDK default 60 s)                                                                                 |
-| `signal`  | aborts connecting, listing and a pending browser flow (except a step-up begun by listing, see Flow); every transport request honors it      |
+`ConnectOptions` (`src/connect.ts`): `oauth`, `fetch`, `timeout` and `signal`, the connection fields of the public `GenerateClientOptions` (SPEC-api, which specifies them).
 
 ## Errors
 

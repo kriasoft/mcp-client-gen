@@ -15,11 +15,11 @@ import {
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 import type { CredentialStore } from "oauth-callback/mcp";
 import { introspectServer } from "./introspection.js";
-import { connectMcp, createFetchWithHeaders } from "./mcp-client.js";
+import { connectMcp, createFetchWithHeaders } from "./connect.js";
+import { generateClientModule } from "./index.js";
 import { createServer } from "node:net";
 import { startLegacySseServer } from "../test/utils/legacy-sse-server.js";
 import { startMockServer } from "../test/utils/mock-oauth-mcp-server.js";
-import type { McpServerConfig } from "./types.js";
 
 let fixture: ReturnType<typeof startFixture>;
 
@@ -67,9 +67,31 @@ function startFixture() {
   return { server, headers, url: new URL("/mcp", server.url).href };
 }
 
+describe("generateClientModule", () => {
+  test("names the client from options, not the endpoint", async () => {
+    const code = await generateClientModule(new URL(fixture.url), {
+      name: "demo",
+    });
+    expect(code).toContain("export function createDemoClient(");
+  });
+
+  test("accepts any fetch headers form; unnamed loopback servers are `server`", async () => {
+    const code = await generateClientModule({
+      url: fixture.url,
+      headers: new Headers({ "X-Api-Key": "secret" }),
+    });
+    expect(code).toContain("export function createServerClient(");
+    expect(fixture.headers.length).toBeGreaterThan(0);
+    for (const h of fixture.headers) expect(h.get("x-api-key")).toBe("secret");
+  });
+});
+
 describe("introspectServer", () => {
   test("connects over Streamable HTTP and lists capabilities", async () => {
-    const snapshot = await introspectServer({ type: "http", url: fixture.url });
+    const snapshot = await introspectServer({
+      transport: "http",
+      url: fixture.url,
+    });
 
     expect(snapshot.tools.map((t) => t.name)).toEqual(["echo"]);
     expect(snapshot.resources.map((r) => r.uri)).toEqual(["file:///readme.md"]);
@@ -137,7 +159,7 @@ describe("introspectServer", () => {
     }) as typeof globalThis.fetch;
 
     const snapshot = await introspectServer(
-      { type: "http", url: fixture.url },
+      { transport: "http", url: fixture.url },
       { fetch },
     );
 
@@ -149,7 +171,11 @@ describe("introspectServer", () => {
     const fetch = mock(globalThis.fetch);
 
     await introspectServer(
-      { type: "http", url: fixture.url, headers: { "X-Api-Key": "secret" } },
+      {
+        transport: "http",
+        url: fixture.url,
+        headers: { "X-Api-Key": "secret" },
+      },
       { fetch: fetch as unknown as typeof globalThis.fetch },
     );
 
@@ -163,7 +189,7 @@ describe("introspectServer", () => {
     const store: CredentialStore = { load, save: async () => {} };
 
     const snapshot = await introspectServer(
-      { type: "http", url: fixture.url },
+      { transport: "http", url: fixture.url },
       { oauth: { store } },
     );
 
@@ -174,7 +200,7 @@ describe("introspectServer", () => {
   test("accepts a pre-registered client without a client name", async () => {
     // clientName and clientInformation are exclusive in browserAuth()
     const snapshot = await introspectServer(
-      { type: "http", url: fixture.url },
+      { transport: "http", url: fixture.url },
       {
         oauth: {
           clientInformation: { client_id: "id", issuer: "https://as.test" },
@@ -190,7 +216,7 @@ describe("introspectServer", () => {
     try {
       const { client } = await connectMcp(
         {
-          type: "sse",
+          transport: "sse",
           url: sse.url,
           // Content-Type conflicts with the SDK's JSON POSTs: request headers must win
           headers: { "X-Api-Key": "secret", "Content-Type": "text/plain" },
@@ -227,7 +253,7 @@ describe("introspectServer", () => {
       )) as typeof globalThis.fetch;
 
     const snapshot = await introspectServer(
-      { type: "http", url: "http://mcp.internal/mcp" },
+      { transport: "http", url: "http://mcp.internal/mcp" },
       { fetch },
     );
 
@@ -248,7 +274,7 @@ describe("introspectServer", () => {
       })) as typeof globalThis.fetch;
 
     const error = await introspectServer(
-      { type: "sse", url: fixture.url },
+      { transport: "sse", url: fixture.url },
       { fetch, timeout: 50 },
     ).catch((e: unknown) => e);
 
@@ -277,7 +303,7 @@ describe("introspectServer", () => {
     }) as typeof globalThis.fetch;
 
     const error = await introspectServer(
-      { type: "sse", url: fixture.url },
+      { transport: "sse", url: fixture.url },
       { fetch, timeout: 50 },
     ).catch((e: unknown) => e);
 
@@ -312,7 +338,7 @@ describe("introspectServer", () => {
     }) as typeof globalThis.fetch;
 
     const connecting = introspectServer(
-      { type: "http", url: "http://mcp.internal/mcp" }, // plain http: no OAuth
+      { transport: "http", url: "http://mcp.internal/mcp" }, // plain http: no OAuth
       { fetch, signal: abort.signal },
     );
     // A regression hangs: fail fast instead
@@ -320,10 +346,10 @@ describe("introspectServer", () => {
     await expect(Promise.race([connecting, hung])).rejects.toThrow("gave up");
   });
 
-  test("rejects unsupported server types", async () => {
+  test("rejects unsupported transports", async () => {
     await expect(
-      introspectServer({ type: "stdio", url: "" } as never),
-    ).rejects.toThrow("Unsupported server type: stdio");
+      introspectServer({ transport: "stdio", url: "" } as never),
+    ).rejects.toThrow("Unsupported transport: stdio");
   });
 });
 
@@ -363,7 +389,7 @@ describe("introspectServer OAuth", () => {
     }) as typeof globalThis.fetch;
 
     const snapshot = await introspectServer(
-      { type: "http", url: oauth.mcpUrl },
+      { transport: "http", url: oauth.mcpUrl },
       { ...(await oauthConfig()), fetch },
     );
 
@@ -383,7 +409,7 @@ describe("introspectServer OAuth", () => {
 
     await expect(
       introspectServer(
-        { type: "http", url: oauth.mcpUrl },
+        { transport: "http", url: oauth.mcpUrl },
         { ...config, signal: abort.signal },
       ),
     ).rejects.toThrow("gave up");
@@ -396,7 +422,10 @@ describe("introspectServer OAuth", () => {
 
   test("oauth: false fails instead of opening a browser", async () => {
     await expect(
-      introspectServer({ type: "http", url: oauth.mcpUrl }, { oauth: false }),
+      introspectServer(
+        { transport: "http", url: oauth.mcpUrl },
+        { oauth: false },
+      ),
     ).rejects.toThrow();
     expect(oauth.authorizeRequests).toHaveLength(0); // no browser flow started
   });
@@ -413,7 +442,7 @@ describe("introspectServer OAuth", () => {
     const port = new URL(config.oauth.redirectUri).port;
 
     await expect(
-      introspectServer({ type: "http", url: oauth.mcpUrl }, config),
+      introspectServer({ transport: "http", url: oauth.mcpUrl }, config),
     ).rejects.toBeInstanceOf(UnauthorizedError);
 
     expect(oauth.authorizeRequests).toHaveLength(4); // initial + 3 step-ups

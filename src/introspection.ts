@@ -4,7 +4,7 @@
 /**
  * Capability discovery - snapshots a server's tools/resources/templates/prompts for codegen.
  *
- * Contract: introspectServer(server, options?) → Introspection
+ * Contract: introspectServer(endpoint, options?) → ServerSnapshot
  * Invariant: Always closes its connection. Errors propagate unchanged (SDK error types
  * and causes intact); callers label them.
  */
@@ -20,8 +20,11 @@ import {
   type ServerCapabilities,
   type Tool,
 } from "@modelcontextprotocol/client";
-import { connectMcp } from "./mcp-client.js";
-import type { GenerateClientOptions, McpServerConfig } from "./types.js";
+import {
+  connectMcp,
+  type ConnectOptions,
+  type McpEndpoint,
+} from "./connect.js";
 
 /**
  * Browser flows one capability listing may complete. The last one only drains the flow
@@ -29,8 +32,8 @@ import type { GenerateClientOptions, McpServerConfig } from "./types.js";
  */
 const MAX_AUTHORIZATIONS = 3;
 
-/** What a server advertises: everything codegen needs. */
-export interface Introspection {
+/** What a server advertises, captured once: everything codegen needs. */
+export interface ServerSnapshot {
   /** Negotiated protocol revision, e.g. `2026-07-28` */
   protocolVersion: string;
   /** Its era: wire shapes (e.g. non-object structured output) differ between eras */
@@ -47,11 +50,11 @@ export interface Introspection {
 
 /** Connect, list capabilities, disconnect. */
 export async function introspectServer(
-  server: McpServerConfig,
-  options?: GenerateClientOptions,
-): Promise<Introspection> {
+  endpoint: McpEndpoint,
+  options?: ConnectOptions,
+): Promise<ServerSnapshot> {
   const { client, requestOptions, completeAuthorization, authorized } =
-    await connectMcp(server, options);
+    await connectMcp(endpoint, options);
 
   // Every UnauthorizedError leaves a browser flow pending, and oauth-callback can't cancel
   // a connect()-owned one short of signing out (which would clear the store): complete it

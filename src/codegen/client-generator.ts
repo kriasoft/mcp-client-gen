@@ -19,7 +19,7 @@ import type {
   Tool,
 } from "@modelcontextprotocol/client";
 import type { SourceFile } from "ts-morph";
-import type { Introspection } from "../introspection.js";
+import type { ServerSnapshot } from "../introspection.js";
 import {
   generateToolInputType,
   generateToolOutputType,
@@ -46,7 +46,7 @@ const RESERVED_MEMBERS = ["readResource", "then", "toJSON"];
 export function generateServerClient(
   sourceFile: SourceFile,
   serverName: string,
-  result: Introspection,
+  result: ServerSnapshot,
 ): void {
   const typeName = clientTypeName(serverName);
   const factoryName = `create${typeName}`;
@@ -162,7 +162,7 @@ interface ToolNames {
  * `{ result }`: a modern snapshot is era-bound when a root isn't an object (the SDK's
  * test), a legacy one when a schema has that wrapper's shape (genuine or not).
  */
-function eraBound({ protocolEra, tools }: Introspection): boolean {
+function eraBound({ protocolEra, tools }: ServerSnapshot): boolean {
   return tools.some(({ outputSchema: schema }) => {
     if (!schema) return false;
     if (protocolEra === "modern") return schema.type !== "object";
@@ -177,7 +177,7 @@ function eraBound({ protocolEra, tools }: Introspection): boolean {
 }
 
 /** Factory statement rejecting a client of the other era. */
-function eraGuard(factoryName: string, result: Introspection): string {
+function eraGuard(factoryName: string, result: ServerSnapshot): string {
   const remedy =
     result.protocolEra === "modern"
       ? 'connect the Client with versionNegotiation: { mode: "auto" }'
@@ -186,7 +186,7 @@ function eraGuard(factoryName: string, result: Introspection): string {
   return `if (client.getProtocolEra() !== ${JSON.stringify(result.protocolEra)}) throw new Error(${JSON.stringify(message)});`;
 }
 
-function factoryDoc(serverName: string, result: Introspection): string {
+function factoryDoc(serverName: string, result: ServerSnapshot): string {
   const negotiation =
     result.protocolEra === "modern"
       ? ` with \`versionNegotiation: { mode: "auto" }\` (generated for MCP ${result.protocolVersion})`
@@ -221,7 +221,7 @@ function byWireName<T>(items: T[], key: (item: T) => string): T[] {
 }
 
 /** Whether the client reads resources; servers may serve them only through templates. */
-export function hasResources(result: Introspection): boolean {
+export function hasResources(result: ServerSnapshot): boolean {
   return (
     !!result.capabilities.resources ||
     result.resources.length > 0 ||

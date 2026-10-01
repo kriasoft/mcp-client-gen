@@ -6,7 +6,7 @@
 
 Start with `docs/architecture.md`: pipeline, module boundaries, invariants, and which document to read for a change.
 
-- **SPECs** (`docs/specs/{name}.md`, referenced as SPEC-{name}): what the system does — `generated-client`, `introspection`, `cli`, `config`. Specs are the contract; update them in the same commit as the code.
+- **SPECs** (`docs/specs/{name}.md`, referenced as SPEC-{name}): what the system does — `api`, `generated-client`, `introspection`, `cli`, `config`. Specs are the contract; update them in the same commit as the code.
 - **ADRs** (`docs/adr/NNN-slug.md`, referenced as ADR-NNN): why, and what was rejected — 001 pipeline, 002 OAuth, 003 generator not runtime, 004 schema typing, 005 config and secrets. Revise in place when a decision changes (see `000-template.md`).
 - `local/` is gitignored scratch (review handoffs, drafts); never a source of truth.
 
@@ -51,18 +51,17 @@ bun e2e:notion                      # E2E test with real Notion server
 ```bash
 mcp-client-gen/
 ├── src/
-│   ├── index.ts           # Public API: generateClient + its types
+│   ├── index.ts           # Public API: generateClientModule + its types (SPEC-api)
 │   │
 │   # CLI & User Interface
 │   ├── cli.ts             # CLI entry - modes, file writes, usage snippets
 │   ├── prompts.ts         # Interactive prompts (@clack/prompts)
 │   │
 │   # Configuration
-│   ├── config.ts          # MCP config loading (.mcp.json, .cursor/, .vscode/)
-│   ├── types.ts           # Core and public types (McpServerConfig, GenerateClientOptions)
+│   ├── config.ts          # MCP config loading (.mcp.json, .cursor/, .vscode/), ConfigWarning
 │   │
 │   # MCP Protocol
-│   ├── mcp-client.ts      # Generation-time connection (HTTP/SSE), OAuth via oauth-callback
+│   ├── connect.ts         # McpEndpoint; generation-time connection (HTTP/SSE), OAuth via oauth-callback
 │   ├── introspection.ts   # Capability snapshot: connect, list (step-up), close
 │   │
 │   # Code Generation
@@ -74,7 +73,7 @@ mcp-client-gen/
 │   │   ├── schema-to-typescript.ts # JSON Schema → TypeScript types
 │   │   └── utils.ts           # camelCase, pascalCase helpers
 │   │
-│   └── pipeline.ts        # generateClient: introspect → generate → format
+│   └── pipeline.ts        # generateClientModule: introspect → generate → format
 │
 ├── docs/
 │   ├── adr/               # Architecture Decision Records
@@ -144,11 +143,11 @@ Keep module DAG clean: lower modules must not import from higher ones.
 ## Public API
 
 ```typescript
-import { generateClient } from "mcp-client-gen";
+import { generateClientModule } from "mcp-client-gen";
 ```
 
-- `generateClient(server, options?)` — introspect one server (URL or `McpServerConfig`) and return the formatted client module source; writes nothing
+- `generateClientModule(endpoint, options?)` — introspect one server (URL or `McpEndpoint`) and return the formatted client module source; writes nothing. `options.name` names the client
 
-Types: `GenerateClientOptions`, `McpOAuthOptions`, `McpServerConfig`
+Types: `McpEndpoint`, `GenerateClientOptions`. Contract: SPEC-api; types live with the module that owns them (no `types.ts`)
 
 Everything else (connection, OAuth, config discovery, formatting, codegen) is internal; there is no `/internal` entry (ADR-003). Generated modules import only SDK types.

@@ -20,7 +20,7 @@ import {
   pascalCase,
   schemaTypeAliases,
 } from "./codegen/index.js";
-import type { Introspection } from "./introspection.js";
+import type { ServerSnapshot } from "./introspection.js";
 import { extractServerName, formatTypeScript } from "./pipeline.js";
 
 describe("extractServerName", () => {
@@ -387,7 +387,7 @@ const tool = (name: string, extra: Partial<Tool> = {}): Tool => ({
   inputSchema: { type: "object" },
   ...extra,
 });
-const alpha: Introspection = {
+const alpha: ServerSnapshot = {
   protocolVersion: "2026-07-28",
   protocolEra: "modern",
   authorized: false,
@@ -468,7 +468,7 @@ const alpha: Introspection = {
 };
 
 /** Tools only: no prompt or resource imports. */
-const beta: Introspection = {
+const beta: ServerSnapshot = {
   protocolVersion: "2026-07-28",
   protocolEra: "modern",
   authorized: false,

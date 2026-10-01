@@ -4,47 +4,62 @@
 /**
  * Pipeline coordinator - introspection → codegen → formatting, for one server.
  *
- * Contract: generateClient(server, options?) → code
+ * Contract: generateClientModule(endpoint, options?) → code
  * Invariant: No file I/O; output depends only on the server's capabilities.
  */
 
 import { format as prettierFormat, resolveConfig } from "prettier";
 import { generateClientFile } from "./codegen/index.js";
+import type { ConnectOptions, McpEndpoint } from "./connect.js";
 import { introspectServer } from "./introspection.js";
-import type { GenerateClientOptions, McpServerConfig } from "./types.js";
+
+/** How to name the generated client, and how to connect while introspecting. */
+export interface GenerateClientOptions extends ConnectOptions {
+  /**
+   * Client name: `notion` → `createNotionClient` (default: derived from the URL).
+   * Unrelated to the OAuth `clientName` the server sees.
+   */
+  name?: string;
+}
 
 /**
- * Generate a typed client module for one MCP server.
- * @param server Server URL (Streamable HTTP), or its config; `name` sets the client name
- *   (default: derived from the URL, e.g. `notion` → `createNotionClient`)
- * @returns Formatted TypeScript source
+ * Generate the TypeScript module for one MCP server: a typed client factory over the SDK
+ * `Client` (SPEC-api).
+ * @param endpoint Server URL (Streamable HTTP), or the endpoint with transport and headers
+ * @returns Formatted TypeScript source; nothing is written
  * @throws When the server can't be reached or introspected (SDK errors pass through)
  */
-export async function generateClient(
-  server: string | URL | McpServerConfig,
-  options?: GenerateClientOptions,
+export async function generateClientModule(
+  endpoint: string | URL | McpEndpoint,
+  { name, ...options }: GenerateClientOptions = {},
 ): Promise<string> {
-  const config: McpServerConfig =
-    typeof server === "string" || server instanceof URL
-      ? { type: "http", url: String(server) }
-      : server;
-  const introspection = await introspectServer(config, options);
+  const target: McpEndpoint =
+    typeof endpoint === "string" || endpoint instanceof URL
+      ? { url: endpoint }
+      : endpoint;
+  const snapshot = await introspectServer(target, options);
   return formatTypeScript(
-    generateClientFile(extractServerName(config), introspection),
+    generateClientFile(extractServerName({ url: target.url, name }), snapshot),
   );
 }
 
 /**
- * Extract a meaningful name from server config or URL.
+ * Client name: the explicit one, else from the URL.
  * Priority: explicit name > URL hostname > URL path segment > "server"
  */
-export function extractServerName(server: McpServerConfig): string {
-  // An empty config key still means "named": deriving from a config URL could
-  // copy an expanded secret into generated identifiers
-  if (server.name !== undefined) return server.name || "server";
+export function extractServerName({
+  url: serverUrl,
+  name,
+}: {
+  url: string | URL;
+  name?: string;
+}): string {
+  // An empty name (e.g. a config key) still means "named": deriving from a config URL
+  // could copy an expanded secret into generated identifiers
+  if (name !== undefined) return name || "server";
 
   try {
-    const url = new URL(server.url);
+    const url = new URL(serverUrl);
     // Extract subdomain or first path segment as name
     const hostname = url.hostname;
     const parts = hostname.split(".");

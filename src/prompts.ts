@@ -25,12 +25,12 @@ import {
   getMcpServers,
   printable,
   resolveConfigFiles,
+  type ConfiguredServer,
 } from "./config.js";
-import type { McpServerConfig } from "./types.js";
 
 export interface PromptsResult {
   configFiles: string[];
-  servers: McpServerConfig[];
+  servers: ConfiguredServer[];
   /** Directory for the generated modules, one per server */
   outputDir: string;
 }
@@ -79,7 +79,7 @@ export async function promptForConfigFiles(
  * Parse servers, printing every config warning to stderr, even when some
  * servers remain: a silently skipped server is harder to debug than a missing one.
  */
-function loadServers(configFiles: string[]): McpServerConfig[] {
+function loadServers(configFiles: string[]): ConfiguredServer[] {
   const { servers, warnings } = getMcpServers(configFiles);
   if (warnings.length > 0) {
     console.error("\nConfig warnings:");
@@ -98,7 +98,7 @@ function loadServers(configFiles: string[]): McpServerConfig[] {
  */
 export async function promptForServers(
   configFiles: string[],
-): Promise<McpServerConfig[]> {
+): Promise<ConfiguredServer[]> {
   const servers = loadServers(configFiles);
   if (servers.length === 0) {
     throw new Error(
@@ -110,9 +110,9 @@ export async function promptForServers(
     message: "Select MCP servers to include:",
     options: servers.map((server) => ({
       value: server,
+      label: printable(server.name),
       // Config URLs may hold expanded secrets
-      label: printable(server.name ?? server.url),
-      hint: `${server.type} · ${printable(server.url)}`,
+      hint: `${server.transport} · ${printable(server.url)}`,
     })),
     initialValues: servers, // Select all by default
     required: true,
@@ -123,7 +123,7 @@ export async function promptForServers(
     process.exit(0);
   }
 
-  return serverSelection as McpServerConfig[];
+  return serverSelection as ConfiguredServer[];
 }
 
 /**

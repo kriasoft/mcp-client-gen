@@ -17,11 +17,15 @@ import {
   clientTypeName,
   generateClientFile,
 } from "./codegen/index.js";
-import { printable, registerUrlCredentials } from "./config.js";
-import { introspectServer, type Introspection } from "./introspection.js";
+import {
+  printable,
+  registerUrlCredentials,
+  type ConfiguredServer,
+} from "./config.js";
+import type { ConnectOptions, McpEndpoint } from "./connect.js";
+import { introspectServer, type ServerSnapshot } from "./introspection.js";
 import { extractServerName, formatTypeScript } from "./pipeline.js";
 import { runInteractiveSetup, withSpinner } from "./prompts.js";
-import type { GenerateClientOptions, McpServerConfig } from "./types.js";
 
 /**
  * CLI execution modes. The grammar is small on purpose, and anything outside it is an
@@ -133,7 +137,7 @@ function parseArguments(args: string[]): CliMode {
 
 /** A server to generate, with its derived name and destination. */
 interface Target {
-  server: McpServerConfig;
+  endpoint: McpEndpoint;
   name: string;
   /** Output path as given (relative to cwd); undefined for stdout */
   file?: string;
@@ -148,14 +152,14 @@ function moduleFileName(name: string): string {
 /** Introspect and generate one target; formatted with the destination's Prettier config. */
 async function generate(
   target: Target,
-  options: GenerateClientOptions,
-): Promise<{ code: string; introspection: Introspection }> {
-  const introspection = await introspectServer(target.server, options);
+  options: ConnectOptions,
+): Promise<{ code: string; snapshot: ServerSnapshot }> {
+  const snapshot = await introspectServer(target.endpoint, options);
   const code = await formatTypeScript(
-    generateClientFile(target.name, introspection),
+    generateClientFile(target.name, snapshot),
     resolve(target.file ?? "client.ts"),
   );
-  return { code, introspection };
+  return { code, snapshot };
 }
 
 /**
@@ -192,10 +196,10 @@ async function writeModules(files: Array<{ file: string; code: string }>) {
  */
 function printUsage(
   target: Target,
-  { authorized, tools }: Introspection,
+  { authorized, tools }: ServerSnapshot,
   fromConfig: boolean,
 ) {
-  const { server, name, file } = target;
+  const { endpoint, name, file } = target;
   const factory = `create${clientTypeName(name)}`;
   // `{name}Client`: never a reserved word, `client` or `auth`
   const variable = camelCase(name) + "Client";
@@ -217,12 +221,12 @@ function printUsage(
     return;
   }
 
-  const sse = server.type === "sse";
+  const sse = endpoint.transport === "sse";
   const transport = sse
     ? "SSEClientTransport"
     : "StreamableHTTPClientTransport";
   // The user's own input, but credentials in it (userinfo, query) are masked
-  const url = printable(JSON.stringify(server.url));
+  const url = printable(JSON.stringify(String(endpoint.url)));
   // browserAuth().connect() speaks Streamable HTTP; SSE takes the provider directly
   const oauth = authorized && !sse;
 
@@ -269,14 +273,9 @@ async function runUrlMode(mode: Extract<CliMode, { kind: "url" }>) {
   // Kept out of errors and the usage snippet, though the user typed them
   registerUrlCredentials(mode.url);
   const options = oauthOptions(mode);
-  const server: McpServerConfig = {
-    type: "http",
-    url: mode.url,
-    name: mode.name,
-  };
   const target: Target = {
-    server,
-    name: extractServerName(server),
+    endpoint: { url: mode.url },
+    name: extractServerName(mode),
     file: mode.output,
   };
   if (!target.file) {
@@ -284,13 +283,13 @@ async function runUrlMode(mode: Extract<CliMode, { kind: "url" }>) {
     process.stdout.write((await generate(target, options)).code);
     return;
   }
-  const { code, introspection } = await withSpinner(
+  const { code, snapshot } = await withSpinner(
     `Introspecting ${target.name}`,
     () => generate(target, options),
   );
   await writeModules([{ file: target.file!, code }]);
   console.log(`\nGenerated ${target.file}`);
-  printUsage(target, introspection, false);
+  printUsage(target, snapshot, false);
 }
 
 /**
@@ -300,9 +299,9 @@ async function runUrlMode(mode: Extract<CliMode, { kind: "url" }>) {
  * browser flow on the same loopback port.
  */
 async function runConfigMode(
-  servers: McpServerConfig[],
+  servers: ConfiguredServer[],
   outputDir: string,
-  options: GenerateClientOptions,
+  options: ConnectOptions,
 ) {
   if (outputDir.endsWith(".ts"))
     throw new Error(
@@ -310,7 +309,11 @@ async function runConfigMode(
     );
   const targets: Target[] = servers.map((server) => {
     const name = extractServerName(server);
-    return { server, name, file: join(outputDir, moduleFileName(name)) };
+    return {
+      endpoint: server,
+      name,
+      file: join(outputDir, moduleFileName(name)),
+    };
   });
 
   // Distinct names must not share a file; check before introspecting (it may run OAuth)
@@ -326,7 +329,7 @@ async function runConfigMode(
         .join("\n")}`,
     );
 
-  const results: Array<{ code: string; introspection: Introspection }> = [];
+  const results: Array<{ code: string; snapshot: ServerSnapshot }> = [];
   const failures: string[] = [];
   for (const target of targets) {
     try {
@@ -351,11 +354,11 @@ async function runConfigMode(
     })),
   );
   console.log(`\nGenerated ${targets.map((t) => t.file).join(", ")}`);
-  printUsage(targets[0]!, results[0]!.introspection, true);
+  printUsage(targets[0]!, results[0]!.snapshot, true);
 }
 
 /** `--no-oauth`: the server's own headers only, never a browser. */
-function oauthOptions(mode: { noOAuth: boolean }): GenerateClientOptions {
+function oauthOptions(mode: { noOAuth: boolean }): ConnectOptions {
   return mode.noOAuth ? { oauth: false } : {};
 }
 

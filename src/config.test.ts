@@ -195,12 +195,12 @@ describe("config", () => {
       expect(servers).toHaveLength(2);
       expect(warnings).toHaveLength(0);
       expect(servers).toContainEqual({
-        type: "http",
+        transport: "http",
         url: "https://mcp.notion.com/mcp",
         name: "notion",
       });
       expect(servers).toContainEqual({
-        type: "sse",
+        transport: "sse",
         url: "https://api.githubcopilot.com/mcp/",
         name: "github",
       });
@@ -227,7 +227,7 @@ describe("config", () => {
 
       expect(servers).toHaveLength(1);
       expect(servers[0]).toEqual({
-        type: "http",
+        transport: "http",
         url: "https://example.com",
         name: "valid",
       });
@@ -286,12 +286,12 @@ describe("config", () => {
 
       expect(servers).toHaveLength(2);
       expect(servers).toContainEqual({
-        type: "http",
+        transport: "http",
         url: "https://server1.com",
         name: "server1",
       });
       expect(servers).toContainEqual({
-        type: "sse",
+        transport: "sse",
         url: "https://server2.com",
         name: "server2",
       });
@@ -348,7 +348,11 @@ describe("config", () => {
       const { servers, warnings } = getMcpServers([localPath, sharedPath]);
 
       expect(servers).toEqual([
-        { type: "http", url: "https://mcp.notion.com/mcp", name: "notion" },
+        {
+          transport: "http",
+          url: "https://mcp.notion.com/mcp",
+          name: "notion",
+        },
       ]);
       expect(warnings).toEqual([
         { kind: "invalid_url", path: localPath, name: "notion" },
@@ -380,9 +384,13 @@ describe("config", () => {
       const { servers, warnings } = getMcpServers([localPath, sharedPath]);
 
       expect(servers).toEqual([
-        { type: "http", url: "http://127.0.0.1:3000/mcp", name: "api" },
+        { transport: "http", url: "http://127.0.0.1:3000/mcp", name: "api" },
         // A skipped override claims nothing: the shared entry is used
-        { type: "http", url: "https://docs.example.com/mcp", name: "docs" },
+        {
+          transport: "http",
+          url: "https://docs.example.com/mcp",
+          name: "docs",
+        },
       ]);
       expect(warnings).toEqual([
         {
@@ -418,12 +426,12 @@ describe("config", () => {
 
       expect(servers).toHaveLength(2);
       expect(servers).toContainEqual({
-        type: "http",
+        transport: "http",
         url: "https://example.com", // Whitespace trimmed
         name: "trimmed",
       });
       expect(servers).toContainEqual({
-        type: "http",
+        transport: "http",
         url: "https://normal.com",
         name: "normal",
       });
@@ -462,17 +470,17 @@ describe("config", () => {
 
       expect(servers).toHaveLength(3);
       expect(servers).toContainEqual({
-        type: "http",
+        transport: "http",
         url: "https://example.com",
         name: "validHttp",
       });
       expect(servers).toContainEqual({
-        type: "sse",
+        transport: "sse",
         url: "https://sse.com",
         name: "validSse",
       });
       expect(servers).toContainEqual({
-        type: "http", // noType defaults to HTTP for mcpServers format
+        transport: "http", // noType defaults to HTTP for mcpServers format
         url: "https://notype.com",
         name: "noType",
       });
@@ -508,12 +516,12 @@ describe("config", () => {
 
       expect(servers).toHaveLength(2);
       expect(servers).toContainEqual({
-        type: "http", // Default for VSCode HTTP servers
+        transport: "http", // Default for VSCode HTTP servers
         url: "https://api.githubcopilot.com/mcp/",
         name: "Github",
       });
       expect(servers).toContainEqual({
-        type: "sse",
+        transport: "sse",
         url: "https://custom.example.com/mcp",
         name: "Custom",
       });
@@ -547,13 +555,13 @@ describe("config", () => {
 
       expect(servers).toHaveLength(2);
       expect(servers).toContainEqual({
-        type: "http", // Default for Cursor format
+        transport: "http", // Default for Cursor format
         url: "http://localhost:3000/mcp",
         name: "server-name",
         headers: { API_KEY: "value" },
       });
       expect(servers).toContainEqual({
-        type: "http",
+        transport: "http",
         url: "https://explicit.example.com",
         name: "explicit-http",
       });
@@ -584,7 +592,7 @@ describe("config", () => {
         });
         expect(warnings).toEqual([]);
         expect(servers[0]).toEqual({
-          type: "sse",
+          transport: "sse",
           url: "https://api.example.com/mcp",
           name: "api",
           headers: { Authorization: "Bearer secret" },
@@ -767,7 +775,7 @@ describe("config", () => {
         const { servers, warnings } = getMcpServers([configPath]);
         expect(warnings).toEqual([]);
         expect(servers).toEqual([
-          { type: "http", url: "https://a.dev/mcp", name: "a" },
+          { transport: "http", url: "https://a.dev/mcp", name: "a" },
         ]);
       });
 
@@ -840,7 +848,7 @@ describe("config", () => {
 
       expect(servers).toHaveLength(1);
       expect(servers[0]).toEqual({
-        type: "http",
+        transport: "http",
         url: "https://http.example.com",
         name: "HttpServer",
       });
@@ -872,7 +880,7 @@ describe("config", () => {
 
       expect(servers).toHaveLength(1);
       expect(servers[0]).toEqual({
-        type: "http",
+        transport: "http",
         url: "https://api.web-mcp.com/mcp",
         name: "web",
         headers: { "X-API-Key": "static-key" },
@@ -905,12 +913,12 @@ describe("config", () => {
 
       expect(servers).toHaveLength(2);
       expect(servers).toContainEqual({
-        type: "http",
+        transport: "http",
         url: "https://vscode.example.com",
         name: "VSCodeServer",
       });
       expect(servers).toContainEqual({
-        type: "sse",
+        transport: "sse",
         url: "https://claude.example.com",
         name: "ClaudeServer",
       });

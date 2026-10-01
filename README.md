@@ -128,14 +128,16 @@ try {
 ## Programmatic API
 
 ```typescript
-import { generateClient } from "mcp-client-gen";
+import { generateClientModule } from "mcp-client-gen";
 
-const code = await generateClient("https://mcp.notion.com/mcp");
-// or: generateClient({ url, name: "notion", headers: { ... } }, { oauth, fetch, timeout, signal })
+const source = await generateClientModule("https://mcp.notion.com/mcp", {
+  name: "notion",
+});
+// or: generateClientModule({ url, transport, headers }, { name, oauth, fetch, timeout, signal })
 // oauth: false fails rather than opening a browser (e.g. in CI)
 ```
 
-`generateClient()` returns the formatted module source; it writes nothing.
+`generateClientModule()` returns the formatted module source; it writes nothing. See [SPEC-api](docs/specs/api.md).
 
 ## License
 

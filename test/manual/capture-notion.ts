@@ -17,9 +17,9 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { format as prettierFormat, resolveConfig } from "prettier";
 import { generateClientFile } from "../../src/codegen";
-import { introspectServer, type Introspection } from "../../src/introspection";
+import { introspectServer, type ServerSnapshot } from "../../src/introspection";
 import { formatTypeScript } from "../../src/pipeline";
-import type { McpServerConfig } from "../../src/types";
+import type { McpEndpoint } from "../../src/connect";
 
 // Parse CLI arguments
 const fixturesOnly = process.argv.includes("--fixtures-only");
@@ -35,13 +35,9 @@ console.log(
 );
 console.log("=".repeat(50));
 
-const server: McpServerConfig = {
-  name: "notion",
-  type: "http",
-  url: "https://mcp.notion.com/mcp",
-};
+const endpoint: McpEndpoint = { url: "https://mcp.notion.com/mcp" };
 
-async function captureCapabilities(): Promise<Introspection> {
+async function captureCapabilities(): Promise<ServerSnapshot> {
   console.log("\nStep 1: Connecting to Notion MCP server...");
   console.log("   URL: https://mcp.notion.com/mcp");
   console.log("\n   The OAuth flow will:");
@@ -50,7 +46,7 @@ async function captureCapabilities(): Promise<Introspection> {
   console.log("   3. Capture and exchange the authorization code");
   console.log("\n   Please complete the authorization in your browser...\n");
 
-  const result = await introspectServer(server, {
+  const result = await introspectServer(endpoint, {
     oauth: {
       clientMetadata: { scope: "read:page:metadata read:database:metadata" },
       timeout: 120000,
@@ -65,7 +61,7 @@ async function captureCapabilities(): Promise<Introspection> {
   return result;
 }
 
-async function generateClient(introspectionResult: Introspection) {
+async function generateClient(introspectionResult: ServerSnapshot) {
   console.log("\nStep 3: Generating TypeScript client...");
 
   const generatedCode = generateClientFile("notion", introspectionResult);
@@ -85,7 +81,7 @@ async function generateClient(introspectionResult: Introspection) {
   return generatedCode;
 }
 
-async function saveFixtures(introspectionResult: Introspection) {
+async function saveFixtures(introspectionResult: ServerSnapshot) {
   await mkdir(dirname(fixturePath), { recursive: true });
 
   const json = JSON.stringify(introspectionResult, null, 2);

@@ -4,18 +4,36 @@
 /**
  * Config discovery & parsing - finds and normalizes MCP server definitions.
  *
- * Contract: getMcpServers(paths) → McpServerConfig[]
+ * Contract: getMcpServers(paths) → { servers: ConfiguredServer[], warnings }
  * Invariant: Only returns http/sse servers; the first usable entry claims its name and its connection.
  */
 
 import { existsSync, readFileSync } from "node:fs";
 import { basename } from "node:path";
 import { resolve } from "node:path";
-import type {
-  ConfigWarning,
-  McpServerConfig,
-  ParseServersResult,
-} from "./types.js";
+
+/** A usable config entry: its key names the client. Header values are strings, as in JSON. */
+export interface ConfiguredServer {
+  name: string;
+  url: string;
+  transport: "http" | "sse";
+  headers?: Record<string, string>;
+}
+
+/** Why a config entry was skipped; names placeholders, never values. */
+export type ConfigWarning =
+  | { kind: "malformed_json"; path: string; error: string }
+  | { kind: "skipped_stdio"; path: string; name: string }
+  | { kind: "missing_url"; path: string; name: string }
+  | { kind: "invalid_url"; path: string; name: string }
+  | { kind: "unknown_type"; path: string; name: string; type: string }
+  /** Placeholders in url/headers with no value (e.g. `API_KEY`, `input:key`) */
+  | {
+      kind: "unresolved_placeholder";
+      path: string;
+      name: string;
+      placeholders: string[];
+    };
 
 /**
  * Format a config warning for display.
@@ -350,8 +368,11 @@ export async function findMcpConfigFiles(
  * @invariant Only returns http/sse servers, skips stdio/command servers
  * @supports Claude (.mcp.json), Cursor (.cursor/), VSCode (.vscode/) formats
  */
-export function getMcpServers(paths: string[]): ParseServersResult {
-  const servers: McpServerConfig[] = [];
+export function getMcpServers(paths: string[]): {
+  servers: ConfiguredServer[];
+  warnings: ConfigWarning[];
+} {
+  const servers: ConfiguredServer[] = [];
   const warnings: ConfigWarning[] = [];
   const seenNames = new Set<string>();
   const seenConnections = new Set<string>();
@@ -475,15 +496,12 @@ export function getMcpServers(paths: string[]): ParseServersResult {
 
           seenNames.add(name);
           seenConnections.add(connection);
-          const result: McpServerConfig = {
-            type: serverType,
-            url: trimmedUrl,
+          servers.push({
             name,
-          };
-
-          if (headers) result.headers = headers;
-
-          servers.push(result);
+            url: trimmedUrl,
+            transport: serverType,
+            ...(headers && { headers }),
+          });
         }
       }
     }

@@ -100,7 +100,7 @@ Wire names, URIs and argument names are emitted as string literals; server-provi
 
 ### Server Name Derivation
 
-`extractServerName()`: explicit `name` (config key) → URL hostname (second-to-last segment, e.g. `api.notion.com` → `notion`) → first URL path segment (excluding `mcp`, `v1`) → `server`.
+`extractServerName()`: explicit `name` (`GenerateClientOptions.name`, `--name` or the config key) → URL hostname (second-to-last segment, e.g. `api.notion.com` → `notion`) → first URL path segment (excluding `mcp`, `v1`) → `server`.
 
 ## Type Generation
 

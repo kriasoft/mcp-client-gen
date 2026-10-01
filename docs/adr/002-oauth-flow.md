@@ -13,8 +13,8 @@
 
 - The MCP SDK (`@modelcontextprotocol/client` 2.x) owns OAuth: discovery, registration, PKCE, token exchange and refresh.
 - `oauth-callback/mcp`'s `browserAuth()` supplies the `OAuthClientProvider`: browser launch, loopback listener, state checks and credential persistence.
-- OAuth applies only to `https:` or loopback `http:` servers, where bearer tokens can't leak (oauth-callback rejects others). Other `http:` servers, e.g. on a private network, connect unauthenticated; `server.headers` still apply. `oauth: false` disables the provider everywhere (e.g. CI, where no browser can open), so a server demanding OAuth fails instead of waiting for approval.
-- `server.headers` go only to the MCP server's origin, through an origin-scoped fetch wrapper, not to the authorization server, which the SDK reaches through the same transport fetch.
+- OAuth applies only to `https:` or loopback `http:` servers, where bearer tokens can't leak (oauth-callback rejects others). Other `http:` servers, e.g. on a private network, connect unauthenticated; endpoint `headers` still apply. `oauth: false` disables the provider everywhere (e.g. CI, where no browser can open), so a server demanding OAuth fails instead of waiting for approval.
+- Endpoint `headers` go only to the MCP server's origin, through an origin-scoped fetch wrapper, not to the authorization server, which the SDK reaches through the same transport fetch.
 - The internal `connectMcp()` builds the provider from `GenerateClientOptions.oauth`:
   - `serverUrl` comes from the server; `redirectUri` defaults to `http://127.0.0.1:3000/callback`. The port is fixed because DCR registers the exact URI.
   - `clientName` defaults to `mcp-client-gen` unless a pre-registered `clientInformation` is given (the two are exclusive).
@@ -25,7 +25,7 @@
 - Generated clients take the SDK `Client` and import SDK types only (ADR-003); auth stays with whoever connected that client, typically `browserAuth().connect(client)`, which also completes step-ups at runtime.
 
 ```typescript
-const code = await generateClient("https://mcp.notion.com/mcp", {
+const code = await generateClientModule("https://mcp.notion.com/mcp", {
   oauth: { store: fileStore("/abs/path/notion-credentials.json") },
 });
 ```
@@ -35,7 +35,7 @@ const code = await generateClient("https://mcp.notion.com/mcp", {
 - **Embedded OAuth implementation** — rejected; duplicates the SDK's flow logic.
 - **Ephemeral redirect port** — rejected for now; DCR records the redirect URI, and RFC 8252's "any loopback port" rule isn't honored by every authorization server, so oauth-callback requires a fixed port. `oauth.redirectUri` picks another one.
 - **Client ID Metadata Documents (CIMD) now** — deferred. MCP 2026-07-28 prefers CIMD over DCR, and the SDK uses a provider's `clientMetadataUrl` when the server supports it, but oauth-callback 3.0 doesn't expose one and CIMD needs a hosted HTTPS metadata document. Pass-through belongs in oauth-callback first; `clientInformation` covers pre-registered clients meanwhile.
-- **Refusing static `server.headers` on plain `http:`** — rejected; OAuth is limited to secure origins because the tokens are obtained automatically, while configured headers are the user's explicit choice (as in other MCP clients).
+- **Refusing static endpoint `headers` on plain `http:`** — rejected; OAuth is limited to secure origins because the tokens are obtained automatically, while configured headers are the user's explicit choice (as in other MCP clients).
 
 ## Impact
 
@@ -44,7 +44,7 @@ const code = await generateClient("https://mcp.notion.com/mcp", {
 
 ## Links
 
-- Code/Docs: `src/mcp-client.ts`, SPEC-introspection
+- Code/Docs: `src/connect.ts`, SPEC-introspection
 - Related ADRs: ADR-001, ADR-003
 - Related: [oauth-callback](https://github.com/kriasoft/oauth-callback) (its ADR-006: MCP SDK owns OAuth)
 - Specs: [RFC 7591](https://datatracker.ietf.org/doc/html/rfc7591), [RFC 7636](https://datatracker.ietf.org/doc/html/rfc7636), [RFC 8252](https://datatracker.ietf.org/doc/html/rfc8252)

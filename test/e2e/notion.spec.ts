@@ -7,12 +7,12 @@
  */
 
 import { expect, test } from "bun:test";
-import { generateClient } from "../../src/index";
+import { generateClientModule } from "../../src/index";
 
 test.skipIf(!process.env.NOTION_E2E)(
   "generates a Notion client after browser OAuth",
   async () => {
-    const code = await generateClient("https://mcp.notion.com/mcp", {
+    const code = await generateClientModule("https://mcp.notion.com/mcp", {
       oauth: { timeout: 120_000 }, // time to approve in the browser
     });
 

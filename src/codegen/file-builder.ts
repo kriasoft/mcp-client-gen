@@ -12,14 +12,14 @@
  */
 
 import { Node, Project, ts } from "ts-morph";
-import type { Introspection } from "../introspection.js";
+import type { ServerSnapshot } from "../introspection.js";
 import { generateServerClient, hasResources } from "./client-generator.js";
 import { hasOutputSchema } from "./tool-input-generator.js";
 
 /** Generate the client module for one introspected server. */
 export function generateClientFile(
   serverName: string,
-  introspection: Introspection,
+  introspection: ServerSnapshot,
 ): string {
   const { tools, prompts } = introspection;
   const usesTools = tools.length > 0;
