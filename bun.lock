@@ -7,7 +7,7 @@
       "dependencies": {
         "@clack/prompts": "^1.8.1",
         "@modelcontextprotocol/client": "~2.2.0",
-        "oauth-callback": "^3.0.0",
+        "oauth-callback": "^3.1.0",
         "prettier": "^3.9.9",
         "ts-morph": "^28.0.0",
       },
@@ -265,7 +265,7 @@
 
     "node-fetch": ["node-fetch@3.3.2", "", { "dependencies": { "data-uri-to-buffer": "^4.0.0", "fetch-blob": "^3.1.4", "formdata-polyfill": "^4.0.10" } }, "sha512-dRB78srN/l6gqWulah9SrxeYnxeddIG30+GOqK/9OlLVyLg3HPnr6SqOWTWOXKRwC2eGYCkZ59NNuSgvSrpgOA=="],
 
-    "oauth-callback": ["oauth-callback@3.0.0", "", { "peerDependencies": { "@modelcontextprotocol/client": "^2.1.0" }, "optionalPeers": ["@modelcontextprotocol/client"] }, "sha512-GH9ZK3Mx3FdAwY2NixBGapZ0Ml0vvMWb3vMYx+zPuvtELuuVV2i3uPH+ruuFhOPcMcuzgZGxtkLKipFq615+RA=="],
+    "oauth-callback": ["oauth-callback@3.1.0", "", { "peerDependencies": { "@modelcontextprotocol/client": "^2.2.0" }, "optionalPeers": ["@modelcontextprotocol/client"] }, "sha512-h9Ayi7sPeorNuscow4i58g/DV25PdnF8YRrtzzf0QSbxBnZwnXYh+ryjxjRTr90wEKMGVi2bl8gPUgP72BPc+A=="],
 
     "object-inspect": ["object-inspect@1.13.4", "", {}, "sha512-W67iLl4J2EXEGTbfeHCffrjDfitvLANg0UlX3wFUUSTx92KXRFegMHUVgSqE+wvhAbi4WqjGg9czysTV2Epbew=="],
 

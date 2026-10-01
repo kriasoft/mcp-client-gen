@@ -28,8 +28,8 @@ import {
 } from "./connect.js";
 
 /**
- * Browser flows one capability listing may complete. The last one only drains the flow
- * the failing request started (see withAuthorization), so it isn't retried.
+ * Browser flows one capability listing may trigger. The last one can't rescue the listing,
+ * so it isn't retried (see withAuthorization).
  */
 const MAX_AUTHORIZATIONS = 3;
 
@@ -57,10 +57,10 @@ export async function introspectServer(
   const { client, requestOptions, completeAuthorization, authorized } =
     await connectMcp(endpoint, options);
 
-  // Every UnauthorizedError leaves a browser flow pending, and oauth-callback can't cancel
-  // a connect()-owned one short of signing out (which would clear the store): complete it
-  // (approval or timeout) so none outlives the connection. Bounded, since a server may
-  // keep demanding scopes; the last completion drains rather than retries.
+  // Every UnauthorizedError leaves a browser flow pending: complete it (approval, timeout
+  // or abort), then retry. Bounded, since a server may keep demanding scopes. The last
+  // flow is left to the close, which ends it over Streamable HTTP; an SSE transport's flow
+  // outlives its close, so it is drained instead (no listener outlives introspection).
   const withAuthorization = async <T>(request: () => Promise<T>) => {
     for (let attempt = 1; ; attempt++) {
       try {
@@ -68,8 +68,10 @@ export async function introspectServer(
       } catch (error) {
         if (!completeAuthorization || !(error instanceof UnauthorizedError))
           throw error;
-        await completeAuthorization();
-        if (attempt === MAX_AUTHORIZATIONS) throw error;
+        const last = attempt === MAX_AUTHORIZATIONS;
+        if (!last || endpoint.transport === "sse")
+          await completeAuthorization();
+        if (last) throw error;
       }
     }
   };

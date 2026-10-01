@@ -37,6 +37,19 @@ export interface McpEndpoint {
   headers?: RequestInit["headers"];
 }
 
+/**
+ * `browserAuth()` options without `serverUrl`; `redirectUri` and a DCR `clientName` are
+ * defaulted. Distributes over its registration union (DCR or a pre-registered client), so
+ * each keeps its own fields.
+ */
+type OAuthOptions = Defaulted<BrowserAuthOptions>;
+type Defaulted<O extends BrowserAuthOptions> = O extends unknown
+  ? Omit<O, "serverUrl" | "redirectUri" | "clientName"> & {
+      redirectUri?: O["redirectUri"];
+      clientName?: O["clientName"];
+    }
+  : never;
+
 /** How to connect: authorization, fetch, and limits on connecting and listing. */
 export interface ConnectOptions {
   /**
@@ -44,11 +57,7 @@ export interface ConnectOptions {
    * `redirectUri` defaults to a fixed loopback URI; a `store` serves this one server).
    * `false` never opens a browser: a server demanding OAuth then fails (e.g. in CI).
    */
-  oauth?:
-    | false
-    | (Omit<BrowserAuthOptions, "serverUrl" | "redirectUri"> & {
-        redirectUri?: BrowserAuthOptions["redirectUri"];
-      });
+  oauth?: false | OAuthOptions;
   /** Custom fetch for proxies/interceptors */
   fetch?: typeof fetch;
   /** Timeout in ms for each request while connecting and listing (SDK default: 60s) */
@@ -65,8 +74,13 @@ export function oauthRedirectUri(port = 3000): string {
   return `http://127.0.0.1:${port}/callback`;
 }
 
-/** Hosts where oauth-callback allows plain `http:` (bearer tokens stay on this machine). */
-const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]"]);
+/**
+ * Hosts where oauth-callback (like the SDK) allows plain `http:`: bearer tokens stay on
+ * this machine. `*.localhost` is loopback by RFC 6761.
+ */
+const isLoopbackHost = (hostname: string) =>
+  ["localhost", "127.0.0.1", "[::1]"].includes(hostname) ||
+  hostname.endsWith(".localhost");
 
 /** A connected client, and what requests on it need. */
 export interface McpSession {
@@ -218,16 +232,22 @@ export async function connectMcp(
   const oauth = options.oauth ?? {};
   const auth =
     oauth !== false &&
-    (url.protocol === "https:" || LOOPBACK_HOSTS.has(url.hostname))
-      ? browserAuth({
-          ...oauth,
-          serverUrl: url,
-          redirectUri: oauth.redirectUri ?? oauthRedirectUri(),
+    (url.protocol === "https:" || isLoopbackHost(url.hostname))
+      ? browserAuth(
           // clientName and clientInformation are exclusive; default the name only for DCR
-          ...(!oauth.clientInformation && {
-            clientName: oauth.clientName ?? clientInfo.name,
-          }),
-        })
+          oauth.clientInformation
+            ? {
+                ...oauth,
+                serverUrl: url,
+                redirectUri: oauth.redirectUri ?? oauthRedirectUri(),
+              }
+            : {
+                ...oauth,
+                serverUrl: url,
+                redirectUri: oauth.redirectUri ?? oauthRedirectUri(),
+                clientName: oauth.clientName ?? clientInfo.name,
+              },
+        )
       : undefined;
 
   const requestOptions: RequestOptions = {

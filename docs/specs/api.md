@@ -18,7 +18,7 @@ interface McpEndpoint {
 
 interface GenerateClientOptions {
   name?: string;
-  oauth?: false | BrowserAuthOptions; // without serverUrl; redirectUri optional
+  oauth?: false | BrowserAuthOptions; // without serverUrl; redirectUri and a DCR clientName optional
   fetch?: typeof fetch;
   timeout?: number;
   signal?: AbortSignal;
@@ -54,13 +54,13 @@ Describes the server, not the generated code.
 
 `name` shapes the generated module; the rest apply while connecting and listing.
 
-| Option    | Effect                                                                                                                                                                         |
-| --------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `name`    | Client name: `notion` → `createNotionClient`, `NotionClient`. Default: derived from the URL (SPEC-generated-client). Unrelated to the OAuth `clientName`                       |
-| `oauth`   | oauth-callback `browserAuth()` options (ADR-002): `redirectUri` defaults to `http://127.0.0.1:3000/callback`; `false` never opens a browser, so a server demanding OAuth fails |
-| `fetch`   | Custom fetch for every request (proxies, interceptors, tests)                                                                                                                  |
-| `timeout` | Per request while connecting and listing (SDK default 60 s)                                                                                                                    |
-| `signal`  | Aborts connecting, listing and a pending browser flow (except a step-up begun by listing, SPEC-introspection)                                                                  |
+| Option    | Effect                                                                                                                                                                                                                     |
+| --------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `name`    | Client name: `notion` → `createNotionClient`, `NotionClient`. Default: derived from the URL (SPEC-generated-client). Unrelated to the OAuth `clientName`                                                                   |
+| `oauth`   | oauth-callback `browserAuth()` options (ADR-002), e.g. `store` or a CIMD `clientMetadataUrl`: `redirectUri` defaults to `http://127.0.0.1:3000/callback`; `false` never opens a browser, so a server demanding OAuth fails |
+| `fetch`   | Custom fetch for every request (proxies, interceptors, tests)                                                                                                                                                              |
+| `timeout` | Per request while connecting and listing (SDK default 60 s)                                                                                                                                                                |
+| `signal`  | Aborts connecting, listing and a pending browser flow (SSE caveat: SPEC-introspection)                                                                                                                                     |
 
 ## Errors
 

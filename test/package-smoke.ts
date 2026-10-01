@@ -7,8 +7,10 @@
  * clean consumer, then under Node run the CLI and the library against a real MCP server,
  * and compile and run the generated modules the way a fresh TypeScript project would
  * (`skipLibCheck: false`, `types: ["node"]`). Needs `bun run build` first, and network.
+ * Extra tarballs (e.g. an unreleased oauth-callback) install alongside, replacing registry
+ * versions.
  *
- *   bun run build && bun run smoke:package
+ *   bun run build && bun run smoke:package [path/to/dependency.tgz ...]
  */
 
 import {
@@ -23,6 +25,7 @@ import { join, resolve } from "node:path";
 import { promisify } from "node:util";
 
 const root = resolve(import.meta.dir, "..");
+const extraTarballs = process.argv.slice(2).map((path) => resolve(path));
 const dir = mkdtempSync(join(tmpdir(), "mcp-client-gen-smoke-"));
 // Async: the server below runs in this process, so a blocking call would starve it
 const run = async (cmd: string, args: string[], cwd = dir) =>
@@ -77,6 +80,7 @@ try {
     "--no-audit",
     "--no-fund",
     join(dir, tarball),
+    ...extraTarballs,
     "@modelcontextprotocol/client@^2.2",
     "typescript",
     "@types/node",

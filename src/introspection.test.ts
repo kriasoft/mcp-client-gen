@@ -16,7 +16,7 @@ import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 import type { CredentialStore } from "oauth-callback/mcp";
 import { introspectServer } from "./introspection.js";
 import { connectMcp, createFetchWithHeaders } from "./connect.js";
-import { generateClientModule } from "./index.js";
+import { generateClientModule, type GenerateClientOptions } from "./index.js";
 import { createServer } from "node:net";
 import { startLegacySseServer } from "../test/utils/legacy-sse-server.js";
 import { startMockServer } from "../test/utils/mock-oauth-mcp-server.js";
@@ -423,7 +423,8 @@ describe("introspectServer OAuth", () => {
   const oauthConfig = async () => ({
     oauth: {
       redirectUri: `http://127.0.0.1:${await freePort()}/callback`,
-      launch: (url: URL) => void oauth.authorize(url),
+      // A flow the close ends can reset the "browser" mid-callback, as with a real one
+      launch: (url: URL) => void oauth.authorize(url).catch(() => {}),
       timeout: 5000,
     },
   });
@@ -468,6 +469,75 @@ describe("introspectServer OAuth", () => {
     );
   });
 
+  test("an abort during a listing's step-up frees the redirect port", async () => {
+    const abort = new AbortController();
+    const fetch = ((url: URL | string, init?: RequestInit) => {
+      if (typeof init?.body === "string" && init.body.includes('"tools/list"'))
+        oauth.knobs.requiredScope = "admin";
+      return globalThis.fetch(url, init);
+    }) as typeof globalThis.fetch;
+    const config = await oauthConfig();
+    let launches = 0;
+    // The "user" approves the first flow; at the step-up the caller gives up instead
+    config.oauth.launch = (url) =>
+      void (launches++
+        ? abort.abort(new Error("gave up"))
+        : oauth.authorize(url));
+
+    await expect(
+      introspectServer(
+        { transport: "http", url: oauth.mcpUrl },
+        { ...config, fetch, signal: abort.signal },
+      ),
+    ).rejects.toThrow("gave up");
+
+    expect(launches).toBe(2);
+    const port = Number(new URL(config.oauth.redirectUri).port);
+    Bun.listen({ hostname: "127.0.0.1", port, socket: { data() {} } }).stop(
+      true,
+    );
+  });
+
+  test("applies OAuth to *.localhost servers, as the SDK treats them as loopback", async () => {
+    // browserAuth() validates its options on creation, before any request
+    await expect(
+      introspectServer(
+        { transport: "http", url: "http://mcp.localhost:9/mcp" },
+        { oauth: { launch: "not a function" as never } },
+      ),
+    ).rejects.toThrow("launch must be a function");
+  });
+
+  test("oauth options type: DCR (name defaulted) or a pre-registered client, not both", () => {
+    const issuer = "https://as.example.com";
+    // Compile-time only (tsc checks tests); never called
+    const typed = (): GenerateClientOptions[] => [
+      { oauth: {} },
+      {
+        oauth: {
+          clientName: "app",
+          clientMetadataUrl: "https://app.example.com/c.json",
+        },
+      },
+      { oauth: { clientInformation: { client_id: "id", issuer } } },
+      {
+        oauth: {
+          clientInformation: { client_id: "id", issuer },
+          // @ts-expect-error a pre-registered client takes no DCR name
+          clientName: "app",
+        },
+      },
+      {
+        oauth: {
+          clientInformation: { client_id: "id", issuer },
+          // @ts-expect-error nor a CIMD URL
+          clientMetadataUrl: "https://app.example.com/c.json",
+        },
+      },
+    ];
+    expect(typed).toBeFunction();
+  });
+
   test("oauth: false fails instead of opening a browser", async () => {
     await expect(
       introspectServer(
@@ -494,7 +564,12 @@ describe("introspectServer OAuth", () => {
     ).rejects.toBeInstanceOf(UnauthorizedError);
 
     expect(oauth.authorizeRequests).toHaveLength(4); // initial + 3 step-ups
-    // Every flow completed: its callback listener released the port
+    expect(
+      oauth.tokenRequests.filter(
+        (r) => r.get("grant_type") === "authorization_code",
+      ),
+    ).toHaveLength(3); // the last flow isn't awaited
+    // Closing ended the last flow: its callback listener released the port
     const listener = Bun.listen({
       hostname: "127.0.0.1",
       port: Number(port),
