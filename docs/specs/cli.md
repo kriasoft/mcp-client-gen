@@ -2,44 +2,39 @@
 
 Modes, arguments, output and exit codes of `mcp-client-gen`. Code: `src/cli.ts`, `src/prompts.ts`. Config files: SPEC-config. Generated code: SPEC-generated-client.
 
-## Arguments
+## Grammar
 
 ```
-npx mcp-client-gen [source] [output] [options]
-
-Arguments:
-  <url>             MCP server URL (http:// or https://)
-  [file]            URL mode: output file (default: stdout)
-  [dir]             Config mode: output directory (implies -y)
-
-Options:
-  --url <url>          Explicit URL source (when the first positional can't be one)
-  --name <name>        Client name (URL mode only): notion → createNotionClient
-  -o, --output <path>  Output file (URL mode) or directory (config mode)
-  --config <file>      Config file to read instead of discovery (config mode)
-  -y, --yes            Accept defaults: all servers, default directory, no prompts
-  -h, --help           Show help
+npx mcp-client-gen <url> [-o file] [--name name]   # URL mode
+npx mcp-client-gen [--config file] [-y] [-o dir]   # config mode
+npx mcp-client-gen --help
 ```
 
-## Mode Selection
+| Option                | Mode   | Meaning                                                              |
+| --------------------- | ------ | -------------------------------------------------------------------- |
+| `<url>`               | URL    | MCP server URL; must parse as an `http:` or `https:` URL             |
+| `-o, --output <path>` | both   | Output file (URL mode, default stdout) or directory (config mode)    |
+| `--name <name>`       | URL    | Client name: `notion` → `createNotionClient` (default: from the URL) |
+| `--config <file>`     | config | Config file to read instead of discovery                             |
+| `-y, --yes`           | config | All servers, default directory, no prompts                           |
+| `-h, --help`          | —      | Help on stdout, exit 0                                               |
 
-In priority order:
+Anything outside the grammar is an error (stderr, help, exit 1), never ignored:
 
-1. `--help` → help on stdout, exit 0.
-2. `--url <url>` → URL mode. Output: `-o`, else the first positional (if not a URL).
-3. First positional starts with `http://` or `https://` → URL mode. Output: `-o`, else the second positional.
-4. An output (`-o` or a non-URL positional), or `-y` → quick mode.
-5. Otherwise → interactive mode.
+- an unknown option, or an option missing its value;
+- a second positional;
+- a positional that isn't an http(s) URL;
+- `--config` or `-y` with a URL;
+- `--name` in config mode.
 
-An output means "no prompts" in config mode, so `-o dir` and a positional `dir` behave the same, as in URL mode.
+The single positional decides the mode: a URL selects URL mode, none selects config mode. Config mode prompts unless `-y` or `-o` is given (quick mode).
 
 ## URL Mode (Primary)
 
 ```bash
 npx mcp-client-gen https://mcp.notion.com/mcp                  # stdout
 npx mcp-client-gen https://mcp.notion.com/mcp -o src/notion.ts # file
-npx mcp-client-gen https://mcp.notion.com/mcp src/notion.ts    # same
-npx mcp-client-gen --url https://mcp.example.com/mcp --name notion -o notion.ts
+npx mcp-client-gen https://mcp.example.com/mcp --name notion -o notion.ts
 ```
 
 - **Connection:** Streamable HTTP, with browser OAuth when the server demands it (ADR-002).
@@ -59,7 +54,7 @@ Config modes generate one module per selected server into an output directory, a
 
 ### Interactive Mode
 
-Triggered by `npx mcp-client-gen` with no arguments.
+Triggered by config mode without `-y` or `-o` (optionally with `--config`).
 
 1. **Config files:** multiselect, all pre-selected; skipped with `--config`.
 2. **Servers:** multiselect, all pre-selected. Labels show the entry name and a redacted URL hint.
@@ -82,7 +77,7 @@ Generated src/mcp/notion.ts
 
 ### Quick Mode
 
-Triggered by `-y`, `-o <dir>` or a positional `<dir>`.
+Triggered by `-y` or `-o <dir>`.
 
 - **Files:** every discovered config file, or `--config`.
 - **Servers:** every usable server.

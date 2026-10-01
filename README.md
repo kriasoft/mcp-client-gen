@@ -66,7 +66,6 @@ result.structuredContent.items; // typed from the tool's outputSchema
 # URL mode (primary)
 npx mcp-client-gen <url>              # Output to stdout
 npx mcp-client-gen <url> -o <file>    # Output to file
-npx mcp-client-gen <url> <file>       # Shorthand
 
 # Config mode (reads .mcp.json, .cursor/, .vscode/): one module per server
 npx mcp-client-gen                    # Interactive

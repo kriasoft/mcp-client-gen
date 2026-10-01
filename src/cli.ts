@@ -24,17 +24,13 @@ import { runInteractiveSetup, withSpinner } from "./prompts.js";
 import type { McpServerConfig } from "./types.js";
 
 /**
- * CLI execution modes - explicitly modeled for clarity and extensibility.
+ * CLI execution modes. The grammar is small on purpose, and anything outside it is an
+ * error rather than silently ignored:
  *
- * Mode selection priority:
- * 1. --help → help
- * 2. --url flag → URL mode
- * 3. First positional is URL (http/https) → URL mode
- * 4. -y flag or output (-o or positional) → quick mode (config-based, all servers)
- * 5. Otherwise → interactive mode (config-based, prompts)
+ *   mcp-client-gen <url> [-o file] [--name name]      URL mode (stdout without -o)
+ *   mcp-client-gen [--config file] [-y] [-o dir]      config mode
  *
- * An output means "no prompts" in config mode, so `-o dir` and a positional `dir`
- * behave the same, as they do in URL mode.
+ * Config mode prompts unless `-y` or `-o` is given.
  */
 type CliMode =
   | { kind: "help" }
@@ -47,94 +43,72 @@ function showHelp(write: (text: string) => void = console.log) {
 mcp-client-gen - Generate type-safe MCP client SDK
 
 Usage:
-  npx mcp-client-gen <url> [file]           # Generate from MCP server URL
-  npx mcp-client-gen                        # Interactive mode (uses local configs)
-  npx mcp-client-gen -y [dir]               # Quick mode (uses local configs)
+  npx mcp-client-gen <url> [-o file] [--name name]   # From an MCP server URL
+  npx mcp-client-gen [--config file] [-y] [-o dir]   # From local MCP configs
 
-Arguments:
-  <url>             MCP server URL (http:// or https://)
-  [file]            URL mode: output file (default: stdout)
-  [dir]             Config mode: output directory, one module per server
-                    (default: src/mcp or mcp); implies -y
+URL mode:
+  <url>                 MCP server URL (http:// or https://)
+  -o, --output <file>   Output file (default: stdout)
+  --name <name>         Client name: notion → createNotionClient (default: from the URL)
 
-Options:
-  --url <url>       Explicit URL source (escape hatch for edge cases)
-  --name <name>     Override server name (URL mode only)
-  -o, --output <path>  Output file (URL mode) or directory (config mode)
-  --config <file>   Path to MCP configuration file
-  -y, --yes         Accept defaults (all servers), skip prompts
-  -h, --help        Show this help message
+Config mode (.mcp.json, .cursor/, .vscode/; one module per server):
+  --config <file>       Config file to read instead of discovering them
+  -y, --yes             All servers, default directory, no prompts
+  -o, --output <dir>    Output directory (implies -y; default: src/mcp or mcp)
+
+  -h, --help            Show this help message
 
 Examples:
-  # URL mode (primary)
   npx mcp-client-gen https://mcp.notion.com/mcp
-  npx mcp-client-gen https://mcp.notion.com/mcp -o notion.ts
-  npx mcp-client-gen https://mcp.notion.com/mcp notion.ts
-  npx mcp-client-gen --url https://mcp.notion.com/mcp --name notion
-
-  # Config mode (uses .mcp.json, .cursor/, .vscode/)
+  npx mcp-client-gen https://mcp.notion.com/mcp -o src/notion.ts
   npx mcp-client-gen                        # Interactive
-  npx mcp-client-gen -y                     # Quick defaults
-  npx mcp-client-gen -y -o src/mcp          # Quick + output directory
-  npx mcp-client-gen src/mcp                # Same as above
+  npx mcp-client-gen -y -o src/mcp          # All configured servers
 `);
 }
 
-/** Check if string looks like a URL */
-function isUrl(value: string): boolean {
-  return value.startsWith("http://") || value.startsWith("https://");
+function isHttpUrl(value: string): boolean {
+  return URL.canParse(value) && /^https?:$/.test(new URL(value).protocol);
 }
 
 /**
- * Parse CLI arguments and determine execution mode.
- * See CliMode for priority order.
+ * Parse CLI arguments into a mode.
+ * @throws For anything outside the grammar (see CliMode); main() prints help to stderr
  */
-function parseArguments(): CliMode {
-  try {
-    const { values, positionals } = parseArgs({
-      options: {
-        url: { type: "string" },
-        name: { type: "string" },
-        output: { type: "string", short: "o" },
-        config: { type: "string" },
-        help: { type: "boolean", short: "h" },
-        yes: { type: "boolean", short: "y" },
-      },
-      allowPositionals: true,
-    });
+function parseArguments(args: string[]): CliMode {
+  const { values, positionals } = parseArgs({
+    args,
+    options: {
+      name: { type: "string" },
+      output: { type: "string", short: "o" },
+      config: { type: "string" },
+      help: { type: "boolean", short: "h" },
+      yes: { type: "boolean", short: "y" },
+    },
+    allowPositionals: true,
+  });
 
-    if (values.help) {
-      return { kind: "help" };
-    }
+  if (values.help) return { kind: "help" };
+  for (const option of ["name", "output", "config"] as const)
+    if (values[option] === "") throw new Error(`--${option} needs a value`);
+  if (positionals.length > 1)
+    throw new Error(`Unexpected argument: ${positionals[1]}`);
 
-    // Explicit --url flag takes priority
-    if (values.url) {
-      // Output: -o flag > first positional (if not URL)
-      const output =
-        values.output ??
-        (positionals[0] && !isUrl(positionals[0]) ? positionals[0] : undefined);
-      return { kind: "url", url: values.url, output, name: values.name };
-    }
-
-    // First positional is URL → URL mode
-    if (positionals[0] && isUrl(positionals[0])) {
-      // Output: -o flag > second positional
-      const output = values.output ?? positionals[1];
-      return { kind: "url", url: positionals[0], output, name: values.name };
-    }
-
-    // Config mode: output path or -y → quick, otherwise interactive
-    const output = values.output ?? positionals[0];
-    if (output || values.yes) {
-      return { kind: "quick", output, configPath: values.config };
-    }
-    return { kind: "interactive", configPath: values.config };
-  } catch (error) {
-    // stderr keeps stdout code-only for piped URL-mode output
-    console.error("Error parsing arguments:", (error as Error).message);
-    showHelp(console.error);
-    process.exit(1);
+  const [url] = positionals;
+  if (url !== undefined) {
+    if (!isHttpUrl(url))
+      throw new Error(`Expected an http(s) MCP server URL, got: ${url}`);
+    if (values.config !== undefined || values.yes)
+      throw new Error("--config and -y apply to config mode, not a URL");
+    return { kind: "url", url, output: values.output, name: values.name };
   }
+
+  if (values.name !== undefined)
+    throw new Error(
+      "--name applies to URL mode; config entries are named by their keys",
+    );
+  if (values.output || values.yes)
+    return { kind: "quick", output: values.output, configPath: values.config };
+  return { kind: "interactive", configPath: values.config };
 }
 
 /** A server to generate, with its derived name and destination. */
@@ -337,7 +311,16 @@ async function runConfigMode(servers: McpServerConfig[], outputDir: string) {
 }
 
 async function main() {
-  const mode = parseArguments();
+  let mode: CliMode;
+  try {
+    mode = parseArguments(process.argv.slice(2));
+  } catch (error) {
+    // parseArgs throws TypeErrors for unknown options and missing values. stderr keeps
+    // stdout code-only for piped URL-mode output.
+    console.error(`Error: ${redactSecrets((error as Error).message)}`);
+    showHelp(console.error);
+    process.exit(1);
+  }
   try {
     switch (mode.kind) {
       case "help":

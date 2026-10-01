@@ -16,7 +16,6 @@ Start with `docs/architecture.md`: pipeline, module boundaries, invariants, and 
 # URL mode (primary)
 npx mcp-client-gen <url>                    # Generate to stdout
 npx mcp-client-gen <url> -o <file>          # Generate to file
-npx mcp-client-gen <url> <file>             # Shorthand
 
 # Config mode (uses .mcp.json, .cursor/, .vscode/): one module per server, all or nothing
 npx mcp-client-gen                          # Interactive

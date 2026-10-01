@@ -70,9 +70,8 @@ describe("cli", () => {
       expect(stdout).not.toContain("mcp/");
     });
 
-    test("--output without -y skips prompts, like a positional output", () => {
+    test("--output without -y skips prompts", () => {
       expect(run("-o", "chosen").stdout).toContain("→ chosen/");
-      expect(run("chosen").stdout).toContain("→ chosen/");
     });
 
     test("rejects a file: each server gets its own module", () => {
@@ -93,7 +92,7 @@ describe("cli", () => {
       const { exitCode, stdout, stderr } = run("https://a.example/mcp", "--x");
       expect(exitCode).toBe(1);
       expect(stdout).toBe("");
-      expect(stderr).toContain("Error parsing arguments");
+      expect(stderr).toContain("Error:");
       expect(stderr).toContain("Usage:");
     });
 
@@ -101,6 +100,23 @@ describe("cli", () => {
       const { exitCode, stdout } = run("https://a.example/mcp", "-o");
       expect(exitCode).toBe(1);
       expect(stdout).toBe("");
+    });
+
+    test.each([
+      [["chosen"], "Expected an http(s) MCP server URL, got: chosen"],
+      [["ftp://a.example/mcp"], "Expected an http(s) MCP server URL"],
+      [["https://a.example/mcp", "out.ts"], "Unexpected argument: out.ts"],
+      [["https://a.example/mcp", "-y"], "apply to config mode"],
+      [["https://a.example/mcp", "--config", "x.json"], "apply to config mode"],
+      [["--name", "x"], "--name applies to URL mode"],
+      [["--url", "https://a.example/mcp"], "Unknown option"],
+      [["https://a.example/mcp", "--config="], "--config needs a value"],
+      [["--output="], "--output needs a value"],
+    ])("rejects %p", (args, message) => {
+      const { exitCode, stdout, stderr } = run(...args);
+      expect(exitCode).toBe(1);
+      expect(stdout).toBe("");
+      expect(stderr).toContain(message);
     });
 
     test("--help prints to stdout and exits 0", () => {
@@ -173,6 +189,7 @@ describe("cli", () => {
       expect(stdout).toContain(
         'import { createDemoClient } from "./out/demo.js";',
       );
+      expect(stdout).toContain('versionNegotiation: { mode: "auto" }');
       // Config URLs may hold expanded secrets: never echoed
       expect(stdout).not.toContain("SECRET");
     });
