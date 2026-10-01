@@ -282,48 +282,57 @@ describe("config", () => {
       });
     });
 
-    test("deduplicates servers by URL (first wins)", () => {
-      const config1Path = resolve(TEST_DIR, "duplicate1.json");
-      const config2Path = resolve(TEST_DIR, "duplicate2.json");
-
+    test("deduplicates identical connections, keeps other accounts", () => {
+      const configPath = resolve(TEST_DIR, "duplicates.json");
+      const url = "https://mcp.example.com";
       writeFileSync(
-        config1Path,
+        configPath,
         JSON.stringify({
           mcpServers: {
-            server1: { type: "http", url: "https://example.com" },
-            server2: { type: "sse", url: "https://other.com" },
+            work: { url, headers: { Authorization: "Bearer WORK" } },
+            personal: { url, headers: { Authorization: "Bearer PERSONAL" } },
+            // Same connection as "work" under another name (e.g. another tool's config)
+            copy: {
+              type: "http",
+              url,
+              headers: { authorization: "Bearer WORK" }, // names are case-insensitive
+            },
+            legacy: { type: "sse", url },
           },
         }),
       );
 
+      const { servers } = getMcpServers([configPath]);
+
+      expect(servers.map((s) => s.name)).toEqual([
+        "work",
+        "personal",
+        "legacy",
+      ]);
+    });
+
+    test("an invalid URL is skipped before it can claim an override", () => {
+      const localPath = resolve(TEST_DIR, "invalid.local.json");
+      const sharedPath = resolve(TEST_DIR, "invalid.json");
       writeFileSync(
-        config2Path,
+        localPath,
+        JSON.stringify({ mcpServers: { notion: { url: "broken" } } }),
+      );
+      writeFileSync(
+        sharedPath,
         JSON.stringify({
-          mcpServers: {
-            server3: { type: "sse", url: "https://example.com" }, // Duplicate URL
-            server4: { type: "http", url: "https://new.com" },
-          },
+          mcpServers: { notion: { url: "https://mcp.notion.com/mcp" } },
         }),
       );
 
-      const { servers } = getMcpServers([config1Path, config2Path]);
+      const { servers, warnings } = getMcpServers([localPath, sharedPath]);
 
-      expect(servers).toHaveLength(3);
-      expect(servers).toContainEqual({
-        type: "http", // First occurrence wins
-        url: "https://example.com",
-        name: "server1",
-      });
-      expect(servers).toContainEqual({
-        type: "sse",
-        url: "https://other.com",
-        name: "server2",
-      });
-      expect(servers).toContainEqual({
-        type: "http",
-        url: "https://new.com",
-        name: "server4",
-      });
+      expect(servers).toEqual([
+        { type: "http", url: "https://mcp.notion.com/mcp", name: "notion" },
+      ]);
+      expect(warnings).toEqual([
+        { kind: "invalid_url", path: localPath, name: "notion" },
+      ]);
     });
 
     test("an earlier entry overrides a later one with the same name", () => {
@@ -611,6 +620,31 @@ describe("config", () => {
           "fallback-secret", // fallback value
         ])
           expect(redactSecrets(`x ${form} y`)).toBe("x *** y");
+      });
+
+      test("literal credentials in headers and URLs are masked too", () => {
+        const configPath = resolve(TEST_DIR, "literal.json");
+        writeFileSync(
+          configPath,
+          JSON.stringify({
+            mcpServers: {
+              api: {
+                url: "https://%61lice:hunter22@literal-host.test/path?key=literal-key&enc=abcd%252Fefgh",
+                headers: { "X-API-Key": "literal-header-key" },
+              },
+            },
+          }),
+        );
+        getMcpServers([configPath]);
+        expect(
+          redactSecrets(
+            "401 for literal-header-key, hunter22, key=literal-key, %61lice, abcd%252Fefgh",
+          ),
+        ).toBe("401 for ***, ***, key=***, ***, ***");
+        // The host and path of a literal URL stay readable
+        expect(redactSecrets("literal-host.test/path")).toBe(
+          "literal-host.test/path",
+        );
       });
 
       test("masks trimmed values, canonical URLs and overlapping secrets", () => {

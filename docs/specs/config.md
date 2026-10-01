@@ -21,10 +21,10 @@ Without `--config`, these paths are checked relative to the working directory, i
 
 ## Precedence
 
-Files are read in priority order. The first **usable** entry claims both its name and its URL. Later entries that have either the same name or the same URL are dropped silently.
+Files are read in priority order. The first **usable** entry claims both its name and its connection (type, URL and headers). Later entries with either the same name or the same connection are dropped silently.
 
 - **By name**, so a `.local` entry overrides its shared counterpart even when the URLs differ.
-- **By URL**, so a server listed in several tools' configs is generated once.
+- **By connection**, so a server listed in several tools' configs is generated once. One URL with different headers (e.g. two accounts) stays two servers.
 - **Skipped entries** (below) claim nothing, so a broken override falls back to the shared entry, with a warning.
 
 ## File Format
@@ -89,6 +89,7 @@ Upstream references: [Claude Code](https://docs.anthropic.com/en/docs/claude-cod
 | `type: "stdio"`, or a `command`             | skipped: `skipped_stdio`  |
 | any other `type`                            | skipped: `unknown_type`   |
 | no `url` (after expansion and trimming)     | skipped: `missing_url`    |
+| a `url` that isn't an `http:`/`https:` URL  | skipped: `invalid_url`    |
 | unresolvable placeholder in `url`/`headers` | skipped: `unresolved_env` |
 
 - **Server name:** the config key. An empty key becomes `server`; a name is never derived from a URL, which may hold an expanded secret.
@@ -122,6 +123,7 @@ A literal placeholder is never sent as a URL or credential.
 | `malformed_json` | `path`, `error` (also a non-object root) |
 | `skipped_stdio`  | `path`, `name`                           |
 | `missing_url`    | `path`, `name`                           |
+| `invalid_url`    | `path`, `name`                           |
 | `unknown_type`   | `path`, `name`, `type`                   |
 | `unresolved_env` | `path`, `name`, `variables`              |
 
@@ -129,7 +131,7 @@ One malformed file doesn't stop the others from loading.
 
 ## Secret Redaction
 
-Expanded values (including fallbacks) are treated as secrets, because SDK errors, servers' error pages and labels echo URLs and headers.
+Expanded values (including fallbacks) and literal credentials (every header value; the userinfo and query values of a literal URL) are treated as secrets, because SDK errors, servers' error pages and labels echo URLs and headers. The host and path of a literal URL stay readable.
 
 - **Masking:** messages built from config values or SDK errors (failures, error output, server hints) go through `redactSecrets()`, which masks every registered form of each value:
   - raw, trimmed and lowercased;

@@ -5,7 +5,7 @@
  * Config discovery & parsing - finds and normalizes MCP server definitions.
  *
  * Contract: getMcpServers(paths) → McpServerConfig[]
- * Invariant: Only returns http/sse servers; the first usable entry claims its name and URL.
+ * Invariant: Only returns http/sse servers; the first usable entry claims its name and its connection.
  */
 
 import { existsSync, readFileSync } from "node:fs";
@@ -29,6 +29,8 @@ export function formatConfigWarning(warning: ConfigWarning): string {
       return `${file}: Skipped "${warning.name}" (stdio servers not supported)`;
     case "missing_url":
       return `${file}: Skipped "${warning.name}" (missing url)`;
+    case "invalid_url":
+      return `${file}: Skipped "${warning.name}" (url is not an http(s) URL)`;
     case "unknown_type":
       return `${file}: Skipped "${warning.name}" (unknown type "${warning.type}")`;
     case "unresolved_env":
@@ -184,6 +186,32 @@ function registerSecretUrl(expanded: string): void {
     registerSecret(piece);
 }
 
+/**
+ * Credentials a literal config URL carries: userinfo and query values, as written
+ * (still encoded) and decoded once, since errors may echo either.
+ */
+function registerUrlCredentials(url: string): void {
+  if (!URL.canParse(url)) return;
+  const { username, password, search, searchParams } = new URL(url);
+  const rawQueryValues = search
+    .slice(1)
+    .split("&")
+    .map((pair) => pair.slice(pair.indexOf("=") + 1));
+  for (const piece of [
+    username,
+    password,
+    decodeURIComponentSafe(username),
+    decodeURIComponentSafe(password),
+    ...rawQueryValues,
+    ...searchParams.values(),
+  ])
+    registerSecret(piece);
+}
+
+function isHttpUrl(url: string): boolean {
+  return URL.canParse(url) && /^https?:$/.test(new URL(url).protocol);
+}
+
 function decodeURIComponentSafe(text: string): string {
   try {
     return decodeURIComponent(text);
@@ -299,10 +327,12 @@ export async function findMcpConfigFiles(
 /**
  * Parse MCP configs and extract unique server definitions.
  *
- * The first usable entry (in `paths` order) claims its name and its URL; later entries
- * with either are dropped. By name, so `.mcp.local.json` overrides `.mcp.json` even with
- * a different URL; by URL, so a server listed by several tools is generated once.
- * Skipped entries claim nothing: a broken override falls back to the shared entry.
+ * The first usable entry (in `paths` order) claims its name and its connection (type,
+ * URL and headers); later entries with either are dropped. By name, so `.mcp.local.json`
+ * overrides `.mcp.json` even with a different URL; by connection, so a server listed by
+ * several tools is generated once, while one URL with different credentials (two
+ * accounts) stays two servers. Skipped entries claim nothing: a broken override falls
+ * back to the shared entry.
  * @param paths Config file paths to parse (in priority order)
  * @returns Deduplicated servers and any warnings encountered
  * @invariant Only returns http/sse servers, skips stdio/command servers
@@ -312,7 +342,7 @@ export function getMcpServers(paths: string[]): ParseServersResult {
   const servers: McpServerConfig[] = [];
   const warnings: ConfigWarning[] = [];
   const seenNames = new Set<string>();
-  const seenUrls = new Set<string>();
+  const seenConnections = new Set<string>();
 
   for (const path of paths) {
     let config: unknown;
@@ -360,6 +390,7 @@ export function getMcpServers(paths: string[]): ParseServersResult {
               : "";
           if (typeof server.url === "string" && server.url.includes("${"))
             registerSecretUrl(trimmedUrl);
+          else registerUrlCredentials(trimmedUrl);
           let headers: Record<string, string> | undefined;
           if (
             server.headers &&
@@ -372,9 +403,9 @@ export function getMcpServers(paths: string[]): ParseServersResult {
                 typeof value === "string"
                   ? expandEnv(value, missing)
                   : String(value);
-              // The whole value: printed errors show headers as sent (trimmed, joined)
-              if (typeof value === "string" && value.includes("${"))
-                registerSecret(headers[key]!);
+              // Any header value may be a credential, written literally or not; the
+              // whole value, since printed errors show headers as sent (trimmed, joined)
+              registerSecret(headers[key]!);
             }
           }
 
@@ -395,8 +426,10 @@ export function getMcpServers(paths: string[]): ParseServersResult {
             continue;
           }
 
-          // Overridden or listed twice (see above): skip silently
-          if (seenNames.has(name) || seenUrls.has(trimmedUrl)) continue;
+          if (!isHttpUrl(trimmedUrl)) {
+            warnings.push({ kind: "invalid_url", path, name });
+            continue;
+          }
 
           // Determine server type
           let serverType: "http" | "sse";
@@ -415,8 +448,19 @@ export function getMcpServers(paths: string[]): ParseServersResult {
             continue;
           }
 
+          // Overridden or listed twice (see above): skip silently
+          const connection = JSON.stringify([
+            serverType,
+            trimmedUrl,
+            // Header names are case-insensitive
+            Object.entries(headers ?? {})
+              .map(([key, value]) => [key.toLowerCase(), value] as const)
+              .sort(([a], [b]) => a.localeCompare(b)),
+          ]);
+          if (seenNames.has(name) || seenConnections.has(connection)) continue;
+
           seenNames.add(name);
-          seenUrls.add(trimmedUrl);
+          seenConnections.add(connection);
           const result: McpServerConfig = {
             type: serverType,
             url: trimmedUrl,
