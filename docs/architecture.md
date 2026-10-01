@@ -91,7 +91,7 @@ Changes must keep these true; each links to where it's defined and tested.
 - **JavaScript:** `bun build --packages external` emits `dist/cli.js` and `dist/index.js`.
 - **Types:** `tsc -p tsconfig.build.json` emits `.d.ts` files reachable from `src/index.ts`.
 - **Exports:** `package.json` exports only `"."` and the `mcp-client-gen` bin. ESM only; Node.js 22+.
-- **Releases:** publishing a GitHub release triggers the npm publish workflow, gated by the `release` environment approval; `prepublishOnly` runs `validate` (format, typecheck, all tests) before `build`.
+- **Releases:** publishing a GitHub release triggers the npm publish workflow, gated by the `release` environment approval; `prepublishOnly` runs `validate` (format, typecheck, all tests), `build`, then `smoke:package`: the packed tarball installed into a clean project and run under Node (CLI, library, generated code compiled with `skipLibCheck: false`). CI runs the same smoke on Node 22.
 
 ## Tests
 
@@ -101,6 +101,7 @@ Changes must keep these true; each links to where it's defined and tested.
 | Connection | Real in-process servers: `@modelcontextprotocol/server` (Streamable HTTP), a legacy SSE fixture, oauth-callback's mock OAuth server (step-up, abort)                                                   | `src/introspection.test.ts`, `test/utils/` |
 | Config     | Temp config files: formats, precedence, env expansion, redaction                                                                                                                                       | `src/config.test.ts`                       |
 | CLI        | The real CLI in a subprocess: streams, exit codes, staged writes after every server succeeds, secret non-disclosure                                                                                    | `src/cli.test.ts`                          |
+| Package    | The packed tarball in a clean consumer under Node: CLI, library import, generated code compiled (`skipLibCheck: false`) and run against an in-process server                                           | `test/package-smoke.ts`                    |
 | Manual     | Real Notion server: fixture capture, example regeneration, smoke and E2E scripts                                                                                                                       | `test/manual/`, `test/e2e/`                |
 
 - **Isolation:** tests run with `--isolate`, because `mock.module()` is process-global.
