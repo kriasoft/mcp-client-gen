@@ -81,9 +81,10 @@ try {
     "--no-fund",
     join(dir, tarball),
     ...extraTarballs,
-    "@modelcontextprotocol/client@^2.2",
-    "typescript",
-    "@types/node",
+    // The oldest supported consumer: deterministic, and what the README promises
+    "@modelcontextprotocol/client@2.2.0",
+    "typescript@6",
+    "@types/node@22",
   ]);
 
   // The installed bin and library, under Node

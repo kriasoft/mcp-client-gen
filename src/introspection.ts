@@ -28,8 +28,8 @@ import {
 } from "./connect.js";
 
 /**
- * Browser flows one capability listing may trigger. The last one can't rescue the listing,
- * so it isn't retried (see withAuthorization).
+ * Browser flows one introspection may trigger, across all its listings. The last one can't
+ * rescue its listing, so it isn't retried (see withAuthorization).
  */
 const MAX_AUTHORIZATIONS = 3;
 
@@ -58,17 +58,19 @@ export async function introspectServer(
     await connectMcp(endpoint, options);
 
   // Every UnauthorizedError leaves a browser flow pending: complete it (approval, timeout
-  // or abort), then retry. Bounded, since a server may keep demanding scopes. The last
-  // flow is left to the close, which ends it over Streamable HTTP; an SSE transport's flow
-  // outlives its close, so it is drained instead (no listener outlives introspection).
+  // or abort), then retry. Bounded across all listings, since a server may keep demanding
+  // scopes and each flow is a browser prompt. The last flow is left to the close, which
+  // ends it over Streamable HTTP; an SSE transport's flow outlives its close, so it is
+  // drained instead (no listener outlives introspection).
+  let authorizations = 0;
   const withAuthorization = async <T>(request: () => Promise<T>) => {
-    for (let attempt = 1; ; attempt++) {
+    for (;;) {
       try {
         return await request();
       } catch (error) {
         if (!completeAuthorization || !(error instanceof UnauthorizedError))
           throw error;
-        const last = attempt === MAX_AUTHORIZATIONS;
+        const last = ++authorizations === MAX_AUTHORIZATIONS;
         if (!last || endpoint.transport === "sse")
           await completeAuthorization();
         if (last) throw error;

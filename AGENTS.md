@@ -104,7 +104,7 @@ Keep module DAG clean: lower modules must not import from higher ones.
 ## Key Constraints
 
 - Toolchain: Bun for development (tests, scripts; it auto-loads .env files). The published CLI and library run on Node.js 22+ (and Bun): no Bun-only APIs under `src/`
-- MCP SDK: `@modelcontextprotocol/client` ^2.2 (single entry point). The SDK owns OAuth; `oauth-callback/mcp` supplies the browser + loopback provider (ADR-002)
+- MCP SDK: `@modelcontextprotocol/client` ~2.2.0 for generation (minors bumped deliberately: a newer protocol revision changes generated types); generated modules need ^2.2 (single entry point). The SDK owns OAuth; `oauth-callback/mcp` supplies the browser + loopback provider (ADR-002)
 - Generated Client: a factory per server taking the SDK `Client`, returning full SDK results; type-only SDK imports only (ADR-003), valid under `strict` + `noUnusedLocals` (SPEC-generated-client)
 - Design Philosophy: Prioritize ideal design over backward compatibility
 

@@ -219,7 +219,11 @@ export async function connectMcp(
     throw new TypeError("MCP server URL must be an http: or https: URL");
   }
   const { timeout } = options;
-  if (timeout !== undefined && !(timeout > 0 && timeout <= MAX_TIMEOUT)) {
+  // typeof too: comparisons would coerce a JavaScript caller's "1000" or 1n
+  if (
+    timeout !== undefined &&
+    !(typeof timeout === "number" && timeout > 0 && timeout <= MAX_TIMEOUT)
+  ) {
     throw new RangeError(
       `timeout must be a positive number of milliseconds, at most ${MAX_TIMEOUT}`,
     );

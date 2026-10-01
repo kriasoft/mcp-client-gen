@@ -884,7 +884,8 @@ describe("generated client at runtime", () => {
       owner: "a b",
       repo: "r/x",
       number: "1",
-      "1st": "?",
+      // !'()* stay unencoded, as the SDK's UriTemplate sends them (not strict RFC 6570)
+      "1st": "?!'()*",
     });
     // Detached from its object: methods close over the client, not `this`
     const { odd } = alpha.resources;
@@ -892,7 +893,7 @@ describe("generated client at runtime", () => {
     expect(calls.slice(-2)).toEqual([
       {
         method: "readResource",
-        params: { uri: "repo://a%20b/r%2Fx/issues/1?v=%3F" },
+        params: { uri: "repo://a%20b/r%2Fx/issues/1?v=%3F!'()*" },
       },
       { method: "readResource", params: { uri: "x://a`b\\c$/7" } },
     ]);

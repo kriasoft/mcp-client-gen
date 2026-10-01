@@ -108,9 +108,9 @@ describe("cli", () => {
     });
 
     test.each([
-      [["chosen"], "Expected an http(s) MCP server URL, got: chosen"],
+      [["chosen"], "Expected an http(s) MCP server URL"],
       [["ftp://a.example/mcp"], "Expected an http(s) MCP server URL"],
-      [["https://a.example/mcp", "out.ts"], "Unexpected argument: out.ts"],
+      [["https://a.example/mcp", "out.ts"], "Expected at most one argument"],
       [["https://a.example/mcp", "-y"], "apply to config mode"],
       [["https://a.example/mcp", "--config", "x.json"], "apply to config mode"],
       [["--name", "x"], "--name applies to URL mode"],
@@ -132,6 +132,20 @@ describe("cli", () => {
       expect(exitCode).toBe(1);
       expect(stdout).toBe("");
       expect(stderr).toContain(message);
+    });
+
+    test("never echoes a rejected argument, which may carry credentials", () => {
+      for (const args of [
+        ["ftp://user:hunter2@a.example/mcp?token=hunter22"],
+        [
+          "https://a.example/mcp",
+          "https://user:hunter2@b.example/?token=hunter22",
+        ],
+      ]) {
+        const { exitCode, stderr } = run(...args);
+        expect(exitCode).toBe(1);
+        expect(stderr).not.toContain("hunter2");
+      }
     });
 
     test("--help prints to stdout and exits 0", () => {

@@ -78,13 +78,13 @@ Changes must keep these true; each links to where it's defined and tested.
 
 ## Dependencies
 
-| Package                             | Kind       | Why                                                                                                                                               |
-| ----------------------------------- | ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `@modelcontextprotocol/client` ^2.2 | dependency | Generation-time client. No SDK object crosses into apps: generated modules import the app's own SDK types, so the generator's copy is independent |
-| `oauth-callback` ^3                 | dependency | Browser OAuth provider during generation (same maintainer); apps add it themselves if they use it                                                 |
-| `ts-morph` ^28                      | dependency | AST code generation and the in-memory circularity check; bundles TypeScript                                                                       |
-| `prettier` ^3                       | dependency | Formatting generated modules                                                                                                                      |
-| `@clack/prompts` ^1                 | dependency | Interactive CLI                                                                                                                                   |
+| Package                               | Kind       | Why                                                                                                                                                                                                               |
+| ------------------------------------- | ---------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `@modelcontextprotocol/client` ~2.2.0 | dependency | Generation-time client, minor pinned (a newer protocol revision changes output). No SDK object crosses into apps: generated modules import the app's own SDK types (^2.2), so the generator's copy is independent |
+| `oauth-callback` ^3                   | dependency | Browser OAuth provider during generation (same maintainer); apps add it themselves if they use it                                                                                                                 |
+| `ts-morph` ^28                        | dependency | AST code generation and the in-memory circularity check; bundles TypeScript                                                                                                                                       |
+| `prettier` ^3                         | dependency | Formatting generated modules                                                                                                                                                                                      |
+| `@clack/prompts` ^1                   | dependency | Interactive CLI                                                                                                                                                                                                   |
 
 ## Packaging
 

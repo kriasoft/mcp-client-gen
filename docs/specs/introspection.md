@@ -47,7 +47,7 @@ introspectServer(endpoint, options)              // src/introspection.ts
   │               negotiating the protocol era (2026-07-28 when the server speaks it)
   │               sse  → SSEClientTransport; on 401, completeAuthorization() + fresh transport
   ├─ list tools → resources → templates → prompts, sequentially
-  │     each UnauthorizedError (step-up) → complete the browser flow, retry (≤ 2 times)
+  │     each UnauthorizedError (step-up) → complete the browser flow, retry (≤ 3 flows per introspection)
   ├─ authorized = the provider holds tokens
   └─ finally client.close(); return the snapshot
 ```
@@ -55,7 +55,7 @@ introspectServer(endpoint, options)              // src/introspection.ts
 `connect.ts` owns transports and OAuth; `introspection.ts` owns listing, step-up retries and closing.
 
 - **Sequential listing:** OAuth refreshes on a caller-owned SSE transport must not overlap.
-- **Step-up:** a listing's flows are completed (or ended by `signal`) and retried; the third fails the listing. Over Streamable HTTP closing the client ends a flow still pending (that third one, or one an abort interrupted); over SSE the third is drained. So no callback listener outlives introspection. Exception (legacy SSE): if `signal` aborts while a request's authorization is still being set up, its listener stays until the OAuth timeout (ADR-002 Impact).
+- **Step-up:** each flow a listing triggers is completed (or ended by `signal`) and the listing retried; the budget is three flows across all listings, and the third fails its listing. Over Streamable HTTP closing the client ends a flow still pending (that third one, or one an abort interrupted); over SSE the third is drained. So no callback listener outlives introspection. Exception (legacy SSE): if `signal` aborts while a request's authorization is still being set up, its listener stays until the OAuth timeout (ADR-002 Impact).
 - **Cleanup:** a connection failure closes the client in `connectMcp`; introspection always attempts to close it after listing. When listing failed, that error wins; otherwise a close failure surfaces instead of hiding.
 
 ## Transports

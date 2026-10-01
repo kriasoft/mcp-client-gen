@@ -107,7 +107,10 @@ function parseArguments(args: string[]): CliMode {
   for (const option of ["name", "output", "config"] as const)
     if (values[option] === "") throw new Error(`--${option} needs a value`);
   if (positionals.length > 1)
-    throw new Error(`Unexpected argument: ${positionals[1]}`);
+    // Positionals aren't echoed: one may be a URL with credentials, not yet registered
+    throw new Error(
+      `Expected at most one argument (the server URL), got ${positionals.length}`,
+    );
 
   const auth: AuthMode = { noOAuth: values["no-oauth"] === true };
   const port = values["oauth-port"];
@@ -122,8 +125,7 @@ function parseArguments(args: string[]): CliMode {
   }
   const [url] = positionals;
   if (url !== undefined) {
-    if (!isHttpUrl(url))
-      throw new Error(`Expected an http(s) MCP server URL, got: ${url}`);
+    if (!isHttpUrl(url)) throw new Error("Expected an http(s) MCP server URL");
     if (values.config !== undefined || values.yes)
       throw new Error("--config and -y apply to config mode, not a URL");
     return {
